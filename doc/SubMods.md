@@ -1,0 +1,1 @@
+I am prepared to start the scaffolding on the DoubleNaught project.  I think following the pattern we established in the InsightCircle project is good. DoubleNaught is the top level project (repo), Then there are subprojects: DoubleVision -- UI, DoubleTouch -- SAM3, DoubleDown -- Imaage to D4M/AA, DoubleMind -- , DoubleTalk, --  Claude MPS to Blender.

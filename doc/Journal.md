@@ -1,0 +1,5 @@
+"Design a base structural widget frame for a node block in a node-editor graph. It must have an explicit top header area for titles, a distinct body content container for settings, and left/right margin padding markers representing connection ports."
+
+Create a Master Base Node Blueprint component frame that serves as the root visual container for all workflow elements. This component must establish a strict dark-themed card container with a standardized padding, border-radius, and shadow profile. It must explicitly enforce a typography scale designed to prevent text clipping on variable contents, and allocate dedicated areas for a unique title header using camelCase naming conventions.
+
+Create an Abstract Ingestion Node component frame that inherits its base card Create a dark-themed Abstract Ingestion Node card component using clean camelCase labels. It needs standard container padding, a prominent file picker launch action button in the body, and a right-side data port labeled "rawOutput". Ensure typography scaling allows for single-line raw data strings without clipping.

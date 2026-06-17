@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://doublenaught.io/schemas/node-search.json",
+  "title": "DoubleNaught Node Search Index",
+  "description": "Array of node type entries. Each entry is one row in the D4M AA index. Append one entry per node type implemented.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["id", "label", "ports", "features"],
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "Unique node type identifier, snake_case. Matches NodeType.id in Dart.",
+        "pattern": "^[a-z][a-z0-9_]*$"
+      },
+      "label": {
+        "type": "string",
+        "description": "Display name shown in search results."
+      },
+      "description": {
+        "type": "string",
+        "description": "One sentence describing what this node does."
+      },
+      "icon": {
+        "type": "string",
+        "description": "Tabler icon name, e.g. ti-brain."
+      },
+      "ports": {
+        "type": "object",
+        "required": ["inputs", "outputs"],
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/port" }
+          },
+          "outputs": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/port" }
+          }
+        }
+      },
+      "features": {
+        "type": "object",
+        "description": "D4M AA feature map. Keys are col identifiers (type:, input:, output:, tag: prefixes). Values are weights 0–1. This is the AA row for this node type.",
+        "minProperties": 1,
+        "additionalProperties": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "port": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["image", "aa", "model", "text", "blender_scene"],
+          "description": "Data type flowing through this port. Must match PortType enum in Dart."
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": ["one", "many"],
+          "default": "one"
+        }
+      }
+    }
+  }
+}
