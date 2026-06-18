@@ -5,8 +5,10 @@ import 'package:flutter/material.dart';
 import '../config/node_registry.dart';
 import '../models/workflow.dart';
 import '../services/storage_service.dart';
+import '../widgets/base_node.dart' show kPortLaneTop, kPortSpacing;
 import '../widgets/file_source_node.dart';
 import '../widgets/preview_node.dart';
+import '../widgets/sam3_node.dart';
 
 /// Fixed node width — used both for layout and to anchor edge endpoints.
 const double _kNodeWidth = 240;
@@ -190,6 +192,10 @@ class _WorkflowPageState extends State<WorkflowPage> {
           input: _inputFor(node.id),
           onConnect: (source) => _connect(source, node.id),
         );
+      case 'sam3':
+        // The control panel needs a backend session (set once an image is
+        // wired in); its segmentStream is consumed by a future viewport node.
+        return Sam3Node(node: node);
       default:
         return PlaceholderNode(node: node);
     }
@@ -216,8 +222,11 @@ class _EdgePainter extends CustomPainter {
       final to = byId[e.to.nodeId];
       if (from == null || to == null) continue;
 
-      final start = Offset(from.x + _kNodeWidth, from.y + _kPortY);
-      final end = Offset(to.x, to.y + _kPortY);
+      // Anchor each endpoint on the actual port dot: same Edge-Anchor geometry
+      // the wrapper uses to position the ports (lane top + idx * spacing).
+      final start = Offset(from.x + _kNodeWidth,
+          from.y + kPortLaneTop + e.from.idx * kPortSpacing);
+      final end = Offset(to.x, to.y + kPortLaneTop + e.to.idx * kPortSpacing);
       final dx = (end.dx - start.dx).abs().clamp(40, 200).toDouble();
 
       final path = Path()

@@ -8,90 +8,6 @@
         "type": "tabs",
         "children": [
           {
-            "id": "2de5221f9e42927e",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "The Storm.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "The Storm"
-            }
-          },
-          {
-            "id": "fea9f0ccd7741fcd",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "Domains.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "Domains"
-            }
-          },
-          {
-            "id": "6bb48e906257dc2e",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "Crossing.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "Crossing"
-            }
-          },
-          {
-            "id": "b62e79dab5529709",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "The Storm.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "The Storm"
-            }
-          },
-          {
-            "id": "2de238c0bbe848cc",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "Domains.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "Domains"
-            }
-          },
-          {
-            "id": "0bf3b219cd7ae3de",
-            "type": "leaf",
-            "state": {
-              "type": "markdown",
-              "state": {
-                "file": "Crossing.md",
-                "mode": "source",
-                "source": false
-              },
-              "icon": "lucide-file",
-              "title": "Crossing"
-            }
-          },
-          {
             "id": "f53923a5e7360da1",
             "type": "leaf",
             "state": {
@@ -105,8 +21,7 @@
               "title": "Journal"
             }
           }
-        ],
-        "currentTab": 6
+        ]
       }
     ],
     "direction": "vertical"
@@ -138,7 +53,7 @@
             "state": {
               "type": "search",
               "state": {
-                "query": "",
+                "query": "tag:#Claude",
                 "matchingCase": false,
                 "explainSearch": false,
                 "collapseAll": false,
@@ -159,7 +74,8 @@
               "title": "Bookmarks"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "horizontal",
@@ -270,6 +186,7 @@
   },
   "active": "f53923a5e7360da1",
   "lastOpenFiles": [
+    "Pasted image 20260618111442.png",
     "Crossing.md",
     "Journal.md",
     "Node Aide.md",

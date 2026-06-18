@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/workflow.dart';
+import '../widgets/base_node.dart';
 
 /// A node kind that can be instantiated from the Workflow header dropdown.
 class NodeType {
@@ -18,25 +19,24 @@ class NodeType {
 const List<NodeType> nodeTypes = [
   NodeType(name: 'File Source', type: 'file_source'),
   NodeType(name: 'Preview', type: 'preview'),
+  NodeType(name: 'SAM3 Control', type: 'sam3'),
 ];
 
-/// Fallback card for a registered-but-not-yet-implemented node type.
-class PlaceholderNode extends StatelessWidget {
+/// Fallback card for a registered-but-not-yet-implemented node type. Extends
+/// [BaseNode] so it inherits the Base Node Blueprint chrome for free.
+class PlaceholderNode extends BaseNode {
   final WorkflowNode node;
   const PlaceholderNode({super.key, required this.node});
 
   @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 240,
-      child: Card(
-        elevation: 2,
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Text('${node.type}\n(not implemented)',
-              style: Theme.of(context).textTheme.bodySmall),
-        ),
-      ),
-    );
-  }
+  String get title => node.type;
+
+  @override
+  IconData get icon => Icons.help_outline;
+
+  @override
+  Widget buildBody(BuildContext context) => Text(
+        '(not implemented)',
+        style: Theme.of(context).textTheme.bodySmall,
+      );
 }

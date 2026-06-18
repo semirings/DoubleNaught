@@ -47,6 +47,17 @@ class InputConnector extends StatelessWidget {
                   shape: BoxShape.circle,
                   color: (active || hovering) ? color : scheme.surface,
                   border: Border.all(color: color, width: 2),
+                  // Glow while a compatible output is dragged over this port —
+                  // visual confirmation that the connection will snap here.
+                  boxShadow: hovering
+                      ? [
+                          BoxShadow(
+                            color: scheme.primary,
+                            blurRadius: 8,
+                            spreadRadius: 2,
+                          ),
+                        ]
+                      : null,
                 ),
               ),
               const SizedBox(width: 6),

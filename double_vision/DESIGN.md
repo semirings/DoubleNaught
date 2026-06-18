@@ -109,6 +109,90 @@ spacing:
   margin: 20px
 ---
 
+<!-- ────────────────────────────────────────────────────────────────────────
+     ARCHITECTURE RULES — hand-authored, NOT Stitch-synced.
+     Everything below the "Visual Design System" divider is regenerated from
+     the Stitch project on re-sync; this section is not. Preserve it across
+     syncs (or extract it to a dedicated ARCHITECTURE.md).
+     ──────────────────────────────────────────────────────────────────────── -->
+
+# Architecture Rules
+
+These are the core, binding rules for how workflow widgets are built. They take
+precedence over any incidental pattern found in existing code.
+
+## Node composition (supersedes OOP inheritance)
+
+We have **shifted from strict OOP inheritance to a compositional widget
+pattern.** The former approach — concrete nodes extending an abstract `BaseNode`
+class — is **deprecated**.
+
+- **Every workflow widget MUST be built by composing the universal
+  `DoubleNaughtNodeWrapper` shell component.** Nodes no longer subclass a base
+  class; they wrap themselves in this one shell.
+- `DoubleNaughtNodeWrapper` is the single owner of all node container chrome
+  defined by the Base Node Blueprint: dark surface, thin cobalt-blue outline,
+  rounded corners, global padding, the reserved camelCase header, and the
+  text-scaling boundary.
+- The wrapper **accepts modular child configurations** rather than fixed
+  subclasses. A node supplies a composable child — e.g. the upcoming
+  **`Sam3ControlPanel`** — which renders inside the shell body. Children are
+  swappable and reusable across node types without any class hierarchy.
+
+## Edge-Anchor port pattern
+
+Ports are not decorations inside the body — they define the node's connection
+boundary, so they must sit on its physical edges:
+
+- **All ports are positioned on the absolute boundary edges of the
+  `DoubleNaughtNodeWrapper`:** **Inputs on the left edge, Outputs on the right
+  edge.** The wrapper places them with `Positioned` widgets in a `Stack` so the
+  dot centers land exactly on the card's left/right boundary.
+- **Noodle endpoints must coincide with the port dots.** The canvas edge
+  painter and the wrapper share the same anchor geometry (`kPortLaneTop` +
+  `idx * kPortSpacing` from the node's top), so a connection line terminates on
+  the actual port rather than the node's center.
+- **Port contract — SAM3 work node (`sam3Work`):** a **`preview`** Input port on
+  the left and an **`imageArray`** Output port on the right (the segmentation
+  array result stream), alongside its existing `segmentStream` output.
+
+## What the wrapper enforces
+
+Because all nodes pass through one shell, two cross-cutting rules are enforced in
+exactly one place:
+
+1. **Strict camelCase styling.** Header titles and port labels (e.g.
+   `rawFileStream`, `inputStream`, `Sam3ControlPanel`) are rendered through the
+   wrapper so the camelCase convention is applied uniformly and cannot drift per
+   node.
+2. **Data-contract clipping prevention.** The wrapper clamps text scaling and
+   constrains label layout so key/value data-contract labels never clip or
+   overflow on variable data.
+
+## Backend data contract (camelCase keys)
+
+The camelCase rule extends across the wire. **All JSON payloads returned by
+DoubleNaught backend services MUST use camelCase keys** (e.g. `segmentMask`,
+`inferenceMetrics`, `processingTimeMs`, `sessionId`), so a node's data contract
+reads identically in Dart and on the server. The SAM3 service in `double_touch/`
+is the reference implementation. (The upstream `mlx_sam3` reference backend uses
+snake_case; that convention is **not** carried into DoubleNaught.)
+
+## Data-contract boundary (unchanged)
+
+- **Processing nodes are AA-in → AA-out** — they consume and emit D4M
+  associative arrays.
+- **Ingest nodes are the boundary** — no AA input; raw-out only. They bootstrap
+  raw external bytes into the AA pipeline; a downstream parser is what first
+  lifts raw data into an AA.
+- **The File Source node is the canonical ingestion-layer boundary.** It reads
+  from **local storage** (the native file picker) and streams the file's
+  contents out as **raw string/byte data** — explicitly **not** a structured D4M
+  associative array. It sits at the very edge of the graph: it has no input
+  port, only a raw output stream that a downstream node parses into an AA.
+
+<!-- ──────────────────────── Visual Design System (Stitch-synced) ──────────── -->
+
 ## Brand & Style
 
 The design system is engineered for high-fidelity technical environments where precision and data density are paramount. The aesthetic is rooted in **Technical Minimalism**, prioritizing clarity and functional efficiency over decorative elements. 
@@ -172,4 +256,5 @@ Components in this design system follow an "Outline-First" philosophy.
 *   **Cards:** Defined by 1px borders rather than shadows. Headers are separated from content by a thin horizontal rule.
 *   **Scrollbars:** Ultra-thin (4px), dark grey, appearing only on hover to reduce visual noise.
 
-<!-- Synced from Stitch project "DoubleNaught Workflow Manager" (projects/4113127279095342047) on 2026-06-17. Source of truth: Stitch design system. Re-sync via the Stitch MCP rather than editing tokens here by hand. -->
+<!-- The "Visual Design System" sections above (Brand & Style → Components) plus the YAML frontmatter are synced from Stitch project "DoubleNaught Workflow Manager" (projects/4113127279095342047) on 2026-06-17. Source of truth for visual tokens: the Stitch design system; re-sync via the Stitch MCP rather than editing tokens by hand. WARNING: a full re-sync regenerates this file and will overwrite the hand-authored "Architecture Rules" section at the top — preserve it (or move it to ARCHITECTURE.md) before re-syncing. -->
+

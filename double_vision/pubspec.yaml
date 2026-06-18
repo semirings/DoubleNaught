@@ -15,6 +15,9 @@ dependencies:
   # Native/web file open dialog; XFile.openRead() gives a byte stream.
   file_selector: ^1.1.0
 
+  # HTTP client for node→backend calls (e.g. the SAM3 segmentation API).
+  http: ^1.6.0
+
   # State management used by Vyuh
   mobx: ^2.3.0+1
   flutter_mobx: ^2.2.0+2

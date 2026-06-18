@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../models/workflow.dart';
+import 'double_naught_node_wrapper.dart';
 import 'input_connector.dart';
 
 /// A workflow sink node: an input connector that consumes a byte stream wired
@@ -34,6 +35,10 @@ class PreviewNode extends StatefulWidget {
 }
 
 class _PreviewNodeState extends State<PreviewNode> {
+  /// Max characters held for the on-card preview. The full byte count is still
+  /// tracked separately in [_bytes].
+  static const int _previewLimit = 600;
+
   StreamSubscription<Uint8List>? _sub;
   int _bytes = 0;
   String _preview = '';
@@ -58,8 +63,15 @@ class _PreviewNodeState extends State<PreviewNode> {
       if (!mounted) return;
       setState(() {
         _bytes += chunk.length;
-        if (_preview.length < 600) {
-          _preview += utf8.decode(chunk, allowMalformed: true);
+        if (_preview.length < _previewLimit) {
+          // Decode only the slice we still have room for. A whole-file chunk
+          // (common on desktop) would otherwise build a huge string and freeze
+          // the UI when rendered.
+          final remaining = _previewLimit - _preview.length;
+          final slice = chunk.length > remaining
+              ? Uint8List.sublistView(chunk, 0, remaining)
+              : chunk;
+          _preview += utf8.decode(slice, allowMalformed: true);
         }
       });
     });
@@ -76,62 +88,43 @@ class _PreviewNodeState extends State<PreviewNode> {
     final theme = Theme.of(context);
     final wired = widget.input != null;
 
-    return SizedBox(
-      width: 240,
-      child: Card(
-        elevation: 2,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(Icons.preview_outlined,
-                      size: 18, color: theme.colorScheme.primary),
-                  const SizedBox(width: 6),
-                  Text(widget.node.type,
-                      style: theme.textTheme.titleSmall
-                          ?.copyWith(fontWeight: FontWeight.w600)),
-                ],
-              ),
-              const Divider(height: 16),
-
-              // Input connector (left edge) — drop an output here to wire it.
-              Align(
-                alignment: Alignment.centerLeft,
-                child: InputConnector(
-                  label: 'in',
-                  idx: 0,
-                  active: wired,
-                  onConnect: widget.onConnect,
-                ),
-              ),
-              const SizedBox(height: 8),
-
-              Text('Received $_bytes bytes', style: theme.textTheme.bodySmall),
-              const SizedBox(height: 4),
-              Container(
-                width: double.infinity,
-                height: 84,
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: SingleChildScrollView(
-                  child: Text(
-                    _preview.isEmpty
-                        ? (wired ? 'Waiting for data…' : 'Not connected.')
-                        : _preview,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
-                  ),
-                ),
-              ),
-            ],
-          ),
+    // Container chrome comes from the universal wrapper; the input port is
+    // edge-anchored on the left per the Edge-Anchor pattern.
+    return DoubleNaughtNodeWrapper(
+      title: 'Preview',
+      icon: Icons.preview_outlined,
+      inputPorts: [
+        InputConnector(
+          label: 'in',
+          idx: 0,
+          active: wired,
+          onConnect: widget.onConnect,
         ),
+      ],
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Received $_bytes bytes', style: theme.textTheme.bodySmall),
+          const SizedBox(height: 4),
+          Container(
+            width: double.infinity,
+            height: 84,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: SingleChildScrollView(
+              child: Text(
+                _preview.isEmpty
+                    ? (wired ? 'Waiting for data…' : 'Not connected.')
+                    : _preview,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
