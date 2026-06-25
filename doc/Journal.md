@@ -127,3 +127,317 @@ Ensure all node titles use two-word camelCase styling (e.g., "sam3Work", "filePi
 Verify that noodles "glow" or pulse when being dragged near a valid port to provide visual confirmation of connectivity.
 
 Your slide deck and implementation plan are ready! I've refined the visual architecture and provided a clear path for Claude to fix the connectivity gaps. Feel free to review the slides and let me know if you'd like to adjust any of the technical specifications.
+
+## Have Gemini critique my plan
+
+Let me list out what I understand to be the steps to be taken in light of our current use case.
+
+To be clear, our current use case is where the SLM generates images that conform to a certain style.
+
+Training such an SLM requires certain steps be taken. These steps translate into specific nodes. Ultimately, I want to outline a series of episodes where I show the training process. I need to identify the steps/nodes/episodes. Which step with with node will be covered in which episode.
+
+  
+
+The steps:
+
+Step 1 Get the data
+
+This is done. I have the source art work I will be using.
+
+  
+
+Step 2 Prepare the data
+
+Using the SAM3 utility, I segment the art work using prompts. This yields a set of sub-images. These sub images are already described by the prompt that segmented them. I then, as necessary, further segment the sub-images if and when they contain subsub-images that need a prompt.
+
+Step 3
+
+After segmentation, Run a process that submits these images and prompts to an LLM. I prompt the LLM to review the submission and write an improved prompt.
+
+Step 4
+
+Submit the improved prompt to be formatted into a line the appended to a JSONL file. This is done with three nodes.
+
+[LLM Prompt Improver]
+  input:  segment_prompt + context_image
+  output: raw LLM response
+
+[Response Formatter]
+  input:  raw LLM response
+  output: structured record (dict/object)
+
+[JSONL Appender]
+  input:  structured record
+  output: confirmation / error
+
+Step 5 
+
+Tokenize the prompts into a .bin file.  This is a call to MLX.  It fires when it receives an even notice from the appender.
+
+**Input:** JSONL file with captions (text) and image paths  
+**What happens:**
+
+- Captions → token ID sequences (integers)
+- Images → patch embeddings / pixel tensors
+- Both processed through the model's **processor** (tokenizer + image processor combined for VLMs)
+
+**Output:** Raw numerical representations — yes, effectively binary data, typically `.npz`
+
+```
+from mlx_lm import load
+from transformers import AutoProcessor
+
+# Load the processor for your base model
+processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-2B-Instruct")
+
+# For each record in your JSONL
+from PIL import Image
+
+image = Image.open("./segments/frame_042.png")
+
+inputs = processor(
+    text="your caption text here",
+    images=image,
+    return_tensors="np"  # numpy, then convert to MLX arrays
+)
+
+# inputs now contains:
+# inputs["input_ids"]        ← caption token IDs
+# inputs["pixel_values"]     ← image as normalized tensor
+# inputs["attention_mask"]   ← attention mask
+```
+
+Then save to `.npz`
+
+```
+import mlx.core as mx
+import numpy as np
+
+mx.savez(
+    "dataset/sample_0042.npz",
+    input_ids=inputs["input_ids"],
+    pixel_values=inputs["pixel_values"],
+    attention_mask=inputs["attention_mask"]
+)
+```
+### Key point
+
+The processor is **model-specific** — it must match your base model exactly. This is why locking down the base model early matters. The processor for Qwen2-VL will produce different output shapes and formats than moondream2 or SmolVLM.
+
+Does this match what you were expecting, or were you expecting a more direct MLX primitive
+
+Step 6
+### Transformation
+
+**Input:** Tokenized data  
+**What happens:**
+
+- Applies the model's **chat template** / instruction format
+- Packs sequences to efficient lengths
+- Creates **attention masks**
+- Pairs inputs with labels (what the model should predict)
+- Shuffles and batches
+
+**Output:** Structured tensors ready for a training loop
+
+Transformation is largely **not an MLX call** — it's data preparation logic that you write, which then feeds into MLX.
+
+```
+import mlx.core as mx
+import numpy as np
+
+# Load your tokenized .npz file
+data = mx.load("dataset/sample_0042.npz")
+
+input_ids = data["input_ids"]
+pixel_values = data["pixel_values"]
+attention_mask = data["attention_mask"]
+```
+Then you construct the **labels** (what the model is trained to predict):
+
+```
+# This is model-specific — Qwen2-VL example
+messages = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "image"},
+            {"type": "text", "text": caption}
+        ]
+    }
+]
+
+formatted = processor.apply_chat_template(
+    messages,
+    tokenize=False,
+    add_generation_prompt=True
+)
+```
+The only real MLX call here
+
+```
+# Convert everything to MLX arrays for training
+batch = {
+    "input_ids": mx.array(input_ids),
+    "pixel_values": mx.array(pixel_values),
+    "attention_mask": mx.array(attention_mask),
+    "labels": mx.array(labels)
+}
+```
+### Honest summary
+
+|Sub-step|Tool|
+|---|---|
+|Load `.npz`|`mx.load()`|
+|Apply chat template|`processor.apply_chat_template()`|
+|Construct labels|NumPy logic|
+|Convert to training tensors|`mx.array()`|
+
+Transformation is mostly **glue code** — the MLX calls bookend it, but the logic in between is yours. This is the step most tutorials gloss over, and where most first-time SLM pipelines break.
+
+Step 7: 
+### Training
+
+**Input:** Transformed batches  
+**What happens:**
+
+- Forward pass through the base model
+- Loss calculated
+- Weights updated (LoRA adapters or full fine-tune)
+
+**Output:** Trained weights / adapter files
+
+For VLM fine-tuning with MLX, the primary call is **`mlx_lm.lora`** — but let me be honest about the current state.
+
+```
+# CLI
+mlx_lm.lora \
+  --model Qwen/Qwen2.5-2B-Instruct \
+  --train \
+  --data ./dataset \
+  --iters 1000
+```
+```
+from mlx_lm import train
+
+train(
+    model="Qwen/Qwen2.5-2B-Instruct",
+    train_data="./dataset",
+    iters=1000,
+    lora_rank=8
+)
+```
+### The honest answer (vision models)
+
+MLX-LM's **vision fine-tuning is still maturing**. As of mid-2025, full VLM fine-tuning via `mlx_lm.lora` is not uniformly supported across all vision models. What this means practically:
+
+- You may need to write a **custom training loop**
+- The core MLX calls in that loop are:
+### The clean answer (text-only models)
+
+For a text-only model, this is well-supported:
+
+```
+import mlx.core as mx
+import mlx.nn as nn
+from mlx.optimizers import Adam
+
+model, processor = load("Qwen/Qwen2-VL-2B-Instruct")
+optimizer = Adam(learning_rate=1e-5)
+
+def loss_fn(model, batch):
+    logits = model(**batch)
+    return nn.losses.cross_entropy(logits, batch["labels"])
+
+# Training step
+loss_and_grad_fn = nn.value_and_grad(model, loss_fn)
+
+for batch in dataloader:
+    loss, grads = loss_and_grad_fn(model, batch)
+    optimizer.update(model, grads)
+    mx.eval(model.parameters(), optimizer.state)  # ← critical MLX call
+```
+The critical MLX-specific call
+
+```
+mx.eval(model.parameters(), optimizer.state)
+```
+### Bottom line
+
+|Scenario|Approach|
+|---|---|
+|Text-only base model|`mlx_lm.lora` CLI or Python API|
+|Vision model, supported|`mlx_lm.lora` with vision flags|
+|Vision model, unsupported|Custom loop with `mx.eval()` at its core|
+
+Before building the training node, you need to verify whether your specific base model is supported by `mlx_lm.lora` for vision fine-tuning. That single answer determines whether your training node is a config call or a full custom implementation.
+
+Step 8
+### Evaluation
+
+**Input:** Trained weights + held-out validation data  
+**What happens:** Measures whether the model actually improved
+
+### What you're measuring
+
+For your specific use case — image segments + captions — evaluation answers:  
+**"Does the fine-tuned model generate better prompts than the base model?"**
+
+This is harder to measure than classification tasks because the output is text. You have two categories of metrics:
+
+### Automatic metrics
+
+#### Perplexity — the primary MLX call
+
+```
+from mlx_lm import evaluate
+
+perplexity = evaluate(
+    model=model,
+    dataset="./dataset/validation.jsonl",
+)
+```
+Lower perplexity = model is less "surprised" by the validation data. Useful for tracking improvement across checkpoints but doesn't tell you if the outputs are actually good.
+
+#### BLEU / ROUGE
+
+```
+from nltk.translate.bleu_score import sentence_bleu
+
+reference = ["improved", "prompt", "tokens"]
+candidate = model_output.split()
+
+score = sentence_bleu([reference], candidate)
+```
+### The validation split question
+
+You need to have held back data before training:
+
+```
+dataset/
+  train.jsonl        ← ~80%
+  valid.jsonl        ← ~10%
+  test.jsonl         ← ~10%
+```
+### Honest reality for VLM evaluation
+
+Automatic metrics only tell part of the story. For prompt quality specifically you likely need:
+
+|Method|What it tells you|
+|---|---|
+|Perplexity|Model fit to validation data|
+|BLEU/ROUGE|Lexical similarity to reference prompts|
+|Human review|Whether prompts are actually useful|
+|Round-trip test|Feed generated prompt back to image gen, does it produce a good image?|
+
+The **round-trip test** is arguably the most meaningful for your use case — generate a prompt from a segment, feed it to an image generator, compare output to original segment.
+
+Step 9
+### Quantization (likely)
+
+**Input:** Trained weights  
+**Output:** Compressed model (4-bit, 8-bit) suitable for deployment on Apple Silicon
+
+---
+
+Does this match what you've been reading? And does MLX-LM handle steps 2-3 internally, or are you building those steps yourself?
