@@ -438,6 +438,105 @@ Step 9
 **Input:** Trained weights  
 **Output:** Compressed model (4-bit, 8-bit) suitable for deployment on Apple Silicon
 
+### What it is and why
+
+Your fine-tuned model weights are in **float32 or bfloat16** — full precision. Quantization compresses them to 4-bit or 8-bit integers, which for Apple Silicon means:
+
+- Smaller model size (4-bit = ~75% reduction)
+- Faster inference
+- Fits in unified memory more easily
+- Small, acceptable quality loss
+
+### The MLX call
+
+This is one of the cleanest steps — MLX has first-class quantization support:
+
+```
+from mlx_lm import convert
+
+convert(
+    hf_path="./fine_tuned_model",    # your trained model
+    mlx_path="./quantized_model",    # output destination
+    quantize=True,
+    q_bits=4                          # 4-bit is standard
+)
+```
+Or via CLI:
+
+```
+mlx_lm.convert \
+  --hf-path ./fine_tuned_model \
+  --mlx-path ./quantized_model \
+  -q \
+  --q-bits 4
+```
+### Bit depth tradeoffs
+
+|Setting|Size reduction|Quality|
+|---|---|---|
+|`q_bits=8`|~50%|Very close to original|
+|`q_bits=4`|~75%|Good, standard choice|
+|`q_bits=2`|~87%|Noticeable degradation|
+
+**4-bit is the right default** for an SLM on Apple Silicon.
+
 ---
+
+### One important flag — LoRA adapters
+
+If you trained with LoRA rather than full fine-tuning, you need to **fuse the adapters first** before quantizing:
+
+```
+from mlx_lm import fuse
+
+fuse(
+    model="./base_model",
+    adapter_path="./adapters",
+    save_path="./fused_model"
+)
+
+# Then quantize the fused model
+convert(
+    hf_path="./fused_model",
+    mlx_path="./quantized_model",
+    quantize=True,
+    q_bits=4
+)
+```
+
+Quantizing unfused LoRA adapters is a common mistake that produces a broken model.
+
+---
+
+### After quantization
+
+You can immediately test with:
+
+```
+from mlx_lm import load, generate
+
+model, tokenizer = load("./quantized_model")
+
+response = generate(
+    model=model,
+    tokenizer=tokenizer,
+    prompt="your test prompt",
+    max_tokens=200
+)
+'''
+### Full pipeline — now complete
+
+```
+[LLM Prompt Improver]
+[Response Formatter]
+[JSONL Appender]        ← with train/valid/test split
+[Validator]
+[Tokenizer]
+[Transformer]
+[Training]
+[Evaluation]
+[Quantization]          ← you are here
+[Deployment]
+'''
 
 Does this match what you've been reading? And does MLX-LM handle steps 2-3 internally, or are you building those steps yourself?
