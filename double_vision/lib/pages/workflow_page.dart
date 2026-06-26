@@ -54,6 +54,15 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// The currently selected completed edge, if any.
   WorkflowEdge? _selectedEdge;
 
+  /// Image sidebar state — the most recent image received by a Segmentation
+  /// node's `preview` input, plus the resizable panel width.
+  Uint8List? _sidebarImage;
+  String? _sidebarName;
+  int _sidebarBytes = 0;
+  double _sidebarWidth = 300;
+  static const double _minSidebar = 200;
+  static const double _maxSidebar = 640;
+
   /// Drives the marching-ants animation of the in-progress curve.
   late final AnimationController _ants;
 
@@ -297,6 +306,10 @@ class _WorkflowPageState extends State<WorkflowPage>
     return null;
   }
 
+  /// Output port indices of [nodeId] that currently have an outgoing edge.
+  Set<int> _connectedOutputs(int nodeId) =>
+      {for (final e in _edges) if (e.from.nodeId == nodeId) e.from.idx};
+
   Future<void> _save() async {
     setState(() => _saving = true);
     final workflow = Workflow(version: _version, nodes: _nodes, edges: _edges);
@@ -336,7 +349,26 @@ class _WorkflowPageState extends State<WorkflowPage>
             saving: _saving,
             onClear: _nodes.isEmpty ? null : _clear,
           ),
-          Expanded(child: _canvas(context)),
+          Expanded(
+            child: Row(
+              children: [
+                // Node workspace.
+                Expanded(child: _canvas(context)),
+                // Image sidebar, docked to the right edge, separate from the
+                // canvas; resizable by dragging its left edge.
+                _ImagePanel(
+                  image: _sidebarImage,
+                  fileName: _sidebarName,
+                  bytes: _sidebarBytes,
+                  width: _sidebarWidth,
+                  onResize: (dx) => setState(() {
+                    _sidebarWidth =
+                        (_sidebarWidth - dx).clamp(_minSidebar, _maxSidebar);
+                  }),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -451,9 +483,22 @@ class _WorkflowPageState extends State<WorkflowPage>
           onConnect: (source) => _connect(source, node.id),
         );
       case 'sam3':
-        // The control panel needs a backend session (set once an image is
-        // wired in); its segmentStream is consumed by a future viewport node.
-        return Sam3Node(node: node);
+        return Sam3Node(
+          node: node,
+          // Register the `preview` input with the canvas so drops form an edge
+          // (same wiring every other input node uses).
+          onPreviewConnect: (source) => _connect(source, node.id),
+          // Feed the wired-in bytes so the node can surface the image, and
+          // light up the connected-port highlight (input + outputs).
+          previewInput: _inputFor(node.id),
+          previewFileName: _fileNameFor(node.id),
+          connectedOutputs: _connectedOutputs(node.id),
+          onPreviewImage: (bytes, name) => setState(() {
+            _sidebarImage = bytes;
+            _sidebarName = name;
+            _sidebarBytes = bytes.length;
+          }),
+        );
       default:
         return PlaceholderNode(node: node);
     }
@@ -601,6 +646,123 @@ class _PendingEdgePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_PendingEdgePainter old) => true;
+}
+
+/// Human-readable byte size, e.g. 8230865 -> "7.8 MB".
+String _humanSize(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  var size = bytes / 1024;
+  var i = 0;
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024;
+    i++;
+  }
+  return '${size.toStringAsFixed(1)} ${units[i]}';
+}
+
+/// Fixed sidebar docked to the right edge, separate from the node canvas. Shows
+/// the most recent image received by a Segmentation node, with a filename/size
+/// header, a "No image received" placeholder, and a left-edge resize grip.
+class _ImagePanel extends StatelessWidget {
+  final Uint8List? image;
+  final String? fileName;
+  final int bytes;
+  final double width;
+  final void Function(double dx) onResize;
+
+  const _ImagePanel({
+    required this.image,
+    required this.fileName,
+    required this.bytes,
+    required this.width,
+    required this.onResize,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    return SizedBox(
+      width: width,
+      child: Row(
+        children: [
+          // Left-edge resize grip.
+          MouseRegion(
+            cursor: SystemMouseCursors.resizeLeftRight,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onHorizontalDragUpdate: (d) => onResize(d.delta.dx),
+              child: Container(
+                width: 8,
+                color: scheme.surfaceContainerHigh,
+                alignment: Alignment.center,
+                child: Icon(Icons.drag_indicator, size: 14, color: scheme.outline),
+              ),
+            ),
+          ),
+          Expanded(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainer,
+                border: Border(left: BorderSide(color: scheme.outlineVariant)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Header: filename + size.
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      border: Border(
+                          bottom: BorderSide(color: scheme.outlineVariant)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          fileName ?? 'Image preview',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleSmall
+                              ?.copyWith(fontWeight: FontWeight.w600),
+                        ),
+                        if (image != null)
+                          Text(_humanSize(bytes),
+                              style: theme.textTheme.bodySmall
+                                  ?.copyWith(color: scheme.onSurfaceVariant)),
+                      ],
+                    ),
+                  ),
+                  // Body: image scaled to width (aspect preserved) or placeholder.
+                  Expanded(
+                    child: image == null
+                        ? Center(
+                            child: Text('No image received',
+                                style: theme.textTheme.bodyMedium
+                                    ?.copyWith(color: scheme.onSurfaceVariant)),
+                          )
+                        : SingleChildScrollView(
+                            padding: const EdgeInsets.all(8),
+                            child: Image.memory(
+                              image!,
+                              width: double.infinity,
+                              fit: BoxFit.fitWidth,
+                              gaplessPlayback: true,
+                              errorBuilder: (_, __, ___) => Text(
+                                  'Cannot decode image',
+                                  style: theme.textTheme.bodySmall),
+                            ),
+                          ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// The thin top header: a "Workflow" dropdown of node names and a Save button.
