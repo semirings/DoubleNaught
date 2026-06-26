@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/workflow.dart';
+import 'connection_drag_scope.dart';
 
 /// A node's output port: a labelled connector dot on the right edge of a node.
 /// When [dragData] is supplied the dot becomes a drag source — dragging it onto
@@ -48,9 +49,16 @@ class OutputConnector extends StatelessWidget {
 
     Widget portDot = dot;
     if (dragData != null) {
+      final scope = ConnectionDragScope.of(context);
       portDot = Draggable<PortRef>(
         data: dragData,
         dragAnchorStrategy: pointerDragAnchorStrategy,
+        // Drive the canvas's live preview curve (edge creation itself is still
+        // handled by the input port's DragTarget).
+        onDragStarted: () => scope?.onDragStart(dragData!),
+        onDragUpdate: (d) => scope?.onDragUpdate(d.globalPosition),
+        onDragEnd: (_) => scope?.onDragEnd(),
+        onDraggableCanceled: (_, __) => scope?.onDragEnd(),
         feedback: _DragDot(color: scheme.primary),
         child: dot,
       );

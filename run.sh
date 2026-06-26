@@ -2,15 +2,16 @@
 # DoubleNaught task runner.
 #
 # Usage:
-#   ./run.sh DV [flutter run args...]   Run the double_vision Flutter app
+#   ./run.sh DV [flutter run args...]   Run the double_vision Flutter app (macOS)
 #   ./run.sh DT [uvicorn args...]       Run the double_touch SAM3 backend
 #
 # Examples:
-#   ./run.sh DV                         # default device (Flutter prompts/picks)
-#   ./run.sh DV -d chrome               # run on Chrome
-#   ./run.sh DV -d macos
+#   ./run.sh DV                         # runs on macOS (no device prompt)
 #   ./run.sh DV --dart-define=SANITY_PROJECT_ID=xxxx --dart-define=SANITY_TOKEN=skxxxx
 #   ./run.sh DT                         # SAM3 backend on http://127.0.0.1:8000
+#
+# Note: DV always passes `-d macos`. To run on another device, invoke
+# `flutter run -d <device>` directly from the double_vision/ directory.
 
 set -e
 
@@ -35,7 +36,8 @@ shift
 case "$cmd" in
   DV)
     cd "$ROOT/double_vision"
-    exec flutter run "$@"
+    # Always target macOS so Flutter doesn't prompt for a device.
+    exec flutter run -d macos "$@"
     ;;
   DT)
     cd "$ROOT/double_touch"

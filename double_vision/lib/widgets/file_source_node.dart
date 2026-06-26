@@ -27,17 +27,31 @@ class FileSourceNode extends StatefulWidget {
   /// nodes subscribe to this to receive file content chunks.
   final void Function(Stream<Uint8List> contents)? onConnect;
 
-  const FileSourceNode({super.key, required this.node, this.onConnect});
+  /// Called with the chosen file's name (out-of-band metadata; the byte stream
+  /// carries no filename). Lets a downstream Preview label the content.
+  final void Function(String fileName)? onFileName;
+
+  const FileSourceNode({
+    super.key,
+    required this.node,
+    this.onConnect,
+    this.onFileName,
+  });
 
   @override
   State<FileSourceNode> createState() => _FileSourceNodeState();
 }
 
 class _FileSourceNodeState extends State<FileSourceNode> {
-  /// Broadcast output port. Created up front so [onConnect] can hand it to
-  /// downstream nodes before any file is chosen.
-  final StreamController<Uint8List> _output =
-      StreamController<Uint8List>.broadcast();
+  /// Every chunk streamed so far. Broadcast streams don't retain past events,
+  /// so this buffer lets a downstream node that connects *after* the file has
+  /// loaded still receive the full contents (replayed by [_output]'s onListen).
+  final List<Uint8List> _buffer = [];
+
+  /// Broadcast output port. Created in [initState] so [onConnect] can hand it
+  /// to downstream nodes before any file is chosen; its onListen replays
+  /// [_buffer] to late subscribers.
+  late final StreamController<Uint8List> _output;
 
   /// The file chosen from local storage, or null before any selection.
   XFile? _selectedFile;
@@ -55,8 +69,23 @@ class _FileSourceNodeState extends State<FileSourceNode> {
   @override
   void initState() {
     super.initState();
+    _output = StreamController<Uint8List>.broadcast(onListen: _replayBuffer);
     // Publish the output connector immediately.
     widget.onConnect?.call(_output.stream);
+  }
+
+  /// When a downstream node subscribes, replay whatever has already been loaded.
+  /// Without this, a Preview connected after the file finished streaming would
+  /// receive 0 bytes (broadcast streams don't retain past events).
+  void _replayBuffer() {
+    if (_buffer.isEmpty) return;
+    final pending = List<Uint8List>.of(_buffer);
+    scheduleMicrotask(() {
+      if (_output.isClosed) return;
+      for (final chunk in pending) {
+        _output.add(chunk);
+      }
+    });
   }
 
   @override
@@ -72,6 +101,7 @@ class _FileSourceNodeState extends State<FileSourceNode> {
     final XFile? picked = await openFile();
     if (picked == null) return; // user cancelled
 
+    widget.onFileName?.call(picked.name);
     setState(() {
       _selectedFile = picked;
       _bytesStreamed = 0;
@@ -80,11 +110,13 @@ class _FileSourceNodeState extends State<FileSourceNode> {
       _allDone = false;
       _errorMessage = null;
     });
+    _buffer.clear(); // dropping a prior file's bytes from the replay buffer
 
     try {
       _totalBytes = await picked.length();
       await for (final chunk in picked.openRead()) {
         if (!mounted) return;
+        _buffer.add(chunk); // retain for replay to late subscribers
         _output.add(chunk);
         setState(() => _bytesStreamed += chunk.length);
       }
