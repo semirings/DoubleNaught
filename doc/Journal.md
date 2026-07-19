@@ -540,3 +540,367 @@ response = generate(
 '''
 
 Does this match what you've been reading? And does MLX-LM handle steps 2-3 internally, or are you building those steps yourself?
+
+# After Ely.
+
+### URLNode
+
+_"We are adding a new node to DoubleNaught called URLNode. Before implementing, read the existing node implementations to understand DN's conventions for both the FastAPI backend and Flutter frontend._
+
+_URLNode is a source node — it has no upstream input. It stores a URL string plus metadata and outputs a D4M/AA payload for downstream nodes._
+
+_URLNode should have the following:_
+
+_Flutter frontend:_
+
+- _Three input fields: URL, author tag (dropdown: gilbert | chesterton | churchill), work title (free text)_
+- _A validate button that pings the FastAPI endpoint to confirm the URL is reachable_
+- _Follows existing DN node UI conventions_
+
+_FastAPI backend:_
+
+- _Endpoint to receive and validate the URL (HEAD request to confirm reachable)_
+- _Endpoint to output the D4M/AA payload_
+- _Follows existing DN FastAPI route and model conventions_
+
+_Output AA structure:_
+
+```
+Rows:    nodeID
+Columns: url | author | work_title | validated | timestamp
+Values:  corresponding strings
+```
+
+_The output AA flows to FetchNode downstream._
+
+_Follow all existing DN conventions for node registration, N&N graph wiring, and D4M/AA payload structure. If any conventions are ambiguous, read additional existing nodes before deciding."_
+
+### FetchNode
+
+_"We are adding a new node to DoubleNaught called FetchNode. Before implementing, read the existing node implementations and the newly implemented URLNode to understand DN's conventions for both the FastAPI backend and Flutter frontend._
+
+_FetchNode receives a D4M/AA payload from URLNode, fetches the text content from the URL, strips boilerplate, and streams clean raw text plus metadata to ChunkNode downstream._
+
+_FetchNode should have the following:_
+
+_Flutter frontend:_
+
+- _Displays the incoming URL and metadata from the upstream AA payload_
+- _A fetch button that triggers the backend fetch operation_
+- _Status indicator: idle | fetching | complete | error_
+- _Follows existing DN node UI conventions_
+
+_FastAPI backend:_
+
+- _Endpoint to receive the URLNode AA payload_
+- _Fetches text content from the URL using an async HTTP client_
+- _Strips Project Gutenberg boilerplate using the standard markers:_
+
+```
+*** START OF THE PROJECT GUTENBERG EBOOK [TITLE] ***
+*** END OF THE PROJECT GUTENBERG EBOOK [TITLE] ***
+```
+
+- _Everything outside these markers is discarded_
+- _Streams cleaned text to output_
+- _Follows existing DN FastAPI route and model conventions_
+
+_Output AA structure:_
+
+```
+Rows:    chunkID (sequential)
+Columns: raw_text | author | work_title | char_count | fetch_timestamp
+Values:  corresponding strings
+```
+
+_FetchNode is general purpose — it should work for any URL, not just Project Gutenberg. The boilerplate stripping should only trigger when Gutenberg markers are detected._
+
+_Follow all existing DN conventions for node registration, N&N graph wiring, and D4M/AA payload structure. If any conventions are ambiguous, read additional existing nodes before deciding."_
+### ChunkNode
+
+_"We are adding a new node to DoubleNaught called ChunkNode. Before implementing, read the existing node implementations, URLNode, and FetchNode to understand DN's conventions for both the FastAPI backend and Flutter frontend._
+
+_ChunkNode receives a D4M/AA payload from FetchNode containing raw cleaned text plus metadata, applies author-aware chunking, and outputs a D4M/AA payload of discrete passages for downstream processing._
+
+_ChunkNode should have the following:_
+
+_Flutter frontend:_
+
+- _Displays incoming author tag and work title from upstream AA payload_
+- _Shows chunk count and token statistics after processing_
+- _A chunk button that triggers the backend chunking operation_
+- _Status indicator: idle | chunking | complete | error_
+- _Follows existing DN node UI conventions_
+
+_FastAPI backend:_
+
+- _Endpoint to receive the FetchNode AA payload_
+- _Applies three author-aware chunking strategies selected by author tag:_
+
+```
+gilbert:
+  - Split on song/scene/exchange boundaries
+  - Markers: stage directions, song titles, speaker changes
+  - Preserve complete exchanges — never split mid-dialogue
+  - Token range: 50-300
+
+chesterton:
+  - Split on paragraph boundaries (blank lines)
+  - Merge short consecutive paragraphs until minimum token count reached
+  - Preserve complete sentences — never split mid-sentence
+  - Token range: 50-300
+
+churchill:
+  - Split on periodic sentence clusters
+  - Detect clause builds using punctuation patterns (semicolons, em-dashes building to full stop)
+  - Preserve complete periodic sentences — never split mid-build
+  - Token range: 50-300
+```
+
+- _Secondary constraint for all strategies: if a natural unit exceeds 300 tokens, split at the nearest sentence boundary below the maximum. If a natural unit is below 50 tokens, merge with the next unit._
+- _Discard any fragment below 50 tokens that cannot be merged_
+- _Token counting should use a consistent tokenizer aligned with Phi-4_
+- _Follows existing DN FastAPI route and model conventions_
+
+_Output AA structure:_
+
+```
+Rows:    chunkID (sequential, globally unique)
+Columns: text | author | work_title | position | token_count | chunk_strategy
+Values:  corresponding strings and integers
+```
+
+_chunk_strategy column records which strategy was applied (gilbert | chesterton | churchill) for downstream auditability._
+
+_ChunkNode is author-aware but should be architected so additional chunking strategies can be added in future without restructuring the node._
+
+_Follow all existing DN conventions for node registration, N&N graph wiring, and D4M/AA payload structure. If any conventions are ambiguous, read additional existing nodes before deciding."_
+### AA2JSONLNode
+
+_"We are adding a new node to DoubleNaught called AA2JSONLNode. Before implementing, read the existing node implementations, URLNode, FetchNode, and ChunkNode to understand DN's conventions for both the FastAPI backend and Flutter frontend._
+
+_AA2JSONLNode receives a D4M/AA payload from ChunkNode and writes it as a JSONL file formatted for Phi-4 fine-tuning._
+
+_AA2JSONLNode should have the following:_
+
+_Flutter frontend:_
+
+- _Displays incoming chunk count and author metadata from upstream AA payload_
+- _A file path input field for the output JSONL file destination_
+- _A format selector with two options:_
+
+```
+instruction-completion:
+  {"prompt": "Write in the GCC voice:", "completion": "<text>"}
+
+continuation:
+  {"text": "<text>"}
+```
+
+- _A write button that triggers the backend write operation_
+- _Status indicator: idle | writing | complete | error_
+- _Displays output file path and line count on completion_
+- _Follows existing DN node UI conventions_
+
+_FastAPI backend:_
+
+- _Endpoint to receive the ChunkNode AA payload_
+- _Iterates rows of the AA in position order_
+- _Formats each chunk according to selected format_
+- _Writes one JSON object per line to the output file_
+- _Validates each line is valid JSON before writing_
+- _Reports total lines written, any skipped chunks, and output file size_
+- _Follows existing DN FastAPI route and model conventions_
+
+_Output AA structure:_
+
+```
+Rows:    chunkID
+Columns: jsonl_line | format | output_file | write_timestamp | status
+Values:  corresponding strings
+```
+
+_The output AA preserves the full provenance chain — each row retains its chunkID from ChunkNode so the JSONL line can be traced back to its source passage._
+
+_AA2JSONLNode is general purpose — it should handle any well-formed D4M/AA payload with a text column, not just GCC corpus output. The Phi-4 formatting options should be selectable per run._
+
+_Follow all existing DN conventions for node registration, N&N graph wiring, and D4M/AA payload structure. If any conventions are ambiguous, read additional existing nodes before deciding."_
+### ReviewNode
+
+_"We are adding a new node to DoubleNaught called ReviewNode. Before implementing, read the existing node implementations, URLNode, FetchNode, ChunkNode, and AA2JSONLNode to understand DN's conventions for both the FastAPI backend and Flutter frontend._
+
+_ReviewNode sits between ChunkNode and AA2JSONLNode. It presents candidate passages to the user for human-in-the-loop curation. Approved passages flow downstream. Rejected passages are discarded. Flagged passages can be edited before approval._
+
+_ReviewNode should have the following:_
+
+_Flutter frontend:_
+
+- _Displays passages one at a time from the incoming AA payload_
+- _Each passage card shows:_
+
+```
+- text content
+- author
+- work title
+- position
+- token count
+- chunk strategy
+```
+
+- _Three action buttons per passage:_
+
+```
+Approve  — passes chunk downstream unchanged
+Edit     — opens inline text editor, saves edited version downstream
+Reject   — discards chunk, records rejection in output AA
+```
+
+- _Progress indicator: current chunk / total chunks_
+- _Session can be paused and resumed — ReviewNode persists state between sessions_
+- _Keyboard shortcuts for approve/reject for fast review_
+- _Follows existing DN node UI conventions_
+
+_FastAPI backend:_
+
+- _Endpoint to receive ChunkNode AA payload_
+- _Persists review state so sessions survive interruption_
+- _Tracks approved, edited, rejected counts_
+- _For edited passages, preserves both original and edited text in output AA_
+- _Endpoint to resume interrupted review session_
+- _Follows existing DN FastAPI route and model conventions_
+
+_Output AA structure:_
+
+```
+Rows:    chunkID
+Columns: text | original_text | author | work_title | position | 
+         token_count | review_status | edit_flag | review_timestamp
+Values:  corresponding strings
+```
+
+_review_status values: approved | edited | rejected_  
+_edit_flag: true if passage was modified during review, false otherwise_  
+_original_text preserves the pre-edit text when edit_flag is true_
+
+_Only approved and edited passages flow to AA2JSONLNode. Rejected passages are retained in the output AA with review_status: rejected for auditability but are not forwarded downstream._
+
+_ReviewNode is general purpose — it should handle any D4M/AA payload with a text column, not just GCC corpus chunks._
+
+_Follow all existing DN conventions for node registration, N&N graph wiring, and D4M/AA payload structure. If any conventions are ambiguous, read additional existing nodes before deciding."_
+
+
+_"Review the current URLNode implementation. We have discovered that the Gilbert and Sullivan source is a single large file containing multiple complete operas at this URL:_
+
+_[https://www.gutenberg.org/files/808/808-h/808-h.htm](https://www.gutenberg.org/files/808/808-h/808-h.htm)_
+
+_URLNode currently stores a URL plus author tag and work title. However it needs to support targeting a specific work within a multi-work file. ChunkNode will need the work title to locate and extract the correct play before chunking._
+
+_Check whether URLNode currently supports a work_selector field — a string that ChunkNode can use to locate the start of a specific work within a larger file._
+
+_If URLNode does not support this:_
+
+- _Add a work_selector field to the URLNode data model and Flutter UI_
+- _work_selector is optional — leave empty for single-work files_
+- _Update the output AA to include a work_selector column_
+- _Update FetchNode to pass work_selector through to ChunkNode unchanged_
+- _Update ChunkNode to use work_selector to locate and extract the target work before applying chunking strategy — text runs from the work_selector marker to the next matching title-level marker or end of file_
+
+_Verify the change is consistent with existing DN conventions and that the AA payload structure remains valid through the full pipeline:_
+
+```
+[URLNode] → [FetchNode] → [ChunkNode] → [ReviewNode] → [AA2JSONLNode]
+```
+
+_If URLNode already supports this, confirm and make no changes."_
+
+_"We are adding a new node to DoubleNaught called InventoryNode. Before implementing, read the existing node implementations to understand DN's conventions for both the FastAPI backend and Flutter frontend._
+
+### InventoryNode
+
+_InventoryNode is a source node — it has no upstream input. It maintains a persistent, editable list of URL entries and outputs a single selected entry as a D4M/AA payload to URLNode downstream. It replaces the manual re-entry problem in URLNode by providing a managed, reusable inventory of sources._
+
+_InventoryNode should have the following:_
+
+_Flutter frontend:_
+
+- _A scrollable list displaying all inventory entries with columns:_
+
+```
+description | author | work_title | work_selector | url
+```
+
+- _Toolbar actions:_
+
+```
+Add     — opens form to create new entry
+Edit    — opens form to edit selected entry  
+Delete  — removes selected entry with confirmation
+Select  — outputs selected entry as AA payload to downstream URLNode
+```
+
+- _Add/Edit form fields:_
+
+```
+URL            (required)
+Author         (dropdown: gilbert | chesterton | churchill)
+Work Title     (required)
+Work Selector  (optional — for multi-work files)
+Description    (free text — human readable label)
+```
+
+- _List is sortable by author and work title_
+- _Persists between sessions_
+- _Follows existing DN node UI conventions_
+
+_FastAPI backend:_
+
+- _Persistent storage of inventory as D4M/AA_
+- _CRUD endpoints: create, read, update, delete entries_
+- _Endpoint to output selected entry as AA payload_
+- _On first run, pre-populate inventory with the following four entries:_
+
+```
+Entry 1:
+  url:            https://www.gutenberg.org/files/808/808-h/808-h.htm
+  author:         gilbert
+  work_title:     HMS Pinafore
+  work_selector:  H.M.S. PINAFORE
+  description:    Gilbert & Sullivan — HMS Pinafore
+
+Entry 2:
+  url:            https://www.gutenberg.org/files/808/808-h/808-h.htm
+  author:         gilbert
+  work_title:     The Pirates of Penzance
+  work_selector:  THE PIRATES OF PENZANCE
+  description:    Gilbert & Sullivan — The Pirates of Penzance
+
+Entry 3:
+  url:            https://www.gutenberg.org/files/808/808-h/808-h.htm
+  author:         gilbert
+  work_title:     Iolanthe
+  work_selector:  IOLANTHE; OR, THE PEER AND THE PERI
+  description:    Gilbert & Sullivan — Iolanthe
+
+Entry 4:
+  url:            https://www.gutenberg.org/files/808/808-h/808-h.htm
+  author:         gilbert
+  work_title:     The Mikado
+  work_selector:  THE MIKADO; OR, THE TOWN OF TITIPU
+  description:    Gilbert & Sullivan — The Mikado
+```
+
+- _Follows existing DN FastAPI route and model conventions_
+
+_Output AA structure:_
+
+```
+Rows:    entryID
+Columns: url | author | work_title | work_selector | description | selected_timestamp
+Values:  corresponding strings
+```
+
+_InventoryNode is general purpose — it should handle any list of URL-based sources, not just GCC corpus entries. Future entries for Chesterton and Churchill will be added to the same inventory._
+
+_Also update URLNode to receive its input from InventoryNode's output AA rather than from manual field entry. URLNode should display the incoming entry for confirmation but no longer requires manual re-entry of fields._
+
+_Follow all existing DN conventions for node registration, N&N graph wiring, and D4M/AA payload structure. If any conventions are ambiguous, read additional existing nodes before deciding."_

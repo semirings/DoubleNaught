@@ -2,13 +2,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../config/node_registry.dart';
+import '../models/aa_payload.dart';
 import '../models/workflow.dart';
 import '../services/storage_service.dart';
 import '../widgets/base_node.dart' show kPortLaneTop, kPortSpacing;
 import '../widgets/connection_drag_scope.dart';
+import '../widgets/aa2jsonl_node.dart';
+import '../widgets/chunk_node.dart';
+import '../widgets/fetch_node.dart';
 import '../widgets/file_source_node.dart';
+import '../widgets/inventory_node.dart';
 import '../widgets/preview_node.dart';
+import '../widgets/review_node.dart';
 import '../widgets/sam3_node.dart';
+import '../widgets/url_source_node.dart';
 
 /// Fixed node width — used both for layout and to anchor edge endpoints.
 const double _kNodeWidth = 240;
@@ -35,6 +42,10 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   /// Output byte streams published by source nodes, keyed by node id.
   final Map<int, Stream<Uint8List>> _outputs = {};
+
+  /// D4M/AA payload streams published by AA-emitting source nodes (URLNode),
+  /// keyed by node id. Consumed by downstream AA-in nodes (FetchNode).
+  final Map<int, Stream<AaPayload>> _aaOutputs = {};
 
   /// Filenames published by source nodes (out-of-band metadata), keyed by id.
   final Map<int, String> _sourceNames = {};
@@ -94,6 +105,10 @@ class _WorkflowPageState extends State<WorkflowPage>
     switch (n.type) {
       case 'preview':
       case 'sam3':
+      case 'fetch':
+      case 'chunk':
+      case 'review':
+      case 'aa2jsonl':
         return const [0];
       default:
         return const [];
@@ -298,6 +313,14 @@ class _WorkflowPageState extends State<WorkflowPage>
     return null;
   }
 
+  /// Resolve the upstream D4M/AA stream wired into [nodeId]'s input, if any.
+  Stream<AaPayload>? _aaInputFor(int nodeId) {
+    for (final e in _edges) {
+      if (e.to.nodeId == nodeId) return _aaOutputs[e.from.nodeId];
+    }
+    return null;
+  }
+
   /// Resolve the filename of the source feeding [nodeId]'s input, if any.
   String? _fileNameFor(int nodeId) {
     for (final e in _edges) {
@@ -334,6 +357,7 @@ class _WorkflowPageState extends State<WorkflowPage>
       _nodes.clear();
       _edges.clear();
       _outputs.clear();
+      _aaOutputs.clear();
       _sourceNames.clear();
     });
   }
@@ -474,6 +498,54 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           onConnect: (stream) => _outputs[node.id] = stream,
           onFileName: (name) => setState(() => _sourceNames[node.id] = name),
+        );
+      case 'url_source':
+        return UrlSourceNode(
+          node: node,
+          // Publish the AA payload stream so downstream nodes can consume it,
+          // and light the output port once it has an outgoing edge.
+          onConnect: (stream) => _aaOutputs[node.id] = stream,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'fetch':
+        return FetchNode(
+          node: node,
+          // Consume the upstream URLNode AA and record the input edge.
+          aaInput: _aaInputFor(node.id),
+          onInputConnect: (source) => _connect(source, node.id),
+          // Publish the cleaned-text AA for a downstream ChunkNode.
+          onConnect: (stream) => _aaOutputs[node.id] = stream,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'chunk':
+        return ChunkNode(
+          node: node,
+          // Consume the upstream FetchNode AA and record the input edge.
+          aaInput: _aaInputFor(node.id),
+          onInputConnect: (source) => _connect(source, node.id),
+          // Publish the passage AA for downstream processing.
+          onConnect: (stream) => _aaOutputs[node.id] = stream,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'review':
+        return ReviewNode(
+          node: node,
+          // Consume the upstream ChunkNode AA and record the input edge.
+          aaInput: _aaInputFor(node.id),
+          onInputConnect: (source) => _connect(source, node.id),
+          // Publish the curated AA (approved + edited) for AA2JSONLNode.
+          onConnect: (stream) => _aaOutputs[node.id] = stream,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'aa2jsonl':
+        return Aa2JsonlNode(
+          node: node,
+          // Consume the upstream ChunkNode/ReviewNode AA and record the edge.
+          aaInput: _aaInputFor(node.id),
+          onInputConnect: (source) => _connect(source, node.id),
+          // Publish the provenance AA (write manifest) for downstream use.
+          onConnect: (stream) => _aaOutputs[node.id] = stream,
+          connectedOutputs: _connectedOutputs(node.id),
         );
       case 'preview':
         return PreviewNode(

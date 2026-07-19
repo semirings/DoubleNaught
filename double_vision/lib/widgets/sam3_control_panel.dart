@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../services/sam3_api.dart';
+import 'sam3_interaction_model.dart';
 
 /// The kind of prompt that produced a [Sam3Payload].
 enum Sam3PromptKind { text, box, point }
@@ -87,6 +88,9 @@ class Sam3ControlPanel extends StatefulWidget {
   /// Surfaces backend/transport errors to the host.
   final ValueChanged<String>? onError;
 
+  /// Shared interaction state mirrored to the image panel (mode + include).
+  final Sam3InteractionModel? interaction;
+
   const Sam3ControlPanel({
     super.key,
     required this.sessionId,
@@ -95,6 +99,7 @@ class Sam3ControlPanel extends StatefulWidget {
     this.onResult,
     this.onInteractionModeChanged,
     this.onError,
+    this.interaction,
   });
 
   @override
@@ -144,6 +149,11 @@ class Sam3ControlPanelState extends State<Sam3ControlPanel> {
   }
 
   void _setInteractionMode(Sam3InteractionMode mode) {
+    widget.interaction?.setMode(switch (mode) {
+      Sam3InteractionMode.text => Sam3Mode.text,
+      Sam3InteractionMode.box => Sam3Mode.box,
+      Sam3InteractionMode.point => Sam3Mode.point,
+    });
     if (activeSelectionMode == mode) return;
     setState(() => activeSelectionMode = mode);
     widget.onInteractionModeChanged?.call(mode);

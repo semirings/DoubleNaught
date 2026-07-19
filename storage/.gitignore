@@ -1,0 +1,5 @@
+# Runtime state written by DoubleNaught nodes; not source.
+# Backend ReviewNode persists one JSON per session here:
+reviews/
+# Backend InventoryNode persists the (seed-on-first-run) URL inventory here:
+inventory.json

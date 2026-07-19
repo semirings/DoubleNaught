@@ -18,6 +18,12 @@ class NodeType {
 /// `_WorkflowPageState._buildNode`) as the `double_*` service nodes land.
 const List<NodeType> nodeTypes = [
   NodeType(name: 'File Source', type: 'file_source'),
+  NodeType(name: 'Inventory', type: 'inventory'),
+  NodeType(name: 'URL Source', type: 'url_source'),
+  NodeType(name: 'Fetch', type: 'fetch'),
+  NodeType(name: 'Chunk', type: 'chunk'),
+  NodeType(name: 'Review', type: 'review'),
+  NodeType(name: 'AA → JSONL', type: 'aa2jsonl'),
   NodeType(name: 'Preview', type: 'preview'),
   NodeType(name: 'SAM3 Control', type: 'sam3'),
 ];
