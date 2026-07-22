@@ -1,4 +1,4 @@
-## You said: Can you help me understand some of the advanced concepts from Chapter i0?
+## You said: Can you help me understand some of the advanced concepts from Chapter 10?
 
 Can you help me understand some of the advanced concepts from Chapter i0? Does the D4M library support these?
 

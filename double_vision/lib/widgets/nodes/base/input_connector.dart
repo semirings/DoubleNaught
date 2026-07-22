@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../models/workflow.dart';
+import '../../../models/workflow.dart';
 
 /// A node's input port: a labelled connector dot on the left edge of a node.
 /// Acts as a drop target for an [OutputConnector] drag — when an output

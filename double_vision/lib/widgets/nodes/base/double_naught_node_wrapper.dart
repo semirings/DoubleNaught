@@ -8,7 +8,8 @@ import 'base_node.dart'
         kNodeMaxTextScale,
         kPortLaneTop,
         kPortSpacing,
-        kPortDotRadius;
+        kPortDotRadius,
+        kTitleBarHeight;
 
 /// The universal node shell — the compositional successor to the (now
 /// deprecated) `BaseNode` inheritance model. See the "Architecture Rules"
@@ -78,21 +79,32 @@ class DoubleNaughtNodeWrapper extends StatelessWidget {
               // Zero margin so the card edge == SizedBox edge == port anchor.
               margin: EdgeInsets.zero,
               color: scheme.surfaceContainer,
+              clipBehavior: Clip.antiAlias,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(kNodeRadius),
                 side: BorderSide(color: scheme.primary, width: 1),
               ),
-              child: Padding(
-                padding: kNodePadding,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _Header(title: title, icon: icon),
-                    const Divider(height: 16),
-                    child,
-                  ],
-                ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Title bar — visually distinct (lighter surface, own border)
+                  // from the body. Doubles as the drag handle; the canvas lays
+                  // a matching drag/select target over it.
+                  Container(
+                    height: kTitleBarHeight,
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    decoration: BoxDecoration(
+                      color: scheme.surfaceContainerHigh,
+                      border: Border(
+                        bottom: BorderSide(color: scheme.outlineVariant),
+                      ),
+                    ),
+                    child: _Header(title: title, icon: icon),
+                  ),
+                  Padding(padding: kNodePadding, child: child),
+                ],
               ),
             ),
 
@@ -132,6 +144,11 @@ class _Header extends StatelessWidget {
     final theme = Theme.of(context);
     return Row(
       children: [
+        // Subtle drag affordance — the title bar is the handle (the old six-dot
+        // grip cluster is gone).
+        Icon(Icons.drag_indicator,
+            size: 14, color: theme.colorScheme.outlineVariant),
+        const SizedBox(width: 4),
         Icon(icon, size: 18, color: theme.colorScheme.primary),
         const SizedBox(width: 6),
         Expanded(

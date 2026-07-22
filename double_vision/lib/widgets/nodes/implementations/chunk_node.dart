@@ -2,29 +2,26 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../models/aa_payload.dart';
-import '../models/workflow.dart';
-import '../services/fetch_api.dart';
-import 'double_naught_node_wrapper.dart';
-import 'input_connector.dart';
-import 'output_connector.dart';
+import '../../../models/aa_payload.dart';
+import '../../../models/workflow.dart';
+import '../../../services/chunk_api.dart';
+import '../base/double_naught_node_wrapper.dart';
+import '../base/input_connector.dart';
+import '../base/output_connector.dart';
 
-/// Lifecycle of a fetch operation, surfaced by the status indicator.
-enum FetchStatus { idle, fetching, complete, error }
+/// Lifecycle of a chunking operation, surfaced by the status indicator.
+enum ChunkStatus { idle, chunking, complete, error }
 
 /// A workflow **processing node** (AA-in → AA-out, per `DESIGN.md`): it consumes
-/// the D4M/AA payload emitted by an upstream [UrlSourceNode], fetches the text
-/// content at that URL via the backend, strips Project Gutenberg boilerplate
-/// when present, and emits a cleaned-text AA out of its `rawText` output for a
-/// downstream ChunkNode.
+/// the cleaned-text D4M/AA payload emitted by an upstream [FetchNode], applies
+/// author-aware chunking on the backend, and emits an AA of discrete passages
+/// out of its `chunks` output for downstream processing.
 ///
-/// Input handling follows the input-node convention (see `preview_node.dart` /
-/// `sam3_node.dart`): subscribe to [aaInput] in [initState], re-subscribe in
-/// [didUpdateWidget] when the wired stream changes, cancel in [dispose]. Output
-/// handling follows the source-node convention (see `url_source_node.dart`): a
-/// broadcast port published to [onConnect] in [initState], replaying the last
-/// payload to late subscribers.
-class FetchNode extends StatefulWidget {
+/// Structure mirrors [FetchNode]: the input-subscription convention (subscribe
+/// in [initState], re-subscribe in [didUpdateWidget], cancel in [dispose]) plus
+/// the source-node output convention (a broadcast port published to [onConnect],
+/// replaying the last payload to late subscribers).
+class ChunkNode extends StatefulWidget {
   /// Graph metadata for this node (id/type/position).
   final WorkflowNode node;
 
@@ -34,48 +31,51 @@ class FetchNode extends StatefulWidget {
   /// Called with the source endpoint when an edge is dropped on the input port.
   final void Function(PortRef source)? onInputConnect;
 
-  /// Called once with the node's output stream — the `rawText` connector.
-  final void Function(Stream<AaPayload> rawText)? onConnect;
+  /// Called once with the node's output stream — the `chunks` connector.
+  final void Function(Stream<AaPayload> chunks)? onConnect;
 
   /// Output port indices with an outgoing edge — drives the connected-port
   /// highlight, matching every other node.
   final Set<int> connectedOutputs;
 
   /// Backend client. Injectable for tests; defaults to the shared instance.
-  final FetchApi api;
+  final ChunkApi api;
 
-  const FetchNode({
+  const ChunkNode({
     super.key,
     required this.node,
     this.aaInput,
     this.onInputConnect,
     this.onConnect,
     this.connectedOutputs = const {},
-    this.api = const FetchApi(),
+    this.api = const ChunkApi(),
   });
 
   @override
-  State<FetchNode> createState() => _FetchNodeState();
+  State<ChunkNode> createState() => _ChunkNodeState();
 }
 
-class _FetchNodeState extends State<FetchNode> {
+class _ChunkNodeState extends State<ChunkNode> {
   StreamSubscription<AaPayload>? _inputSub;
 
   /// The most recent AA payload received from upstream, or null.
   AaPayload? _incoming;
 
   /// Broadcast output port. Created in [initState] so [onConnect] can hand it to
-  /// downstream nodes before any fetch runs; its onListen replays the last
+  /// downstream nodes before any chunking runs; its onListen replays the last
   /// emitted payload to late subscribers.
   late final StreamController<AaPayload> _output;
 
-  /// The most recent payload emitted, retained for replay + the char count.
+  /// The most recent passage AA emitted, retained for replay.
   AaPayload? _lastOutput;
 
-  FetchStatus _status = FetchStatus.idle;
+  /// Statistics from the last successful chunking run.
+  ChunkStats? _stats;
+
+  ChunkStatus _status = ChunkStatus.idle;
   String? _error;
 
-  bool get _canFetch => _incoming != null && _status != FetchStatus.fetching;
+  bool get _canChunk => _incoming != null && _status != ChunkStatus.chunking;
 
   @override
   void initState() {
@@ -86,7 +86,7 @@ class _FetchNodeState extends State<FetchNode> {
   }
 
   @override
-  void didUpdateWidget(FetchNode oldWidget) {
+  void didUpdateWidget(ChunkNode oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.aaInput != widget.aaInput) _subscribeInput();
   }
@@ -106,37 +106,41 @@ class _FetchNodeState extends State<FetchNode> {
     });
   }
 
-  /// (Re)subscribe to the upstream AA stream. A fresh upstream payload resets
-  /// the node to idle so the user can re-fetch for the new URL.
+  /// (Re)subscribe to the upstream AA stream. A fresh upstream payload resets the
+  /// node to idle so the user can re-chunk the new document.
   void _subscribeInput() {
     _inputSub?.cancel();
     _inputSub = widget.aaInput?.listen((payload) {
       if (!mounted) return;
       setState(() {
         _incoming = payload;
-        _status = FetchStatus.idle;
+        _status = ChunkStatus.idle;
+        _stats = null;
         _error = null;
       });
     });
   }
 
-  Future<void> _fetch() async {
+  Future<void> _chunk() async {
     final incoming = _incoming;
-    if (incoming == null || _status == FetchStatus.fetching) return;
+    if (incoming == null || _status == ChunkStatus.chunking) return;
     setState(() {
-      _status = FetchStatus.fetching;
+      _status = ChunkStatus.chunking;
       _error = null;
     });
     try {
-      final result = await widget.api.fetch(incoming);
+      final result = await widget.api.chunk(incoming);
       if (!mounted) return;
-      _lastOutput = result;
-      _output.add(result);
-      setState(() => _status = FetchStatus.complete);
+      _lastOutput = result.aa;
+      _output.add(result.aa);
+      setState(() {
+        _stats = result.stats;
+        _status = ChunkStatus.complete;
+      });
     } catch (e) {
       if (mounted) {
         setState(() {
-          _status = FetchStatus.error;
+          _status = ChunkStatus.error;
           _error = '$e';
         });
       }
@@ -150,11 +154,11 @@ class _FetchNodeState extends State<FetchNode> {
     final hasOutput = _lastOutput != null;
 
     return DoubleNaughtNodeWrapper(
-      title: 'Fetch',
-      icon: Icons.cloud_download_outlined,
+      title: 'Chunk',
+      icon: Icons.segment,
       inputPorts: [
         InputConnector(
-          label: 'assocArray',
+          label: 'rawText',
           idx: 0,
           active: wired,
           onConnect: widget.onInputConnect,
@@ -162,7 +166,7 @@ class _FetchNodeState extends State<FetchNode> {
       ],
       outputPorts: [
         OutputConnector(
-          label: 'rawText',
+          label: 'chunks',
           idx: 0,
           active: hasOutput || widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),
@@ -177,17 +181,21 @@ class _FetchNodeState extends State<FetchNode> {
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: _canFetch ? _fetch : null,
-              icon: _status == FetchStatus.fetching
+              onPressed: _canChunk ? _chunk : null,
+              icon: _status == ChunkStatus.chunking
                   ? const SizedBox(
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.download, size: 18),
-              label: const Text('Fetch'),
+                  : const Icon(Icons.segment, size: 18),
+              label: const Text('Chunk'),
             ),
           ),
+          if (_stats != null) ...[
+            const SizedBox(height: 10),
+            _statsPanel(theme, _stats!),
+          ],
           const SizedBox(height: 8),
           _statusIndicator(theme),
         ],
@@ -195,35 +203,30 @@ class _FetchNodeState extends State<FetchNode> {
     );
   }
 
-  /// The incoming URL + metadata pulled from the upstream AA payload.
+  /// The incoming author tag + work title pulled from the upstream AA payload.
   Widget _upstreamInfo(ThemeData theme) {
     final incoming = _incoming;
     if (incoming == null) {
       return Text(
-        'Connect a URL Source',
+        'Connect a Fetch node',
         style: theme.textTheme.bodySmall
             ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
       );
     }
-    final url = incoming.value('url') ?? '(no url)';
     final author = incoming.value('author');
     final workTitle = incoming.value('work_title');
-    final facts = <String>[
-      if (workTitle != null && workTitle.isNotEmpty) workTitle,
-      if (author != null && author.isNotEmpty) author,
-    ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          url,
-          maxLines: 2,
+          (workTitle != null && workTitle.isNotEmpty) ? workTitle : '(untitled)',
+          maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
         ),
-        if (facts.isNotEmpty)
+        if (author != null && author.isNotEmpty)
           Text(
-            facts.join('  •  '),
+            author,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: theme.textTheme.labelSmall
@@ -233,23 +236,46 @@ class _FetchNodeState extends State<FetchNode> {
     );
   }
 
-  /// Status dot + label: idle | fetching | complete | error. On completion,
-  /// appends the cleaned-text character count from the emitted AA.
+  /// Post-processing stats: chunk count and token statistics.
+  Widget _statsPanel(ThemeData theme, ChunkStats stats) {
+    final scheme = theme.colorScheme;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${stats.chunkCount} chunks',
+            style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'tokens: ${stats.totalTokens} total · '
+            '${stats.meanTokens.toStringAsFixed(0)} avg · '
+            '${stats.minTokens}–${stats.maxTokens} range',
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Status dot + label: idle | chunking | complete | error.
   Widget _statusIndicator(ThemeData theme) {
     final scheme = theme.colorScheme;
     final (color, label) = switch (_status) {
-      FetchStatus.idle => (scheme.outline, 'idle'),
-      FetchStatus.fetching => (scheme.primary, 'fetching'),
-      FetchStatus.complete => (Colors.green, 'complete'),
-      FetchStatus.error => (scheme.error, 'error'),
+      ChunkStatus.idle => (scheme.outline, 'idle'),
+      ChunkStatus.chunking => (scheme.primary, 'chunking'),
+      ChunkStatus.complete => (Colors.green, 'complete'),
+      ChunkStatus.error => (scheme.error, 'error'),
     };
-
-    final charCount = _lastOutput?.value('char_count');
-    final detail = switch (_status) {
-      FetchStatus.complete when charCount != null => ' · $charCount chars',
-      FetchStatus.error when _error != null => ' · $_error',
-      _ => '',
-    };
+    final detail = (_status == ChunkStatus.error && _error != null) ? ' · $_error' : '';
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,

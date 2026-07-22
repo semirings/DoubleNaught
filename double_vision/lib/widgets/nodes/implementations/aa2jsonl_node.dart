@@ -2,26 +2,30 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../models/aa_payload.dart';
-import '../models/workflow.dart';
-import '../services/chunk_api.dart';
-import 'double_naught_node_wrapper.dart';
-import 'input_connector.dart';
-import 'output_connector.dart';
+import '../../../models/aa_payload.dart';
+import '../../../models/workflow.dart';
+import '../../../services/aa2jsonl_api.dart';
+import '../base/double_naught_node_wrapper.dart';
+import '../base/input_connector.dart';
+import '../base/output_connector.dart';
 
-/// Lifecycle of a chunking operation, surfaced by the status indicator.
-enum ChunkStatus { idle, chunking, complete, error }
+/// Lifecycle of a write operation, surfaced by the status indicator.
+enum Aa2JsonlStatus { idle, writing, complete, error }
 
-/// A workflow **processing node** (AA-in → AA-out, per `DESIGN.md`): it consumes
-/// the cleaned-text D4M/AA payload emitted by an upstream [FetchNode], applies
-/// author-aware chunking on the backend, and emits an AA of discrete passages
-/// out of its `chunks` output for downstream processing.
+/// A workflow **terminal processing node** (AA-in → AA-out, per `DESIGN.md`): it
+/// consumes the passage D4M/AA payload emitted by an upstream [ChunkNode] and
+/// writes it as a JSONL file formatted for Phi-4 fine-tuning. It emits a
+/// provenance AA out of its `manifest` output — one row per source chunk,
+/// recording the line written and its status — so the run can be audited or
+/// chained further.
 ///
-/// Structure mirrors [FetchNode]: the input-subscription convention (subscribe
-/// in [initState], re-subscribe in [didUpdateWidget], cancel in [dispose]) plus
-/// the source-node output convention (a broadcast port published to [onConnect],
-/// replaying the last payload to late subscribers).
-class ChunkNode extends StatefulWidget {
+/// Structure mirrors the other processing nodes ([FetchNode] / [ChunkNode]): the
+/// input-subscription convention plus the source-node broadcast-output
+/// convention.
+class Aa2JsonlNode extends StatefulWidget {
+  /// The two Phi-4 fine-tuning line formats, selectable per run.
+  static const List<String> formats = ['instruction-completion', 'continuation'];
+
   /// Graph metadata for this node (id/type/position).
   final WorkflowNode node;
 
@@ -31,51 +35,57 @@ class ChunkNode extends StatefulWidget {
   /// Called with the source endpoint when an edge is dropped on the input port.
   final void Function(PortRef source)? onInputConnect;
 
-  /// Called once with the node's output stream — the `chunks` connector.
-  final void Function(Stream<AaPayload> chunks)? onConnect;
+  /// Called once with the node's output stream — the `manifest` connector.
+  final void Function(Stream<AaPayload> manifest)? onConnect;
 
   /// Output port indices with an outgoing edge — drives the connected-port
   /// highlight, matching every other node.
   final Set<int> connectedOutputs;
 
   /// Backend client. Injectable for tests; defaults to the shared instance.
-  final ChunkApi api;
+  final Aa2JsonlApi api;
 
-  const ChunkNode({
+  const Aa2JsonlNode({
     super.key,
     required this.node,
     this.aaInput,
     this.onInputConnect,
     this.onConnect,
     this.connectedOutputs = const {},
-    this.api = const ChunkApi(),
+    this.api = const Aa2JsonlApi(),
   });
 
   @override
-  State<ChunkNode> createState() => _ChunkNodeState();
+  State<Aa2JsonlNode> createState() => _Aa2JsonlNodeState();
 }
 
-class _ChunkNodeState extends State<ChunkNode> {
+class _Aa2JsonlNodeState extends State<Aa2JsonlNode> {
   StreamSubscription<AaPayload>? _inputSub;
 
   /// The most recent AA payload received from upstream, or null.
   AaPayload? _incoming;
 
+  final TextEditingController _pathController = TextEditingController();
+  String _format = Aa2JsonlNode.formats.first;
+
   /// Broadcast output port. Created in [initState] so [onConnect] can hand it to
-  /// downstream nodes before any chunking runs; its onListen replays the last
+  /// downstream nodes before any write runs; its onListen replays the last
   /// emitted payload to late subscribers.
   late final StreamController<AaPayload> _output;
 
-  /// The most recent passage AA emitted, retained for replay.
+  /// The most recent provenance AA emitted, retained for replay.
   AaPayload? _lastOutput;
 
-  /// Statistics from the last successful chunking run.
-  ChunkStats? _stats;
+  /// Statistics from the last successful write run.
+  Aa2JsonlStats? _stats;
 
-  ChunkStatus _status = ChunkStatus.idle;
+  Aa2JsonlStatus _status = Aa2JsonlStatus.idle;
   String? _error;
 
-  bool get _canChunk => _incoming != null && _status != ChunkStatus.chunking;
+  bool get _canWrite =>
+      _incoming != null &&
+      _pathController.text.trim().isNotEmpty &&
+      _status != Aa2JsonlStatus.writing;
 
   @override
   void initState() {
@@ -86,7 +96,7 @@ class _ChunkNodeState extends State<ChunkNode> {
   }
 
   @override
-  void didUpdateWidget(ChunkNode oldWidget) {
+  void didUpdateWidget(Aa2JsonlNode oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.aaInput != widget.aaInput) _subscribeInput();
   }
@@ -94,6 +104,7 @@ class _ChunkNodeState extends State<ChunkNode> {
   @override
   void dispose() {
     _inputSub?.cancel();
+    _pathController.dispose();
     _output.close();
     super.dispose();
   }
@@ -107,40 +118,44 @@ class _ChunkNodeState extends State<ChunkNode> {
   }
 
   /// (Re)subscribe to the upstream AA stream. A fresh upstream payload resets the
-  /// node to idle so the user can re-chunk the new document.
+  /// node to idle so the user can re-write the new passages.
   void _subscribeInput() {
     _inputSub?.cancel();
     _inputSub = widget.aaInput?.listen((payload) {
       if (!mounted) return;
       setState(() {
         _incoming = payload;
-        _status = ChunkStatus.idle;
+        _status = Aa2JsonlStatus.idle;
         _stats = null;
         _error = null;
       });
     });
   }
 
-  Future<void> _chunk() async {
+  Future<void> _write() async {
     final incoming = _incoming;
-    if (incoming == null || _status == ChunkStatus.chunking) return;
+    if (incoming == null || _status == Aa2JsonlStatus.writing) return;
     setState(() {
-      _status = ChunkStatus.chunking;
+      _status = Aa2JsonlStatus.writing;
       _error = null;
     });
     try {
-      final result = await widget.api.chunk(incoming);
+      final result = await widget.api.write(
+        incoming,
+        outputFile: _pathController.text.trim(),
+        format: _format,
+      );
       if (!mounted) return;
       _lastOutput = result.aa;
       _output.add(result.aa);
       setState(() {
         _stats = result.stats;
-        _status = ChunkStatus.complete;
+        _status = Aa2JsonlStatus.complete;
       });
     } catch (e) {
       if (mounted) {
         setState(() {
-          _status = ChunkStatus.error;
+          _status = Aa2JsonlStatus.error;
           _error = '$e';
         });
       }
@@ -154,11 +169,11 @@ class _ChunkNodeState extends State<ChunkNode> {
     final hasOutput = _lastOutput != null;
 
     return DoubleNaughtNodeWrapper(
-      title: 'Chunk',
-      icon: Icons.segment,
+      title: 'AA → JSONL',
+      icon: Icons.data_object,
       inputPorts: [
         InputConnector(
-          label: 'rawText',
+          label: 'chunks',
           idx: 0,
           active: wired,
           onConnect: widget.onInputConnect,
@@ -166,7 +181,7 @@ class _ChunkNodeState extends State<ChunkNode> {
       ],
       outputPorts: [
         OutputConnector(
-          label: 'chunks',
+          label: 'manifest',
           idx: 0,
           active: hasOutput || widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),
@@ -178,23 +193,60 @@ class _ChunkNodeState extends State<ChunkNode> {
         children: [
           _upstreamInfo(theme),
           const SizedBox(height: 12),
+
+          // Output file destination.
+          TextField(
+            controller: _pathController,
+            enabled: _status != Aa2JsonlStatus.writing,
+            onChanged: (_) => setState(() {}), // refresh _canWrite
+            decoration: const InputDecoration(
+              labelText: 'outputFile',
+              hintText: '/path/to/train.jsonl',
+              isDense: true,
+              border: OutlineInputBorder(),
+              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Format selector.
+          DropdownButtonFormField<String>(
+            initialValue: _format,
+            isDense: true,
+            decoration: const InputDecoration(
+              labelText: 'format',
+              isDense: true,
+              border: OutlineInputBorder(),
+              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            ),
+            items: [
+              for (final f in Aa2JsonlNode.formats)
+                DropdownMenuItem(value: f, child: Text(f)),
+            ],
+            onChanged: _status == Aa2JsonlStatus.writing
+                ? null
+                : (value) => setState(() => _format = value ?? _format),
+          ),
+          const SizedBox(height: 12),
+
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
-              onPressed: _canChunk ? _chunk : null,
-              icon: _status == ChunkStatus.chunking
+              onPressed: _canWrite ? _write : null,
+              icon: _status == Aa2JsonlStatus.writing
                   ? const SizedBox(
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : const Icon(Icons.segment, size: 18),
-              label: const Text('Chunk'),
+                  : const Icon(Icons.save_alt, size: 18),
+              label: const Text('Write'),
             ),
           ),
+
           if (_stats != null) ...[
             const SizedBox(height: 10),
-            _statsPanel(theme, _stats!),
+            _resultPanel(theme, _stats!),
           ],
           const SizedBox(height: 8),
           _statusIndicator(theme),
@@ -203,25 +255,23 @@ class _ChunkNodeState extends State<ChunkNode> {
     );
   }
 
-  /// The incoming author tag + work title pulled from the upstream AA payload.
+  /// Incoming chunk count + author metadata from the upstream AA payload.
   Widget _upstreamInfo(ThemeData theme) {
     final incoming = _incoming;
     if (incoming == null) {
       return Text(
-        'Connect a Fetch node',
+        'Connect a Chunk node',
         style: theme.textTheme.bodySmall
             ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
       );
     }
+    final count = incoming.distinctRows().length;
     final author = incoming.value('author');
-    final workTitle = incoming.value('work_title');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          (workTitle != null && workTitle.isNotEmpty) ? workTitle : '(untitled)',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
+          '$count chunk${count == 1 ? '' : 's'} incoming',
           style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
         ),
         if (author != null && author.isNotEmpty)
@@ -236,8 +286,8 @@ class _ChunkNodeState extends State<ChunkNode> {
     );
   }
 
-  /// Post-processing stats: chunk count and token statistics.
-  Widget _statsPanel(ThemeData theme, ChunkStats stats) {
+  /// Post-write result: output file path + line count (and skips / size).
+  Widget _resultPanel(ThemeData theme, Aa2JsonlStats stats) {
     final scheme = theme.colorScheme;
     return Container(
       width: double.infinity,
@@ -250,14 +300,21 @@ class _ChunkNodeState extends State<ChunkNode> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${stats.chunkCount} chunks',
+            '${stats.linesWritten} line${stats.linesWritten == 1 ? '' : 's'} written'
+            '${stats.skipped > 0 ? ' · ${stats.skipped} skipped' : ''}',
             style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 2),
           Text(
-            'tokens: ${stats.totalTokens} total · '
-            '${stats.meanTokens.toStringAsFixed(0)} avg · '
-            '${stats.minTokens}–${stats.maxTokens} range',
+            stats.outputFile,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '${stats.fileSizeBytes} bytes',
             style: theme.textTheme.labelSmall
                 ?.copyWith(color: scheme.onSurfaceVariant),
           ),
@@ -266,16 +323,17 @@ class _ChunkNodeState extends State<ChunkNode> {
     );
   }
 
-  /// Status dot + label: idle | chunking | complete | error.
+  /// Status dot + label: idle | writing | complete | error.
   Widget _statusIndicator(ThemeData theme) {
     final scheme = theme.colorScheme;
     final (color, label) = switch (_status) {
-      ChunkStatus.idle => (scheme.outline, 'idle'),
-      ChunkStatus.chunking => (scheme.primary, 'chunking'),
-      ChunkStatus.complete => (Colors.green, 'complete'),
-      ChunkStatus.error => (scheme.error, 'error'),
+      Aa2JsonlStatus.idle => (scheme.outline, 'idle'),
+      Aa2JsonlStatus.writing => (scheme.primary, 'writing'),
+      Aa2JsonlStatus.complete => (Colors.green, 'complete'),
+      Aa2JsonlStatus.error => (scheme.error, 'error'),
     };
-    final detail = (_status == ChunkStatus.error && _error != null) ? ' · $_error' : '';
+    final detail =
+        (_status == Aa2JsonlStatus.error && _error != null) ? ' · $_error' : '';
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,

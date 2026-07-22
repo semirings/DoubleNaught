@@ -1,6 +1,6 @@
 import 'package:flutter/widgets.dart';
 
-import '../models/workflow.dart';
+import '../../../models/workflow.dart';
 
 /// Lets an [OutputConnector] report an in-progress connection drag up to the
 /// canvas (so it can paint a live preview curve) without threading callbacks

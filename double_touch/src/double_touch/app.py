@@ -220,23 +220,43 @@ async def segment_with_box(request: BoxPromptRequest) -> SegmentResponse:
 # --- Inventory node (InventoryNode) -----------------------------------------
 
 
+def _derive_work_title(url: str) -> str:
+    """Best-effort title from a location: its final path segment, else its host.
+
+    A bare URL captured from a URL Source node carries no curated title, so one
+    is derived rather than rejecting the entry.
+    """
+    cleaned = url.strip().rstrip("/")
+    if not cleaned:
+        return "Untitled"
+    tail = cleaned.rsplit("/", 1)[-1]
+    tail = tail.split("?", 1)[0].split("#", 1)[0]
+    stem = tail.rsplit(".", 1)[0] if "." in tail else tail
+    return stem or "Untitled"
+
+
 def _validate_inventory_fields(request: InventoryEntryRequest) -> None:
-    if request.author not in URL_AUTHORS:
+    """A location is the only hard requirement.
+
+    `author` stays constrained to URL_AUTHORS *when supplied*, preserving the
+    curated-corpus contract, but may be empty for an uncurated capture.
+    `work_title` is derived when omitted.
+    """
+    if not request.url.strip():
+        raise HTTPException(status_code=422, detail="url must not be empty")
+    if request.author and request.author not in URL_AUTHORS:
         raise HTTPException(
             status_code=422,
             detail=f"author must be one of {URL_AUTHORS}, got {request.author!r}",
         )
-    if not request.url.strip():
-        raise HTTPException(status_code=422, detail="url must not be empty")
-    if not request.work_title.strip():
-        raise HTTPException(status_code=422, detail="workTitle must not be empty")
 
 
 def _entry_fields(request: InventoryEntryRequest) -> dict:
+    title = request.work_title.strip() or _derive_work_title(request.url)
     return {
         "url": request.url.strip(),
         "author": request.author,
-        "work_title": request.work_title.strip(),
+        "work_title": title,
         "work_selector": request.work_selector,
         "description": request.description,
     }

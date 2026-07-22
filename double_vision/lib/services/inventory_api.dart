@@ -117,10 +117,12 @@ class InventoryFields {
   final String workSelector;
   final String description;
 
+  /// Only [url] is required. A bare location captured from a URL Source node
+  /// has no curated author, and the backend derives [workTitle] when omitted.
   const InventoryFields({
     required this.url,
-    required this.author,
-    required this.workTitle,
+    this.author = '',
+    this.workTitle = '',
     this.workSelector = '',
     this.description = '',
   });

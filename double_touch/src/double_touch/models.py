@@ -159,9 +159,11 @@ class UrlPayloadResponse(CamelModel):
 
 class InventoryEntryRequest(CamelModel):
     url: str
-    # One of URL_AUTHORS.
-    author: str
-    work_title: str
+    # One of URL_AUTHORS when curated; empty means unassigned, which is what a
+    # bare location captured from a URL Source node has.
+    author: str = ""
+    # Derived from the URL's final path segment when omitted.
+    work_title: str = ""
     # Optional marker for locating a work within a multi-work file.
     work_selector: str = ""
     # Human-readable label.

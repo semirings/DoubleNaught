@@ -5,9 +5,9 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
-import '../models/workflow.dart';
-import 'double_naught_node_wrapper.dart';
-import 'input_connector.dart';
+import '../../../models/workflow.dart';
+import '../base/double_naught_node_wrapper.dart';
+import '../base/input_connector.dart';
 
 /// Detected kind of the incoming bytes.
 enum _Media { png, jpeg, gif, webp, other }

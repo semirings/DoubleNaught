@@ -1,0 +1,352 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+import '../../../models/aa_payload.dart';
+import '../../../models/workflow.dart';
+import '../base/double_naught_node_wrapper.dart';
+import '../../focus_panel.dart' show resolveImageProvider;
+import '../base/input_connector.dart';
+import '../base/output_connector.dart';
+
+/// The emit sinks for an [ImageDisplayNode]'s three interactive outputs, handed
+/// to the host so the Focus Panel can route overlay interactions (a typed
+/// prompt, a dragged box, a clicked point) back out of the node that owns the
+/// image.
+class ImageDisplayOutputs {
+  final void Function(String prompt) emitPrompt;
+
+  /// Normalized `[left, top, right, bottom]`, 0..1.
+  final void Function(List<double> boxLtrb) emitBox;
+
+  /// Normalized `[x, y]`, 0..1.
+  final void Function(List<double> pointXy) emitPoint;
+
+  const ImageDisplayOutputs({
+    required this.emitPrompt,
+    required this.emitBox,
+    required this.emitPoint,
+  });
+}
+
+/// The image processing and display hub.
+///
+/// It owns no location string of its own — the source location arrives on its
+/// single `urlInput` port from an upstream URL Source node, which handles
+/// filesystem/network URI generation. This node resolves that location, loads
+/// the asset into memory, and routes interactive selections downstream.
+///
+/// The node stays a compact routing box: the image never renders here. Once the
+/// asset is fully loaded, a small indicator appears in the node's lower-right
+/// corner; clicking it slides open the right-side Focus Panel for the rich
+/// display and future SAM3 overlays.
+///
+///  * Input:  `urlInput`
+///  * Outputs: `promptOutput`, `boxSelectOutput`, `pointClickOutput`
+class ImageDisplayNode extends StatefulWidget {
+  /// Graph metadata for this node (id/type/position).
+  final WorkflowNode node;
+
+  /// Upstream payload carrying the source location, or null when unconnected.
+  final Stream<AaPayload>? aaInput;
+
+  /// Called with the source endpoint when an edge is dropped on `urlInput`.
+  final void Function(PortRef source)? onInputConnect;
+
+  /// Opens the Focus Panel for this node instance with the loaded location.
+  final void Function(int nodeId, String targetUrl)? onViewImageAssets;
+
+  /// Publishes the `promptOutput` stream to the canvas.
+  final void Function(Stream<String> promptOutput)? onPromptConnect;
+
+  /// Publishes the `boxSelectOutput` stream to the canvas.
+  final void Function(Stream<List<double>> boxSelectOutput)? onBoxSelectConnect;
+
+  /// Publishes the `pointClickOutput` stream to the canvas.
+  final void Function(Stream<List<double>> pointClickOutput)?
+      onPointClickConnect;
+
+  /// Hands this node's emit sinks to the host, keyed by node id.
+  final void Function(int nodeId, ImageDisplayOutputs outputs)? onOutputsReady;
+
+  /// Output port indices with an outgoing edge — drives the connected-port
+  /// highlight, matching every other node.
+  final Set<int> connectedOutputs;
+
+  const ImageDisplayNode({
+    super.key,
+    required this.node,
+    this.aaInput,
+    this.onInputConnect,
+    this.onViewImageAssets,
+    this.onPromptConnect,
+    this.onBoxSelectConnect,
+    this.onPointClickConnect,
+    this.onOutputsReady,
+    this.connectedOutputs = const {},
+  });
+
+  @override
+  State<ImageDisplayNode> createState() => _ImageDisplayNodeState();
+}
+
+class _ImageDisplayNodeState extends State<ImageDisplayNode> {
+  StreamSubscription<AaPayload>? _inputSub;
+
+  final StreamController<String> _promptOutput =
+      StreamController<String>.broadcast();
+  final StreamController<List<double>> _boxSelectOutput =
+      StreamController<List<double>>.broadcast();
+  final StreamController<List<double>> _pointClickOutput =
+      StreamController<List<double>>.broadcast();
+
+  /// Location received from upstream; empty until `urlInput` delivers one.
+  String targetUrl = '';
+
+  /// True only once the asset is fully decoded into memory — this is what
+  /// reveals the lower-right indicator.
+  bool isImageLoaded = false;
+  String? loadError;
+  int? imageWidth;
+  int? imageHeight;
+
+  ImageStream? _imageStream;
+  ImageStreamListener? _imageListener;
+
+  bool get _wired => widget.aaInput != null;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Publish the three output connectors up front so downstream nodes can
+    // attach before any interaction has happened.
+    widget.onPromptConnect?.call(_promptOutput.stream);
+    widget.onBoxSelectConnect?.call(_boxSelectOutput.stream);
+    widget.onPointClickConnect?.call(_pointClickOutput.stream);
+
+    widget.onOutputsReady?.call(
+      widget.node.id,
+      ImageDisplayOutputs(
+        emitPrompt: (prompt) {
+          if (!_promptOutput.isClosed) _promptOutput.add(prompt);
+        },
+        emitBox: (box) {
+          if (!_boxSelectOutput.isClosed) _boxSelectOutput.add(box);
+        },
+        emitPoint: (point) {
+          if (!_pointClickOutput.isClosed) _pointClickOutput.add(point);
+        },
+      ),
+    );
+
+    _subscribeInput();
+  }
+
+  @override
+  void didUpdateWidget(ImageDisplayNode oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.aaInput != widget.aaInput) _subscribeInput();
+  }
+
+  @override
+  void dispose() {
+    _inputSub?.cancel();
+    _detachImageStream();
+    _promptOutput.close();
+    _boxSelectOutput.close();
+    _pointClickOutput.close();
+    super.dispose();
+  }
+
+  /// Take the location off the upstream payload and begin loading it.
+  void _subscribeInput() {
+    _inputSub?.cancel();
+    _inputSub = widget.aaInput?.listen((payload) {
+      if (!mounted) return;
+      final url = payload.value('url') ?? '';
+      if (url.isEmpty) return;
+      setState(() {
+        targetUrl = url;
+        isImageLoaded = false;
+        loadError = null;
+        imageWidth = null;
+        imageHeight = null;
+      });
+      _loadImage(url);
+    });
+  }
+
+  void _detachImageStream() {
+    if (_imageStream != null && _imageListener != null) {
+      _imageStream!.removeListener(_imageListener!);
+    }
+    _imageStream = null;
+    _imageListener = null;
+  }
+
+  /// Resolve and decode the asset into memory *without* rendering it here. Only
+  /// when the first frame arrives is the node considered loaded, which is what
+  /// reveals the lower-right indicator.
+  void _loadImage(String url) {
+    _detachImageStream();
+    final provider = resolveImageProvider(url);
+    if (provider == null) return;
+
+    _imageStream = provider.resolve(ImageConfiguration.empty);
+    _imageListener = ImageStreamListener(
+      (info, _) {
+        if (!mounted) return;
+        setState(() {
+          isImageLoaded = true;
+          loadError = null;
+          imageWidth = info.image.width;
+          imageHeight = info.image.height;
+        });
+      },
+      onError: (error, _) {
+        if (!mounted) return;
+        setState(() {
+          isImageLoaded = false;
+          loadError = 'That image could not be loaded.';
+        });
+      },
+    );
+    _imageStream!.addListener(_imageListener!);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return DoubleNaughtNodeWrapper(
+      title: 'Image Display',
+      icon: Icons.image_outlined,
+      inputPorts: [
+        InputConnector(
+          label: 'urlInput',
+          idx: 0,
+          active: _wired,
+          onConnect: widget.onInputConnect,
+        ),
+      ],
+      outputPorts: [
+        OutputConnector(
+          label: 'promptOutput',
+          idx: 0,
+          active: widget.connectedOutputs.contains(0),
+          dragData: PortRef(nodeId: widget.node.id, idx: 0),
+        ),
+        OutputConnector(
+          label: 'boxSelectOutput',
+          idx: 1,
+          active: widget.connectedOutputs.contains(1),
+          dragData: PortRef(nodeId: widget.node.id, idx: 1),
+        ),
+        OutputConnector(
+          label: 'pointClickOutput',
+          idx: 2,
+          active: widget.connectedOutputs.contains(2),
+          dragData: PortRef(nodeId: widget.node.id, idx: 2),
+        ),
+      ],
+      // Stack so the availability indicator can sit in the node's lower-right.
+      child: Stack(
+        children: [
+          _status(theme),
+          if (isImageLoaded)
+            Positioned(right: 0, bottom: 0, child: _assetsIndicator(theme)),
+        ],
+      ),
+    );
+  }
+
+  /// Compact status text — no manual entry fields live on this node.
+  Widget _status(ThemeData theme) {
+    final muted = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+
+    if (!_wired) {
+      return SizedBox(
+        width: double.infinity,
+        child: Text('Connect a URL Source node', style: muted),
+      );
+    }
+    if (targetUrl.isEmpty) {
+      return SizedBox(
+        width: double.infinity,
+        child: Text('Waiting for a source location', style: muted),
+      );
+    }
+
+    return SizedBox(
+      width: double.infinity,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            targetUrl,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall,
+          ),
+          const SizedBox(height: 6),
+          if (loadError != null)
+            Text(loadError!,
+                style: TextStyle(color: theme.colorScheme.error, fontSize: 12))
+          else if (!isImageLoaded)
+            Row(
+              children: [
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                const SizedBox(width: 8),
+                Text('Loading image', style: muted),
+              ],
+            )
+          else
+            Text(
+              imageWidth != null && imageHeight != null
+                  ? 'Image ready · $imageWidth × $imageHeight'
+                  : 'Image ready',
+              style: muted,
+            ),
+          // Leave room so the indicator never sits on top of the status text.
+          if (isImageLoaded) const SizedBox(height: 18),
+        ],
+      ),
+    );
+  }
+
+  /// Hidden until the asset is in memory; clicking slides open the Focus Panel.
+  Widget _assetsIndicator(ThemeData theme) {
+    final scheme = theme.colorScheme;
+    return Tooltip(
+      message: 'Show image assets',
+      child: InkWell(
+        onTap: () =>
+            widget.onViewImageAssets?.call(widget.node.id, targetUrl),
+        borderRadius: BorderRadius.circular(4),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+          decoration: BoxDecoration(
+            color: scheme.primary,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.photo_library_outlined,
+                  size: 12, color: scheme.onPrimary),
+              const SizedBox(width: 4),
+              Icon(Icons.chevron_right, size: 12, color: scheme.onPrimary),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}

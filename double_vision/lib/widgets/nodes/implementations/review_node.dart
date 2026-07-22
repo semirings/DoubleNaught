@@ -3,13 +3,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../models/aa_payload.dart';
-import '../models/workflow.dart';
-import '../services/review_api.dart';
-import '../services/storage_service.dart';
-import 'double_naught_node_wrapper.dart';
-import 'input_connector.dart';
-import 'output_connector.dart';
+import '../../../models/aa_payload.dart';
+import '../../../models/workflow.dart';
+import '../../../services/review_api.dart';
+import '../../../services/storage_service.dart';
+import '../base/double_naught_node_wrapper.dart';
+import '../base/input_connector.dart';
+import '../base/output_connector.dart';
 
 /// A human-in-the-loop curation node (AA-in → AA-out, per `DESIGN.md`) that sits
 /// between [ChunkNode] and [Aa2JsonlNode]. It presents candidate passages one at

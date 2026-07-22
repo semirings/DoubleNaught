@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../services/sam3_api.dart';
+import '../../../services/sam3_api.dart';
 import 'sam3_interaction_model.dart';
 
 /// The kind of prompt that produced a [Sam3Payload].

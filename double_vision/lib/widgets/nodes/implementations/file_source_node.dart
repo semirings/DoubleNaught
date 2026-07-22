@@ -4,9 +4,9 @@ import 'dart:typed_data';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
-import '../models/workflow.dart';
-import 'double_naught_node_wrapper.dart';
-import 'output_connector.dart';
+import '../../../models/workflow.dart';
+import '../base/double_naught_node_wrapper.dart';
+import '../base/output_connector.dart';
 
 /// A workflow source node that opens the local file dialog and streams the
 /// chosen file's bytes out of a single output connector ("contents").

@@ -32,6 +32,12 @@ const double kPortSpacing = 24;
 /// over the node's boundary edge.
 const double kPortDotRadius = 7;
 
+/// Height of the node's title bar. It doubles as the primary drag handle, so
+/// the canvas overlays a drag/select target of exactly this height over each
+/// node's top. Kept below [kPortLaneTop] so the first port sits in the body,
+/// clear of the title bar.
+const double kTitleBarHeight = 34;
+
 /// The shared chrome for every workspace node — the concrete realisation of the
 /// Base Node Blueprint:
 ///

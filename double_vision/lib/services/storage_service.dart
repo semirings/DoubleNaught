@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path_provider/path_provider.dart';
+
 /// Local JSON-file persistence for the DoubleNaught front-end.
 ///
 /// This is a development stub: each record is a JSON file under `../storage/`
@@ -13,20 +15,40 @@ import 'dart:io';
 /// The method signatures are intended to survive that swap — only the bodies
 /// should change. Note dart:io makes this stub unavailable on Flutter web.
 class StorageService {
-  /// Directory where JSON records live. Defaults to `../storage/` relative to
-  /// the current working directory.
-  final Directory baseDir;
+  /// Explicit directory, for tests or a deliberate override. When null the
+  /// service resolves the platform's application-support directory on first
+  /// use.
+  ///
+  /// That resolution matters: a CWD-relative path (`../storage`) escapes the
+  /// macOS app container — a bundled app's working directory is `/`, so it
+  /// would try to create `/storage` and fail with a PathAccessException.
+  final String? overridePath;
 
-  StorageService({String path = '../storage'})
-      : baseDir = Directory(path);
+  Directory? _cachedDir;
+
+  StorageService({this.overridePath});
+
+  /// The storage directory, resolved once and cached.
+  Future<Directory> resolveBaseDir() async {
+    final cached = _cachedDir;
+    if (cached != null) return cached;
+    final override = overridePath;
+    final dir = override != null
+        ? Directory(override)
+        : await getApplicationSupportDirectory();
+    _cachedDir = dir;
+    return dir;
+  }
 
   /// Resolve a record key to its backing file (`<baseDir>/<key>.json`).
-  File _fileFor(String key) => File('${baseDir.path}/$key.json');
+  Future<File> _fileFor(String key) async =>
+      File('${(await resolveBaseDir()).path}/$key.json');
 
   /// Ensure the storage directory exists before a write.
   Future<void> _ensureDir() async {
-    if (!await baseDir.exists()) {
-      await baseDir.create(recursive: true);
+    final dir = await resolveBaseDir();
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
     }
   }
 
@@ -34,7 +56,7 @@ class StorageService {
   ///
   /// TODO: swap for backend API — becomes `GET /records/{key}`.
   Future<Map<String, dynamic>?> read(String key) async {
-    final file = _fileFor(key);
+    final file = await _fileFor(key);
     if (!await file.exists()) return null;
     final contents = await file.readAsString();
     if (contents.trim().isEmpty) return null;
@@ -46,7 +68,7 @@ class StorageService {
   /// TODO: swap for backend API — becomes `PUT /records/{key}`.
   Future<void> write(String key, Map<String, dynamic> value) async {
     await _ensureDir();
-    final file = _fileFor(key);
+    final file = await _fileFor(key);
     await file.writeAsString(const JsonEncoder.withIndent('  ').convert(value));
   }
 
@@ -54,7 +76,7 @@ class StorageService {
   ///
   /// TODO: swap for backend API — becomes `DELETE /records/{key}`.
   Future<bool> delete(String key) async {
-    final file = _fileFor(key);
+    final file = await _fileFor(key);
     if (!await file.exists()) return false;
     await file.delete();
     return true;
@@ -64,6 +86,7 @@ class StorageService {
   ///
   /// TODO: swap for backend API — becomes `GET /records`.
   Future<List<String>> keys() async {
+    final baseDir = await resolveBaseDir();
     if (!await baseDir.exists()) return const [];
     final keys = <String>[];
     await for (final entity in baseDir.list()) {

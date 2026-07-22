@@ -13,6 +13,48 @@
             "state": {
               "type": "markdown",
               "state": {
+                "file": "Clippings/Input port trigger.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Input port trigger"
+            }
+          },
+          {
+            "id": "f95e1f4d07204fee",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "InputPort.dart.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "InputPort.dart"
+            }
+          },
+          {
+            "id": "18db4a08bbbacfb4",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "OutputPort.dart.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "OutputPort.dart"
+            }
+          },
+          {
+            "id": "c29db8bf299ebfea",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
                 "file": "Journal.md",
                 "mode": "source",
                 "source": false
@@ -21,7 +63,8 @@
               "title": "Journal"
             }
           }
-        ]
+        ],
+        "currentTab": 3
       }
     ],
     "direction": "vertical"
@@ -183,30 +226,37 @@
       "bases:Create new base": false
     }
   },
-  "active": "16d18b2c4ea5fad3",
+  "active": "c29db8bf299ebfea",
   "lastOpenFiles": [
-    "Project Context 19.Jul.2026.md",
-    "Journal.md",
-    "Treatment.md",
-    "Node Aide.md",
-    "Synopsis.md",
-    "Clippings/Node Identification.md",
+    "AgentNode.dart.md",
+    "OutputPort.dart.md",
+    "InputPort.dart.md",
+    "Clippings/Input port trigger.md",
+    "Clippings/InputPort.md",
+    "Clippings/AgentNode.md",
     "Log Line.md",
+    "Treatment.md",
     "Script.md",
+    "Journal.md",
+    "The Storm.md",
+    "Synopsis.md",
+    "Broader Picture.md",
+    "Chapter 10 According to Claude.md",
+    "Domains.md",
+    "Pasted image 20260618111442.png",
+    "Premise.md",
+    "Crossing.md",
+    "Node Aide.md",
+    "Project Context 19.Jul.2026.md",
+    "Clippings/Node Identification.md",
     "Clippings/What SLMs are for.md",
     "Clippings/Questions.md",
-    "Premise.md",
     "Clippings/YT to Discord Transition.md",
     "Clippings",
     "Untitled.canvas",
     "Untitled.base",
     "Untitled 1.base",
     "2026-06-19.md",
-    "Pasted image 20260618111442.png",
-    "Crossing.md",
-    "SubMods.md",
-    "Domains.md",
-    "The Storm.md",
-    "Broader Picture.md"
+    "SubMods.md"
   ]
 }

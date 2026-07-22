@@ -1,21 +1,14 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../config/node_registry.dart';
 import '../models/aa_payload.dart';
+import '../models/content_payload.dart';
 import '../models/workflow.dart';
 import '../services/storage_service.dart';
-import '../widgets/base_node.dart' show kPortLaneTop, kPortSpacing;
-import '../widgets/connection_drag_scope.dart';
-import '../widgets/aa2jsonl_node.dart';
-import '../widgets/chunk_node.dart';
-import '../widgets/fetch_node.dart';
-import '../widgets/file_source_node.dart';
-import '../widgets/inventory_node.dart';
-import '../widgets/preview_node.dart';
-import '../widgets/review_node.dart';
-import '../widgets/sam3_node.dart';
-import '../widgets/url_source_node.dart';
+import '../widgets/focus_panel.dart';
+import '../widgets/nodes/nodes.dart';
 
 /// Fixed node width — used both for layout and to anchor edge endpoints.
 const double _kNodeWidth = 240;
@@ -47,11 +40,21 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// keyed by node id. Consumed by downstream AA-in nodes (FetchNode).
   final Map<int, Stream<AaPayload>> _aaOutputs = {};
 
+  /// Raw location strings published by URL Source nodes, keyed by node id.
+  /// Consumed by Inventory's `urlInput`.
+  final Map<int, Stream<String>> _locationOutputs = {};
+
+  /// Fetched asset streams published by Inventory's `content` port, keyed by id.
+  final Map<int, Stream<ContentPayload>> _contentOutputs = {};
+
   /// Filenames published by source nodes (out-of-band metadata), keyed by id.
   final Map<int, String> _sourceNames = {};
 
   int _nextId = 1;
   bool _saving = false;
+
+  /// True while the workflow run is in flight; disables re-clicks on "Go".
+  bool _isRunning = false;
 
   /// Canvas geometry + keyboard focus (for Delete/Backspace on a selected edge).
   final GlobalKey _canvasKey = GlobalKey();
@@ -65,14 +68,65 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// The currently selected completed edge, if any.
   WorkflowEdge? _selectedEdge;
 
+  /// The currently selected node, if any (distinct outline; Delete removes it).
+  int? _selectedNodeId;
+
+  /// The edge under the pointer, for hover feedback.
+  WorkflowEdge? _hoveredEdge;
+
+  /// Canvas view transform (pan + zoom). Applied to the node Stack; the Stack's
+  /// own coordinate space stays untransformed, so drag/connect/hit-test math is
+  /// unaffected — only the presentation moves.
+  Matrix4 _view = Matrix4.identity();
+  bool _isMiddlePanning = false;
+  static const double _minZoom = 0.3;
+  static const double _maxZoom = 3.0;
+
   /// Image sidebar state — the most recent image received by a Segmentation
   /// node's `preview` input, plus the resizable panel width.
   Uint8List? _sidebarImage;
   String? _sidebarName;
   int _sidebarBytes = 0;
-  double _sidebarWidth = 300;
-  static const double _minSidebar = 200;
-  static const double _maxSidebar = 640;
+
+  /// Focus Panel state — the right-margin slideout that renders heavy content
+  /// so canvas nodes stay compact. [_focusNodeId] is the node whose assets are
+  /// shown; [_focusUrl] is its target (local path or web address).
+  bool _isFocusOpen = false;
+  int? _focusNodeId;
+  String? _focusUrl;
+
+  /// Emit sinks for each Image Display node, so the Focus Panel can route
+  /// overlay interactions back out of the node that owns the image.
+  final Map<int, ImageDisplayOutputs> _imageDisplayOutputs = {};
+
+  /// The three interactive output streams published by Image Display nodes,
+  /// keyed by node id, so downstream nodes can subscribe.
+  final Map<int, Stream<String>> _promptOutputs = {};
+  final Map<int, Stream<List<double>>> _boxSelectOutputs = {};
+  final Map<int, Stream<List<double>>> _pointClickOutputs = {};
+
+  /// Which node the panel is showing, and where its asset came from.
+  String? _focusSubtitle() {
+    final parts = <String>[
+      if (_focusNodeId != null) 'Node $_focusNodeId',
+      if (_focusUrl != null)
+        _focusUrl!
+      else ...[
+        if (_sidebarName != null) _sidebarName!,
+        if (_sidebarBytes > 0) _humanSize(_sidebarBytes),
+      ],
+    ];
+    return parts.isEmpty ? null : parts.join(' · ');
+  }
+
+  /// Open the Focus Panel on a specific node instance.
+  void _openImageAssets(int nodeId, String targetUrl) {
+    setState(() {
+      _focusNodeId = nodeId;
+      _focusUrl = targetUrl;
+      _isFocusOpen = true;
+    });
+  }
 
   /// Drives the marching-ants animation of the in-progress curve.
   late final AnimationController _ants;
@@ -109,6 +163,8 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'chunk':
       case 'review':
       case 'aa2jsonl':
+      case 'image_display':
+      case 'inventory':
         return const [0];
       default:
         return const [];
@@ -208,25 +264,118 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   void _onCanvasTapUp(TapUpDetails d) {
     _canvasFocus.requestFocus(); // so Delete/Backspace target this canvas
-    setState(() => _selectedEdge = _edgeAt(d.localPosition));
+    // Clicking empty canvas selects the edge there (if any) and clears node
+    // selection.
+    setState(() {
+      _selectedEdge = _edgeAt(d.localPosition);
+      _selectedNodeId = null;
+    });
   }
 
   void _onCanvasSecondaryTapUp(TapUpDetails d) {
     final edge = _edgeAt(d.localPosition);
-    if (edge == null) return;
-    setState(() => _selectedEdge = edge);
-    _showEdgeMenu(d.globalPosition, edge);
+    if (edge != null) {
+      setState(() => _selectedEdge = edge);
+      _showEdgeMenu(d.globalPosition, edge);
+    } else {
+      // Empty canvas → offer to add a node at the click point.
+      _showAddNodeMenu(d.globalPosition, d.localPosition);
+    }
+  }
+
+  /// Select a node: distinct outline, brought to the front, keyboard focus for
+  /// Delete. Clears any edge selection.
+  void _selectNode(int id) {
+    _canvasFocus.requestFocus();
+    _bringToFront(id);
+    if (_selectedNodeId == id && _selectedEdge == null) return;
+    setState(() {
+      _selectedNodeId = id;
+      _selectedEdge = null;
+    });
+  }
+
+  /// Raise a node to the top of the paint order (Z-ordering convention).
+  void _bringToFront(int id) {
+    final i = _nodes.indexWhere((n) => n.id == id);
+    if (i < 0 || i == _nodes.length - 1) return;
+    setState(() {
+      final n = _nodes.removeAt(i);
+      _nodes.add(n);
+    });
+  }
+
+  void _deleteNode(int id) {
+    setState(() {
+      _nodes.removeWhere((n) => n.id == id);
+      _edges.removeWhere((e) => e.from.nodeId == id || e.to.nodeId == id);
+      _outputs.remove(id);
+      _aaOutputs.remove(id);
+      _locationOutputs.remove(id);
+      _contentOutputs.remove(id);
+      _sourceNames.remove(id);
+      if (_selectedNodeId == id) _selectedNodeId = null;
+    });
+  }
+
+  void _duplicateNode(int id) {
+    final src = _nodes.firstWhere((n) => n.id == id, orElse: () => _nodes.first);
+    setState(() {
+      _nodes.add(WorkflowNode(
+        id: _nextId++,
+        type: src.type,
+        x: src.x + 24,
+        y: src.y + 24,
+      ));
+    });
   }
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
-    if (event is KeyDownEvent &&
-        (event.logicalKey == LogicalKeyboardKey.delete ||
-            event.logicalKey == LogicalKeyboardKey.backspace) &&
-        _selectedEdge != null) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final isDelete = event.logicalKey == LogicalKeyboardKey.delete ||
+        event.logicalKey == LogicalKeyboardKey.backspace;
+    if (!isDelete) return KeyEventResult.ignored;
+    if (_selectedNodeId != null) {
+      _deleteNode(_selectedNodeId!);
+      return KeyEventResult.handled;
+    }
+    if (_selectedEdge != null) {
       _deleteEdge(_selectedEdge!);
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
+  }
+
+  Future<void> _showNodeMenu(Offset globalPos, int id) async {
+    setState(() => _selectedNodeId = id);
+    final result = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+          globalPos.dx, globalPos.dy, globalPos.dx, globalPos.dy),
+      items: const [
+        PopupMenuItem(value: 'duplicate', child: Text('Duplicate Node')),
+        PopupMenuItem(value: 'delete', child: Text('Delete Node')),
+      ],
+    );
+    switch (result) {
+      case 'duplicate':
+        _duplicateNode(id);
+      case 'delete':
+        _deleteNode(id);
+    }
+  }
+
+  Future<void> _showAddNodeMenu(Offset globalPos, Offset canvasPos) async {
+    final type = await showMenu<NodeType>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+          globalPos.dx, globalPos.dy, globalPos.dx, globalPos.dy),
+      items: [
+        for (final t in nodeTypes)
+          PopupMenuItem(value: t, child: Text('Add ${t.name}')),
+      ],
+    );
+    if (type != null) _addNodeAt(type, canvasPos);
   }
 
   void _deleteEdge(WorkflowEdge e) {
@@ -281,6 +430,75 @@ class _WorkflowPageState extends State<WorkflowPage>
     });
   }
 
+  /// Add a node with its top-left at a specific canvas position (from the
+  /// right-click "Add" menu).
+  void _addNodeAt(NodeType type, Offset canvasPos) {
+    setState(() {
+      _nodes.add(WorkflowNode(
+        id: _nextId++,
+        type: type.type,
+        x: canvasPos.dx.clamp(0, 4000),
+        y: canvasPos.dy.clamp(_kPortY, 4000),
+      ));
+    });
+  }
+
+  // --- Canvas pan & zoom (applied to the node Stack via [_view]) ---
+
+  /// Cumulative trackpad scale since the current pan/zoom gesture began.
+  double _panZoomScale = 1.0;
+
+  double get _zoom => _view.getMaxScaleOnAxis();
+
+  /// Zoom by [factor] keeping the point [focal] (viewport coords) fixed.
+  void _zoomAt(double factor, Offset focal) {
+    final s = (_zoom * factor).clamp(_minZoom, _maxZoom) / _zoom;
+    if ((s - 1).abs() < 1e-3) return;
+    // Scale-about-focal matrix, built column-major to avoid deprecated helpers.
+    final zoom = Matrix4(
+      s, 0, 0, 0,
+      0, s, 0, 0,
+      0, 0, 1, 0,
+      focal.dx * (1 - s), focal.dy * (1 - s), 0, 1,
+    );
+    setState(() => _view = zoom..multiply(_view));
+  }
+
+  /// Pan the view by a viewport-space delta.
+  void _panBy(Offset delta) {
+    setState(() =>
+        _view = Matrix4.translationValues(delta.dx, delta.dy, 0)..multiply(_view));
+  }
+
+  void _onCanvasPointerSignal(PointerSignalEvent event) {
+    if (event is PointerScrollEvent) {
+      // Scroll up → zoom in, around the pointer.
+      _zoomAt(event.scrollDelta.dy < 0 ? 1.1 : 1 / 1.1, event.localPosition);
+    }
+  }
+
+  void _onCanvasPointerDown(PointerDownEvent event) {
+    // Middle mouse button starts a pan (never a node drag).
+    if (event.buttons & kMiddleMouseButton != 0) _isMiddlePanning = true;
+  }
+
+  void _onCanvasPointerMove(PointerMoveEvent event) {
+    if (_isMiddlePanning) _panBy(event.delta);
+  }
+
+  void _onCanvasPointerUp(PointerUpEvent event) => _isMiddlePanning = false;
+
+  // Trackpad two-finger pan + pinch zoom.
+  void _onPanZoomStart(PointerPanZoomStartEvent event) => _panZoomScale = 1.0;
+
+  void _onPanZoomUpdate(PointerPanZoomUpdateEvent event) {
+    if (event.panDelta != Offset.zero) _panBy(event.panDelta);
+    if (event.scale != _panZoomScale) {
+      _zoomAt(event.scale / _panZoomScale, event.localPosition);
+      _panZoomScale = event.scale;
+    }
+  }
+
   /// Move the node with [id] by the drag delta, clamped to the canvas.
   void _moveNode(int id, Offset delta) {
     final i = _nodes.indexWhere((n) => n.id == id);
@@ -321,6 +539,14 @@ class _WorkflowPageState extends State<WorkflowPage>
     return null;
   }
 
+  /// Resolve the raw location stream wired into [nodeId]'s input, if any.
+  Stream<String>? _locationInputFor(int nodeId) {
+    for (final e in _edges) {
+      if (e.to.nodeId == nodeId) return _locationOutputs[e.from.nodeId];
+    }
+    return null;
+  }
+
   /// Resolve the filename of the source feeding [nodeId]'s input, if any.
   String? _fileNameFor(int nodeId) {
     for (final e in _edges) {
@@ -332,6 +558,68 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// Output port indices of [nodeId] that currently have an outgoing edge.
   Set<int> _connectedOutputs(int nodeId) =>
       {for (final e in _edges) if (e.from.nodeId == nodeId) e.from.idx};
+
+  /// Resolve the graph into evaluation order: sources first (nodes with no
+  /// incoming edge, e.g. Inventory / URL Source), then downstream consumers.
+  /// Returns null when the graph contains a cycle, which cannot be evaluated.
+  List<WorkflowNode>? _resolveExecutionOrder() {
+    final byId = {for (final n in _nodes) n.id: n};
+    final inDegree = {for (final n in _nodes) n.id: 0};
+    final adjacency = {for (final n in _nodes) n.id: <int>[]};
+
+    for (final e in _edges) {
+      if (!byId.containsKey(e.from.nodeId) || !byId.containsKey(e.to.nodeId)) {
+        continue; // edge referencing a deleted node
+      }
+      adjacency[e.from.nodeId]!.add(e.to.nodeId);
+      inDegree[e.to.nodeId] = inDegree[e.to.nodeId]! + 1;
+    }
+
+    // Seed with the source nodes, in stable id order.
+    final queue = [
+      for (final n in _nodes)
+        if (inDegree[n.id] == 0) n.id
+    ]..sort();
+
+    final order = <WorkflowNode>[];
+    while (queue.isNotEmpty) {
+      final id = queue.removeAt(0);
+      order.add(byId[id]!);
+      for (final next in adjacency[id]!) {
+        inDegree[next] = inDegree[next]! - 1;
+        if (inDegree[next] == 0) queue.add(next);
+      }
+    }
+    return order.length == _nodes.length ? order : null;
+  }
+
+  /// "Go" — evaluate the graph currently displayed on the canvas.
+  Future<void> _runWorkflow() async {
+    if (_isRunning || _nodes.isEmpty) return;
+    setState(() => _isRunning = true);
+    try {
+      final order = _resolveExecutionOrder();
+      if (order == null) {
+        _showMessage('This workflow contains a cycle, so it cannot run.');
+        return;
+      }
+      // NOTE: node widgets currently self-execute in response to their own
+      // inputs (a picked file, a pressed Validate, an upstream stream event) —
+      // there is no per-node run() contract to dispatch to yet. Until one
+      // exists this resolves and reports the order rather than forcing
+      // evaluation, so it never claims work it did not do.
+      final chain = order.map((n) => n.type).join(' → ');
+      _showMessage('Resolved ${order.length} node(s): $chain');
+    } finally {
+      if (mounted) setState(() => _isRunning = false);
+    }
+  }
+
+  void _showMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
 
   Future<void> _save() async {
     setState(() => _saving = true);
@@ -358,6 +646,8 @@ class _WorkflowPageState extends State<WorkflowPage>
       _edges.clear();
       _outputs.clear();
       _aaOutputs.clear();
+      _locationOutputs.clear();
+      _contentOutputs.clear();
       _sourceNames.clear();
     });
   }
@@ -369,6 +659,8 @@ class _WorkflowPageState extends State<WorkflowPage>
         children: [
           _Header(
             onAdd: _addNode,
+            onRun: _nodes.isEmpty ? null : _runWorkflow,
+            running: _isRunning,
             onSave: _save,
             saving: _saving,
             onClear: _nodes.isEmpty ? null : _clear,
@@ -378,17 +670,19 @@ class _WorkflowPageState extends State<WorkflowPage>
               children: [
                 // Node workspace.
                 Expanded(child: _canvas(context)),
-                // Image sidebar, docked to the right edge, separate from the
-                // canvas; resizable by dragging its left edge.
-                _ImagePanel(
-                  image: _sidebarImage,
-                  fileName: _sidebarName,
-                  bytes: _sidebarBytes,
-                  width: _sidebarWidth,
-                  onResize: (dx) => setState(() {
-                    _sidebarWidth =
-                        (_sidebarWidth - dx).clamp(_minSidebar, _maxSidebar);
-                  }),
+                // Focus Panel: the right-margin slideout that renders heavy
+                // content, so canvas nodes stay compact routing boxes. Shares
+                // this horizontal shell with the canvas and toggles 0 ↔ 45%.
+                FocusPanel(
+                  isOpen: _isFocusOpen,
+                  onToggle: () =>
+                      setState(() => _isFocusOpen = !_isFocusOpen),
+                  title: 'Image Assets',
+                  subtitle: _focusSubtitle(),
+                  targetUrl: _focusUrl,
+                  // Falls back to in-memory bytes (e.g. a Segmentation
+                  // preview) when no target address is focused.
+                  imageBytes: _focusUrl == null ? _sidebarImage : null,
                 ),
               ],
             ),
@@ -418,69 +712,138 @@ class _WorkflowPageState extends State<WorkflowPage>
         focusNode: _canvasFocus,
         autofocus: true,
         onKeyEvent: _onKey,
-        child: Stack(
-          key: _canvasKey,
-          children: [
-            // Edge layer (beneath nodes) + gestures for select/deselect and the
-            // right-click menu. Curves live in otherwise-empty canvas space, so
-            // these gestures don't compete with node interactions.
-            Positioned.fill(
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapUp: _onCanvasTapUp,
-                onSecondaryTapUp: _onCanvasSecondaryTapUp,
-                child: CustomPaint(
-                  painter: _EdgePainter(
-                    edges: _edges,
-                    byId: byId,
-                    color: scheme.primary,
-                    selectColor: scheme.tertiary,
-                    selected: _selectedEdge,
+        // Scroll-to-zoom, middle-mouse pan, and trackpad two-finger pan/zoom.
+        // The Listener passes normal events through, so node drag/connect are
+        // untouched; it only *adds* view-transform handling.
+        child: Listener(
+          onPointerSignal: _onCanvasPointerSignal,
+          onPointerDown: _onCanvasPointerDown,
+          onPointerMove: _onCanvasPointerMove,
+          onPointerUp: _onCanvasPointerUp,
+          onPointerPanZoomStart: _onPanZoomStart,
+          onPointerPanZoomUpdate: _onPanZoomUpdate,
+          child: ClipRect(
+            // Transform is applied to the Stack; `_canvasKey` stays on the
+            // Stack so globalToLocal keeps mapping correctly under pan/zoom.
+            child: Transform(
+              transform: _view,
+              child: Stack(
+                key: _canvasKey,
+                // Don't clip to the viewport-sized Stack — panning must reveal
+                // nodes positioned beyond it. The outer ClipRect bounds paint.
+                clipBehavior: Clip.none,
+                children: [
+                  // Edge layer (beneath nodes): select/deselect, right-click
+                  // menu, and hover feedback. Curves live in empty canvas space.
+                  Positioned.fill(
+                    child: MouseRegion(
+                      onHover: _onCanvasHover,
+                      onExit: (_) {
+                        if (_hoveredEdge != null) {
+                          setState(() => _hoveredEdge = null);
+                        }
+                      },
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTapUp: _onCanvasTapUp,
+                        onSecondaryTapUp: _onCanvasSecondaryTapUp,
+                        child: CustomPaint(
+                          painter: _EdgePainter(
+                            edges: _edges,
+                            byId: byId,
+                            color: scheme.primary,
+                            selectColor: scheme.tertiary,
+                            selected: _selectedEdge,
+                            hovered: _hoveredEdge,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
+
+                  // Nodes — each is: pointer-down selects + raises it; the title
+                  // bar is the drag handle; a right-click opens its menu; a
+                  // distinct outline marks the selection.
+                  for (final node in _nodes)
+                    Positioned(
+                      // Keyed so the shell (incl. its drag recogniser) survives
+                      // the list reorder that brings a node to the front.
+                      key: ValueKey(node.id),
+                      left: node.x,
+                      top: node.y,
+                      child: _nodeShell(node, scheme),
+                    ),
+
+                  // Live in-progress connection curve, above everything.
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(
+                        painter: _PendingEdgePainter(
+                          source: _pendingSource,
+                          byId: byId,
+                          endpoint: _pendingEndpoint,
+                          snapping: _pendingSnapTarget != null,
+                          color: scheme.primary,
+                          repaint: _ants,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// A node plus its interaction chrome (selection, title-bar drag handle,
+  /// context menu, selected outline). The overlays size to the node via a
+  /// Stack, so they adapt to each node's own width.
+  Widget _nodeShell(WorkflowNode node, ColorScheme scheme) {
+    return Listener(
+      // Any press on the node selects it and raises it to the front.
+      onPointerDown: (_) => _selectNode(node.id),
+      child: GestureDetector(
+        // Right-click anywhere on the node → its context menu.
+        behavior: HitTestBehavior.translucent,
+        onSecondaryTapUp: (d) => _showNodeMenu(d.globalPosition, node.id),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            KeyedSubtree(key: ValueKey(node.id), child: _buildNode(node)),
+
+            // Title-bar drag handle — spans the node's real width, top strip.
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              height: kTitleBarHeight,
+              child: MouseRegion(
+                cursor: SystemMouseCursors.move,
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onPanStart: (_) => _bringToFront(node.id),
+                  onPanUpdate: (d) => _moveNode(node.id, d.delta),
                 ),
               ),
             ),
 
-            // Nodes.
-            for (final node in _nodes)
-              Positioned(
-                left: node.x,
-                top: node.y,
-                child: KeyedSubtree(
-                  key: ValueKey(node.id),
-                  child: _buildNode(node),
-                ),
-              ),
-
-            // Drag handles, overlaid just above each node.
-            for (final node in _nodes)
-              Positioned(
-                left: node.x,
-                top: node.y - 16,
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onPanUpdate: (d) => _moveNode(node.id, d.delta),
-                  child: Container(
-                    width: _kNodeWidth,
-                    height: 16,
-                    alignment: Alignment.center,
-                    child: Icon(Icons.drag_indicator,
-                        size: 16, color: scheme.outline),
-                  ),
-                ),
-              ),
-
-            // Live in-progress connection curve, painted above everything.
+          // Selected outline: a distinct ring drawn over the node bounds.
+          if (_selectedNodeId == node.id)
             Positioned.fill(
               child: IgnorePointer(
-                child: CustomPaint(
-                  painter: _PendingEdgePainter(
-                    source: _pendingSource,
-                    byId: byId,
-                    endpoint: _pendingEndpoint,
-                    snapping: _pendingSnapTarget != null,
-                    color: scheme.primary,
-                    repaint: _ants,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(kNodeRadius),
+                    border: Border.all(color: scheme.tertiary, width: 2),
+                    boxShadow: [
+                      BoxShadow(
+                          color: scheme.tertiary,
+                          blurRadius: 6,
+                          spreadRadius: 1),
+                    ],
                   ),
                 ),
               ),
@@ -491,6 +854,13 @@ class _WorkflowPageState extends State<WorkflowPage>
     );
   }
 
+  void _onCanvasHover(PointerHoverEvent event) {
+    final edge = _edgeAt(event.localPosition);
+    if (!identical(edge, _hoveredEdge)) {
+      setState(() => _hoveredEdge = edge);
+    }
+  }
+
   Widget _buildNode(WorkflowNode node) {
     switch (node.type) {
       case 'file_source':
@@ -499,12 +869,40 @@ class _WorkflowPageState extends State<WorkflowPage>
           onConnect: (stream) => _outputs[node.id] = stream,
           onFileName: (name) => setState(() => _sourceNames[node.id] = name),
         );
+      case 'image_display':
+        return ImageDisplayNode(
+          node: node,
+          // `urlInput` — the source location arrives from an upstream URL
+          // Source node's AA payload; the edge is recorded on drop.
+          aaInput: _aaInputFor(node.id),
+          onInputConnect: (source) => _connect(source, node.id),
+          // The lower-right indicator opens the Focus Panel for this instance.
+          onViewImageAssets: _openImageAssets,
+          // The three interactive outputs, published for downstream nodes.
+          onPromptConnect: (stream) => _promptOutputs[node.id] = stream,
+          onBoxSelectConnect: (stream) => _boxSelectOutputs[node.id] = stream,
+          onPointClickConnect: (stream) =>
+              _pointClickOutputs[node.id] = stream,
+          // Sinks the Focus Panel drives once overlay modes are interactive.
+          onOutputsReady: (id, outputs) => _imageDisplayOutputs[id] = outputs,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
       case 'url_source':
         return UrlSourceNode(
           node: node,
-          // Publish the AA payload stream so downstream nodes can consume it,
-          // and light the output port once it has an outgoing edge.
+          // Manual entry point: publishes the raw location string for Inventory.
+          onConnect: (stream) => _locationOutputs[node.id] = stream,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'inventory':
+        return InventoryNode(
+          node: node,
+          // `urlInput` — a raw location from an upstream URL Source node.
+          locationInput: _locationInputFor(node.id),
+          onInputConnect: (source) => _connect(source, node.id),
+          // Catalog row for AA consumers, plus the fetched asset itself.
           onConnect: (stream) => _aaOutputs[node.id] = stream,
+          onContentConnect: (stream) => _contentOutputs[node.id] = stream,
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'fetch':
@@ -593,6 +991,7 @@ class _EdgePainter extends CustomPainter {
   final Color color;
   final Color selectColor;
   final WorkflowEdge? selected;
+  final WorkflowEdge? hovered;
 
   _EdgePainter({
     required this.edges,
@@ -600,6 +999,7 @@ class _EdgePainter extends CustomPainter {
     required this.color,
     required this.selectColor,
     this.selected,
+    this.hovered,
   });
 
   @override
@@ -616,6 +1016,7 @@ class _EdgePainter extends CustomPainter {
       final end = Offset(to.x, to.y + kPortLaneTop + e.to.idx * kPortSpacing);
       final path = _edgePath(start, end);
       final isSelected = identical(e, selected) || e == selected;
+      final isHovered = !isSelected && (identical(e, hovered) || e == hovered);
 
       if (isSelected) {
         // Glow halo behind the crisp line.
@@ -631,7 +1032,11 @@ class _EdgePainter extends CustomPainter {
 
       final paint = Paint()
         ..color = isSelected ? selectColor : color
-        ..strokeWidth = isSelected ? 3 : 2
+        ..strokeWidth = isSelected
+            ? 3
+            : isHovered
+                ? 3
+                : 2
         ..style = PaintingStyle.stroke;
       canvas.drawPath(path, paint);
       canvas.drawCircle(
@@ -644,7 +1049,8 @@ class _EdgePainter extends CustomPainter {
       old.edges != edges ||
       old.byId != byId ||
       old.color != color ||
-      old.selected != selected;
+      old.selected != selected ||
+      old.hovered != hovered;
 }
 
 /// Paints the live, dashed (marching-ants) preview curve while the user drags
@@ -733,113 +1139,18 @@ String _humanSize(int bytes) {
   return '${size.toStringAsFixed(1)} ${units[i]}';
 }
 
-/// Fixed sidebar docked to the right edge, separate from the node canvas. Shows
-/// the most recent image received by a Segmentation node, with a filename/size
-/// header, a "No image received" placeholder, and a left-edge resize grip.
-class _ImagePanel extends StatelessWidget {
-  final Uint8List? image;
-  final String? fileName;
-  final int bytes;
-  final double width;
-  final void Function(double dx) onResize;
 
-  const _ImagePanel({
-    required this.image,
-    required this.fileName,
-    required this.bytes,
-    required this.width,
-    required this.onResize,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    return SizedBox(
-      width: width,
-      child: Row(
-        children: [
-          // Left-edge resize grip.
-          MouseRegion(
-            cursor: SystemMouseCursors.resizeLeftRight,
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onHorizontalDragUpdate: (d) => onResize(d.delta.dx),
-              child: Container(
-                width: 8,
-                color: scheme.surfaceContainerHigh,
-                alignment: Alignment.center,
-                child: Icon(Icons.drag_indicator, size: 14, color: scheme.outline),
-              ),
-            ),
-          ),
-          Expanded(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: scheme.surfaceContainer,
-                border: Border(left: BorderSide(color: scheme.outlineVariant)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Header: filename + size.
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      border: Border(
-                          bottom: BorderSide(color: scheme.outlineVariant)),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          fileName ?? 'Image preview',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.titleSmall
-                              ?.copyWith(fontWeight: FontWeight.w600),
-                        ),
-                        if (image != null)
-                          Text(_humanSize(bytes),
-                              style: theme.textTheme.bodySmall
-                                  ?.copyWith(color: scheme.onSurfaceVariant)),
-                      ],
-                    ),
-                  ),
-                  // Body: image scaled to width (aspect preserved) or placeholder.
-                  Expanded(
-                    child: image == null
-                        ? Center(
-                            child: Text('No image received',
-                                style: theme.textTheme.bodyMedium
-                                    ?.copyWith(color: scheme.onSurfaceVariant)),
-                          )
-                        : SingleChildScrollView(
-                            padding: const EdgeInsets.all(8),
-                            child: Image.memory(
-                              image!,
-                              width: double.infinity,
-                              fit: BoxFit.fitWidth,
-                              gaplessPlayback: true,
-                              errorBuilder: (_, __, ___) => Text(
-                                  'Cannot decode image',
-                                  style: theme.textTheme.bodySmall),
-                            ),
-                          ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// The thin top header: a "Workflow" dropdown of node names and a Save button.
+/// The thin top header: a "Workflow" dropdown of node names, the primary "Go"
+/// run trigger, and Save / Clear.
 class _Header extends StatelessWidget {
   final ValueChanged<NodeType> onAdd;
+
+  /// Evaluate the graph on the canvas; null disables it (nothing to run).
+  final VoidCallback? onRun;
+
+  /// True while a run is in flight — shows the active state and blocks reclicks.
+  final bool running;
+
   final VoidCallback onSave;
   final bool saving;
 
@@ -850,20 +1161,39 @@ class _Header extends StatelessWidget {
     required this.onAdd,
     required this.onSave,
     required this.saving,
+    this.onRun,
+    this.running = false,
     this.onClear,
   });
 
   // Reference style: dark fill, coloured border + content, rounded corners.
+  static const _runColor = Color(0xFF43A047); // green (Colors.green.shade600)
   static const _saveColor = Color(0xFF5B8DEF); // blue
   static const _deleteColor = Color(0xFFE5534B); // red
 
-  ButtonStyle _outlined(Color color) => OutlinedButton.styleFrom(
-        foregroundColor: color,
-        side: BorderSide(color: color, width: 1.5),
-        shape:
-            RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      );
+  ButtonStyle _outlined(Color color) {
+    // Disabled keeps the accent hue but drops to a muted tone. Without this the
+    // static `side` stayed fully coloured while the label/icon fell back to the
+    // theme's disabled grey — border and content disagreeing.
+    final disabled = Color.lerp(color, Colors.black, 0.55)!;
+    return OutlinedButton.styleFrom(
+      // Colour the label and the icon explicitly, in both states.
+      foregroundColor: color,
+      iconColor: color,
+      disabledForegroundColor: disabled,
+      disabledIconColor: disabled,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+    ).copyWith(
+      // Resolve the outline per state so it tracks the content colour.
+      side: WidgetStateProperty.resolveWith(
+        (states) => BorderSide(
+          color: states.contains(WidgetState.disabled) ? disabled : color,
+          width: 1.5,
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -894,6 +1224,19 @@ class _Header extends StatelessWidget {
             ),
           ),
           const Spacer(),
+          // Primary execution trigger — first in the action bar, before Save.
+          OutlinedButton.icon(
+            onPressed: running ? null : onRun,
+            style: _outlined(_runColor),
+            icon: running
+                ? const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.play_arrow_rounded, size: 18),
+            label: Text(running ? 'Running…' : 'Go'),
+          ),
+          const SizedBox(width: 8),
           OutlinedButton.icon(
             onPressed: saving ? null : onSave,
             style: _outlined(_saveColor),

@@ -1,0 +1,25 @@
+// Barrel for all node-related widgets. Callers outside `nodes/` should import
+// this single file rather than reaching into `base/` or `implementations/`:
+//
+//   import 'package:double_vision/widgets/nodes/nodes.dart';
+
+// Foundational node UI (container, ports, header, drag scope, shared tokens).
+export 'base/base_node.dart';
+export 'base/connection_drag_scope.dart';
+export 'base/double_naught_node_wrapper.dart';
+export 'base/input_connector.dart';
+export 'base/output_connector.dart';
+
+// Concrete canvas node widgets (and the SAM3 node's supporting panel/model).
+export 'implementations/aa2jsonl_node.dart';
+export 'implementations/chunk_node.dart';
+export 'implementations/fetch_node.dart';
+export 'implementations/file_source_node.dart';
+export 'implementations/image_display_node.dart';
+export 'implementations/inventory_node.dart';
+export 'implementations/preview_node.dart';
+export 'implementations/review_node.dart';
+export 'implementations/sam3_control_panel.dart';
+export 'implementations/sam3_interaction_model.dart';
+export 'implementations/sam3_node.dart';
+export 'implementations/url_source_node.dart';

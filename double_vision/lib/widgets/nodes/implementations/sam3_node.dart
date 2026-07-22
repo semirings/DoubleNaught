@@ -3,10 +3,10 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import '../models/workflow.dart';
-import 'double_naught_node_wrapper.dart';
-import 'input_connector.dart';
-import 'output_connector.dart';
+import '../../../models/workflow.dart';
+import '../base/double_naught_node_wrapper.dart';
+import '../base/input_connector.dart';
+import '../base/output_connector.dart';
 import 'sam3_control_panel.dart';
 
 /// A workflow node that hosts a [Sam3ControlPanel] inside the universal

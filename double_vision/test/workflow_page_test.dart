@@ -1,8 +1,6 @@
 import 'package:double_vision/models/workflow.dart';
 import 'package:double_vision/pages/workflow_page.dart';
-import 'package:double_vision/widgets/file_source_node.dart';
-import 'package:double_vision/widgets/input_connector.dart';
-import 'package:double_vision/widgets/preview_node.dart';
+import 'package:double_vision/widgets/nodes/nodes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 

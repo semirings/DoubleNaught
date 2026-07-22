@@ -904,3 +904,113 @@ _InventoryNode is general purpose — it should handle any list of URL-based sou
 _Also update URLNode to receive its input from InventoryNode's output AA rather than from manual field entry. URLNode should display the incoming entry for confirmation but no longer requires manual re-entry of fields._
 
 _Follow all existing DN conventions for node registration, N&N graph wiring, and D4M/AA payload structure. If any conventions are ambiguous, read additional existing nodes before deciding."_
+
+## primary execution button ("Go")
+
+Let me add a primary execution button ("Go") to our main top action/button bar, giving DoubleNaught (DN) a ComfyUI-style workflow trigger.
+
+PLACEMENT & STYLING SPECIFICATIONS:
+1. Position: The "Go" button must be placed as the FIRST item in the top button bar, immediately preceding the "Save" button.
+2. Styling: 
+   - Fill/Accent Color: Vibrant Green (e.g., `Colors.green.shade600` or `#2E7D32` with a clear, high-contrast white text label).
+   - Icon: Include a clean play icon (e.g., `Icons.play_arrow_rounded`) before the text label.
+   - Text Label: "Go" (or "Run Workflow" depending on button bar spacing, formatted in natural prose, with internal variables following camelCase).
+
+FUNCTIONALITY & BEHAVIOR:
+- Trigger Event: Clicking the "Go" button evaluates the currently active/displayed node graph on the canvas.
+- Execution State: 
+  - While executing, update the button UI to show an active state (e.g., change label to "Running..." or show a subtle loading indicator, disabling re-clicks until completion).
+  - Collect the active nodes on the canvas, resolve their topological order starting from active source nodes (like Inventory or URLSource), and trigger the node evaluation chain.
+
+Please update the top button bar widget layout to insert this green "Go" button in the first position before "Save", and connect its `onPressed` callback to our workflow execution engine state.
+
+## Please refine the visual styling of our newly added "Go"
+
+Please refine the visual styling of our newly added "Go" button to strictly match the design system of the existing top button bar (e.g., the "Save" button).
+
+STYLING REQUIREMENTS:
+1. Button Variant: Outlined style (e.g., matching the `OutlinedButton` or custom outlined border decoration used by "Save").
+2. Border & Text Color: Accent Green (e.g., `Colors.green.shade600` or `#2E7D32` for both the border outline and the text/icon label).
+3. Background: Transparent background, matching the non-solid, outlined design of the other action buttons.
+4. Structure: Preserve its position as the first item in the button bar (right before "Save"), as well as its icon (`Icons.play_arrow_rounded`) and text label ("Go").
+
+Please update the button's theme/style parameters so its layout, padding, font size, and outline match the "Save" button exactly, differing only in using green for its border, text, and icon.
+
+Please fix the text and icon colors for our green "Go" button in the top action bar so that the text and icon render in green alongside the border.
+
+## SPECIFIC FIX:
+
+SPECIFIC FIX:
+In Flutter's `OutlinedButton.styleFrom`, setting `side: BorderSide(...)` only colors the outline border. To explicitly color the text and icon, we must also specify `foregroundColor`.
+
+Please update the "Go" button's `OutlinedButton.styleFrom` configuration to explicitly set:
+1. `side`: `const BorderSide(color: Colors.green.shade600)` (or `#2E7D32`)
+2. `foregroundColor`: `Colors.green.shade600` (or `#2E7D32`)
+3. `iconColor`: `Colors.green.shade600` (or `#2E7D32`)
+
+This will ensure the text label ("Go") and the play icon (`Icons.play_arrow_rounded`) match the green border exactly, maintaining a unified outlined look.
+
+Act as an expert Flutter developer working on DoubleNaught (DN).
+
+## URLSource and Inventory:
+
+We are restructuring the relationship between URLSource and Inventory:
+1. `URLSource` takes manual text input (URLs or local file paths) and emits a raw location string.
+2. `Inventory` receives input from `URLSource` and sends an asynchronous call to our FastAPI backend to persist this new URL into `inventory.json` as a new D4M AA row entry.
+3. `Inventory` maintains its picklist reading from the backend's `inventory.json`. Receiving input from `URLSource` automatically updates this picklist and selects the new item.
+4. `Inventory` is now responsible for fetching the actual content behind the active URL (text/html or image data) and streaming that payload out to downstream nodes.
+
+TASK 1: Update Node Connectivity
+- Add an `inputPort` to `Inventory` to accept connections from `URLSource`.
+- When a string payload arrives at `Inventory` from `URLSource`, trigger an internal state update: create a new D4M row entry for this item and send a POST request to our FastAPI backend service to append it to `inventory.json`.
+
+TASK 2: Update Inventory Canvas Picklist
+- Re-query/update the internal picklist state whenever a new item is added via `URLSource`. Set the newly added item as the currently active picklist selection.
+
+TASK 3: Content Fetch & Stream Output
+- Implement the content loader in `Inventory`. Once a URL is active (selected manually from the dropdown or received from `URLSource`), perform an HTTP GET (or local file read) to fetch the payload.
+- Emit the retrieved content and asset metadata out of `Inventory`'s main output port so downstream processing nodes receive the actual file bytes/text.
+
+Please implement this input-to-catalog pipeline and backend save workflow cleanly.
+
+## Inventory node: removing the HTTP/FastAPI 
+
+Act as an expert Flutter developer working on DoubleNaught (DN). 
+
+We are making two major improvements to the Inventory node: removing the HTTP/FastAPI requirement in favor of local `dart:io` file persistence, and cleaning up the crowded canvas UI layout shown in the screenshot.
+
+TASK 1: Direct File I/O Persistence (Remove BE Dependency)
+- Replace all HTTP client calls (`http://localhost:8000/inventory`) in `Inventory` state/controller with local `dart:io` file operations.
+- Save and load `inventory.json` directly to/from the local workspace directory (`File(workspacePath + '/inventory.json')`).
+- If the file does not exist, initialize it cleanly as an empty array `[]` without throwing network exceptions.
+
+TASK 2: Node UI & Port Alignment Overhaul
+- Fix Port Alignment: Move the port connection labels (`urlInput` on left; `entry` and `content` on right) outside or properly padded away from the top action buttons (+ Add, Edit, Delete, Select) so labels no longer overlay button shapes.
+- Clean Table Layout: Replace the horizontal multi-column text row (`description`, `author`, `work_title`, `work_selector`, `url`) with a clean, vertical card list or a single dropdown selector showing `work_title (author)`.
+- Compact Action Bar: Wrap the action buttons (`+ Add`, `Edit`, `Delete`, `Select`) in a compact `Wrap` or `Row` with standard `IconButton` tooltips or smaller padding to save vertical space.
+- Graceful Error Banner: Catch file read/write errors cleanly and show a concise single-line status indicator instead of dumping raw stack traces inside the node bounds.
+
+Please update the Inventory node widget layout and file persistence model accordingly.
+
+
+## refactor and reorganize the node widgets 
+
+Please refactor and reorganize the node widgets in `double_vision/lib/widgets` into a dedicated `nodes` subdirectory.
+
+### Objective
+Group all current and future node-related UI widgets into `double_vision/lib/widgets/nodes/` while preserving clean imports and compiling without errors.
+
+### Directory Structure Target
+Create the following layout under `double_vision/lib/widgets/nodes/`:
+- `lib/widgets/nodes/base/` -> Place foundational/abstract node UI widgets here (e.g., base node container, port renderers, header widgets).
+- `lib/widgets/nodes/implementations/` -> Place all concrete canvas node widgets here (e.g., agent node, function node, source node, start node).
+- `lib/widgets/nodes/nodes.dart` -> Create an export barrel file that re-exports all public widgets from `nodes/`.
+
+### Requirements & Guardrails
+1. File Movements: Move all node-related widget files from `lib/widgets/` into their respective subdirectories inside `lib/widgets/nodes/`. Leave non-node generic UI widgets (like canvas toolbars or modal dialogs) in `lib/widgets/`.
+2. Import Updates: Update all `package:` and relative `import` statements across the entire project (`lib/` and `test/`) to reflect the new file locations.
+3. Barrel File Usage: Prefer exporting all node widgets through `lib/widgets/nodes/nodes.dart` so callers outside the `nodes/` directory can import `package:double_vision/widgets/nodes/nodes.dart` cleanly.
+4. Naming Conventions: Maintain lowerCamelCase for variables and methods, UpperCamelCase for class names, and standard lower_snake_case for filenames. User-facing labels, tooltips, and titles must use standard text formatting (not camelCase).
+5. Verification: Ensure all code compiles cleanly with no broken relative imports or missing symbol errors.
+
+Please analyze the current contents of `lib/widgets/`, present the planned file moves, and execute the refactoring.

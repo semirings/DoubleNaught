@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/workflow.dart';
-import '../widgets/base_node.dart';
+import '../widgets/nodes/nodes.dart';
 
 /// A node kind that can be instantiated from the Workflow header dropdown.
 class NodeType {
@@ -18,6 +18,7 @@ class NodeType {
 /// `_WorkflowPageState._buildNode`) as the `double_*` service nodes land.
 const List<NodeType> nodeTypes = [
   NodeType(name: 'File Source', type: 'file_source'),
+  NodeType(name: 'Image Display', type: 'image_display'),
   NodeType(name: 'Inventory', type: 'inventory'),
   NodeType(name: 'URL Source', type: 'url_source'),
   NodeType(name: 'Fetch', type: 'fetch'),

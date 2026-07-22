@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../models/workflow.dart';
+import '../../../models/workflow.dart';
 import 'connection_drag_scope.dart';
 
 /// A node's output port: a labelled connector dot on the right edge of a node.
@@ -47,10 +47,24 @@ class OutputConnector extends StatelessWidget {
       ),
     );
 
-    Widget portDot = dot;
+    // Output label sits to the LEFT of the dot (right-aligned toward the edge).
+    final content = Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(label, style: TextStyle(color: scheme.onSurfaceVariant)),
+          const SizedBox(width: 6),
+          dot,
+        ],
+      ),
+    );
+
     if (dragData != null) {
       final scope = ConnectionDragScope.of(context);
-      portDot = Draggable<PortRef>(
+      // The whole label+dot is the drag target, not just the 14px dot, so an
+      // edge is easy to grab.
+      return Draggable<PortRef>(
         data: dragData,
         dragAnchorStrategy: pointerDragAnchorStrategy,
         // Drive the canvas's live preview curve (edge creation itself is still
@@ -60,24 +74,17 @@ class OutputConnector extends StatelessWidget {
         onDragEnd: (_) => scope?.onDragEnd(),
         onDraggableCanceled: (_, __) => scope?.onDragEnd(),
         feedback: _DragDot(color: scheme.primary),
-        child: dot,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.grab,
+          child: content,
+        ),
       );
     }
 
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(label, style: TextStyle(color: scheme.onSurfaceVariant)),
-            const SizedBox(width: 6),
-            portDot,
-          ],
-        ),
-      ),
+      child: content,
     );
   }
 }
