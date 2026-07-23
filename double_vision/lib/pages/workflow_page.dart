@@ -3,15 +3,25 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../config/node_registry.dart';
-import '../models/aa_payload.dart';
 import '../models/content_payload.dart';
+import '../services/infobus/input_port.dart';
+import '../services/infobus/output_port.dart';
 import '../models/workflow.dart';
 import '../services/storage_service.dart';
 import '../widgets/focus_panel.dart';
 import '../widgets/nodes/nodes.dart';
 
-/// Fixed node width — used both for layout and to anchor edge endpoints.
+/// Default node width — used both for layout and to anchor edge endpoints.
 const double _kNodeWidth = 240;
+
+/// Wider nodes. Must match the node widgets' own `_width` (InventoryNode /
+/// ReviewNode = 320). Output ports anchor at `node.x + width`, so a wrong value
+/// leaves the source end of a noodle floating inside the node.
+const double _kWideNodeWidth = 320;
+
+/// Rendered width of a node by type, for anchoring its right-edge output ports.
+double _nodeWidthFor(String type) =>
+    (type == 'inventory' || type == 'review') ? _kWideNodeWidth : _kNodeWidth;
 
 /// Vertical offset (from a node's top) at which edges attach. Approximate; the
 /// real connectors sit at different heights per node type.
@@ -36,9 +46,11 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// Output byte streams published by source nodes, keyed by node id.
   final Map<int, Stream<Uint8List>> _outputs = {};
 
-  /// D4M/AA payload streams published by AA-emitting source nodes (URLNode),
-  /// keyed by node id. Consumed by downstream AA-in nodes (FetchNode).
-  final Map<int, Stream<AaPayload>> _aaOutputs = {};
+  /// The AA payload bus. Each AA node registers its egress [OutputPort] and/or
+  /// ingress [InputPort] here, keyed by node id, so a drawn wire binds them via
+  /// `inputPort.connect(outputPort)` (and `disconnect()` on delete).
+  final Map<int, OutputPort> _aaOutputPorts = {};
+  final Map<int, InputPort> _aaInputPorts = {};
 
   /// Raw location strings published by URL Source nodes, keyed by node id.
   /// Consumed by Inventory's `urlInput`.
@@ -82,18 +94,15 @@ class _WorkflowPageState extends State<WorkflowPage>
   static const double _minZoom = 0.3;
   static const double _maxZoom = 3.0;
 
-  /// Image sidebar state — the most recent image received by a Segmentation
-  /// node's `preview` input, plus the resizable panel width.
-  Uint8List? _sidebarImage;
-  String? _sidebarName;
-  int _sidebarBytes = 0;
-
-  /// Focus Panel state — the right-margin slideout that renders heavy content
-  /// so canvas nodes stay compact. [_focusNodeId] is the node whose assets are
-  /// shown; [_focusUrl] is its target (local path or web address).
+  /// Focus Panel state — the tabbed right-margin slideout that renders heavy
+  /// content (images, prose, AA dataframes) so canvas nodes stay compact. One
+  /// tab per node that has pushed content: [_focusContent] holds each node's
+  /// current content, [_focusOrder] fixes the tab order, and [_focusSelected]
+  /// is the visible tab.
   bool _isFocusOpen = false;
-  int? _focusNodeId;
-  String? _focusUrl;
+  final Map<int, FocusContent> _focusContent = {};
+  final List<int> _focusOrder = [];
+  int _focusSelected = 0;
 
   /// Emit sinks for each Image Display node, so the Focus Panel can route
   /// overlay interactions back out of the node that owns the image.
@@ -105,27 +114,62 @@ class _WorkflowPageState extends State<WorkflowPage>
   final Map<int, Stream<List<double>>> _boxSelectOutputs = {};
   final Map<int, Stream<List<double>>> _pointClickOutputs = {};
 
-  /// Which node the panel is showing, and where its asset came from.
-  String? _focusSubtitle() {
-    final parts = <String>[
-      if (_focusNodeId != null) 'Node $_focusNodeId',
-      if (_focusUrl != null)
-        _focusUrl!
-      else ...[
-        if (_sidebarName != null) _sidebarName!,
-        if (_sidebarBytes > 0) _humanSize(_sidebarBytes),
-      ],
-    ];
-    return parts.isEmpty ? null : parts.join(' · ');
+  /// Friendly display name per node type, for the Focus Panel tab labels.
+  static final Map<String, String> _typeNames = {
+    for (final t in nodeTypes) t.type: t.name,
+  };
+
+  /// The Focus Panel tabs, derived from pushed content in insertion order,
+  /// skipping any node that has since been deleted.
+  List<FocusTab> _focusTabs() {
+    final byId = {for (final n in _nodes) n.id: n};
+    final tabs = <FocusTab>[];
+    for (final id in _focusOrder) {
+      final content = _focusContent[id];
+      final node = byId[id];
+      if (content == null || node == null) continue;
+      tabs.add(FocusTab(
+        nodeId: id,
+        title: '${_typeNames[node.type] ?? node.type} $id',
+        content: content,
+      ));
+    }
+    return tabs;
   }
 
-  /// Open the Focus Panel on a specific node instance.
-  void _openImageAssets(int nodeId, String targetUrl) {
+  int _focusIndexOf(int nodeId) {
+    final i = _focusTabs().indexWhere((t) => t.nodeId == nodeId);
+    return i < 0 ? 0 : i;
+  }
+
+  /// Push (or refresh) a node's content into the panel. The first time a node
+  /// contributes, the panel opens and selects its tab; later refreshes update
+  /// in place without stealing the current selection.
+  void _pushFocusContent(int nodeId, FocusContent content) {
     setState(() {
-      _focusNodeId = nodeId;
-      _focusUrl = targetUrl;
-      _isFocusOpen = true;
+      final isNew = !_focusContent.containsKey(nodeId);
+      _focusContent[nodeId] = content;
+      if (!_focusOrder.contains(nodeId)) _focusOrder.add(nodeId);
+      if (isNew) {
+        _isFocusOpen = true;
+        _focusSelected = _focusIndexOf(nodeId);
+      }
     });
+  }
+
+  /// Open the panel and select a node's tab (the node's "View" affordance).
+  void _openFocusTab(int nodeId) {
+    setState(() {
+      _isFocusOpen = true;
+      _focusSelected = _focusIndexOf(nodeId);
+    });
+  }
+
+  /// Open the Focus Panel on an Image Display node's target as an image tab.
+  void _openImageAssets(int nodeId, String targetUrl) {
+    _pushFocusContent(
+        nodeId, FocusContent.image(url: targetUrl, subtitle: targetUrl));
+    _openFocusTab(nodeId);
   }
 
   /// Drives the marching-ants animation of the in-progress curve.
@@ -150,7 +194,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   // --- Port geometry (shared with the painters via the same constants) ---
 
   Offset _outputPortPos(WorkflowNode n, int idx) =>
-      Offset(n.x + _kNodeWidth, n.y + kPortLaneTop + idx * kPortSpacing);
+      Offset(n.x + _nodeWidthFor(n.type), n.y + kPortLaneTop + idx * kPortSpacing);
   Offset _inputPortPos(WorkflowNode n, int idx) =>
       Offset(n.x, n.y + kPortLaneTop + idx * kPortSpacing);
 
@@ -158,6 +202,8 @@ class _WorkflowPageState extends State<WorkflowPage>
   Iterable<int> _inputIndicesFor(WorkflowNode n) {
     switch (n.type) {
       case 'preview':
+        // Two inputs: `bytes` (idx 0) and `aa` (idx 1).
+        return const [0, 1];
       case 'sam3':
       case 'fetch':
       case 'chunk':
@@ -306,14 +352,24 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _deleteNode(int id) {
+    // Unbind any downstream inputs this node was feeding, then drop its ports.
+    for (final e in _edges.where((e) => e.from.nodeId == id)) {
+      _unbindAaInput(e.to.nodeId);
+    }
+    _unbindAaInput(id);
     setState(() {
       _nodes.removeWhere((n) => n.id == id);
       _edges.removeWhere((e) => e.from.nodeId == id || e.to.nodeId == id);
       _outputs.remove(id);
-      _aaOutputs.remove(id);
+      _aaOutputPorts.remove(id);
+      _aaInputPorts.remove(id);
       _locationOutputs.remove(id);
       _contentOutputs.remove(id);
       _sourceNames.remove(id);
+      _focusContent.remove(id);
+      _focusOrder.remove(id);
+      _focusSelected =
+          _focusSelected.clamp(0, _focusOrder.isEmpty ? 0 : _focusOrder.length - 1);
       if (_selectedNodeId == id) _selectedNodeId = null;
     });
   }
@@ -379,6 +435,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _deleteEdge(WorkflowEdge e) {
+    _unbindAaInput(e.to.nodeId);
     setState(() {
       _edges.remove(e);
       if (identical(_selectedEdge, e)) _selectedEdge = null;
@@ -386,6 +443,10 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _disconnectSource(WorkflowEdge e) {
+    for (final x in _edges.where(
+        (x) => x.from.nodeId == e.from.nodeId && x.from.idx == e.from.idx)) {
+      _unbindAaInput(x.to.nodeId);
+    }
     setState(() {
       _edges.removeWhere(
           (x) => x.from.nodeId == e.from.nodeId && x.from.idx == e.from.idx);
@@ -394,6 +455,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _disconnectTarget(WorkflowEdge e) {
+    _unbindAaInput(e.to.nodeId);
     setState(() {
       _edges.removeWhere(
           (x) => x.to.nodeId == e.to.nodeId && x.to.idx == e.to.idx);
@@ -512,31 +574,73 @@ class _WorkflowPageState extends State<WorkflowPage>
     });
   }
 
-  /// Record an edge from [source] (an output port) into [targetId]'s input,
-  /// replacing any existing edge feeding that input.
-  void _connect(PortRef source, int targetId) {
+  /// Record an edge from [source] into [targetId]'s input port [targetIdx],
+  /// replacing any existing edge feeding that same input.
+  void _connectAt(PortRef source, int targetId, int targetIdx) {
+    // Replacing any existing wire into this specific input: drop its binding.
+    _unbindAaInput(targetId, targetIdx);
     setState(() {
-      _edges.removeWhere((e) => e.to.nodeId == targetId);
+      _edges.removeWhere(
+          (e) => e.to.nodeId == targetId && e.to.idx == targetIdx);
       _edges.add(
-        WorkflowEdge(from: source, to: PortRef(nodeId: targetId, idx: 0)),
+        WorkflowEdge(
+            from: source, to: PortRef(nodeId: targetId, idx: targetIdx)),
       );
     });
+    // Bind the AA port bus (no-op unless this is the target's AA input).
+    _bindAaPorts(source, targetId, targetIdx);
   }
 
-  /// Resolve the upstream stream wired into [nodeId]'s input, if any.
-  Stream<Uint8List>? _inputFor(int nodeId) {
+  /// Single-input convenience: connect into input port 0.
+  void _connect(PortRef source, int targetId) =>
+      _connectAt(source, targetId, 0);
+
+  /// Resolve the upstream byte stream wired into [nodeId]'s input port [idx].
+  Stream<Uint8List>? _inputForAt(int nodeId, int idx) {
     for (final e in _edges) {
-      if (e.to.nodeId == nodeId) return _outputs[e.from.nodeId];
+      if (e.to.nodeId == nodeId && e.to.idx == idx) {
+        return _outputs[e.from.nodeId];
+      }
     }
     return null;
   }
 
-  /// Resolve the upstream D4M/AA stream wired into [nodeId]'s input, if any.
-  Stream<AaPayload>? _aaInputFor(int nodeId) {
-    for (final e in _edges) {
-      if (e.to.nodeId == nodeId) return _aaOutputs[e.from.nodeId];
-    }
-    return null;
+  /// Resolve the upstream byte stream wired into [nodeId]'s input port 0.
+  Stream<Uint8List>? _inputFor(int nodeId) => _inputForAt(nodeId, 0);
+
+  /// Whether an edge feeds [nodeId]'s input port 0 (drives the input highlight).
+  bool _hasIncomingEdge(int nodeId) => _hasIncomingEdgeAt(nodeId, 0);
+
+  /// Whether an edge feeds [nodeId]'s input port [idx].
+  bool _hasIncomingEdgeAt(int nodeId, int idx) =>
+      _edges.any((e) => e.to.nodeId == nodeId && e.to.idx == idx);
+
+  /// The input-port index at which [nodeId] exposes its AA ingress port, or null
+  /// if it has none. Preview keeps its AA port at idx 1 (its byte input is idx
+  /// 0); every other AA consumer uses idx 0.
+  int? _aaInputIdxFor(int nodeId) {
+    if (!_aaInputPorts.containsKey(nodeId)) return null;
+    final i = _nodes.indexWhere((n) => n.id == nodeId);
+    if (i < 0) return null;
+    return _nodes[i].type == 'preview' ? 1 : 0;
+  }
+
+  /// Bind an AA edge on the port bus: the target's InputPort subscribes to the
+  /// source's OutputPort. No-op unless [targetIdx] is the target's AA input and
+  /// both endpoints carry AA ports.
+  void _bindAaPorts(PortRef source, int targetId, int targetIdx) {
+    if (_aaInputIdxFor(targetId) != targetIdx) return;
+    final out = _aaOutputPorts[source.nodeId];
+    final input = _aaInputPorts[targetId];
+    if (out != null && input != null) input.connect(out);
+  }
+
+  /// Unbind [targetId]'s AA InputPort (on wire delete / replace / node removal).
+  /// When [targetIdx] is given, only unbinds if it is the AA input index, so a
+  /// byte edge into Preview's idx 0 never severs its AA binding at idx 1.
+  void _unbindAaInput(int targetId, [int? targetIdx]) {
+    if (targetIdx != null && _aaInputIdxFor(targetId) != targetIdx) return;
+    _aaInputPorts[targetId]?.disconnect();
   }
 
   /// Resolve the raw location stream wired into [nodeId]'s input, if any.
@@ -641,14 +745,21 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   /// Remove all nodes and edges from the canvas.
   void _clear() {
+    for (final port in _aaInputPorts.values) {
+      port.disconnect();
+    }
     setState(() {
       _nodes.clear();
       _edges.clear();
       _outputs.clear();
-      _aaOutputs.clear();
+      _aaOutputPorts.clear();
+      _aaInputPorts.clear();
       _locationOutputs.clear();
       _contentOutputs.clear();
       _sourceNames.clear();
+      _focusContent.clear();
+      _focusOrder.clear();
+      _focusSelected = 0;
     });
   }
 
@@ -677,12 +788,9 @@ class _WorkflowPageState extends State<WorkflowPage>
                   isOpen: _isFocusOpen,
                   onToggle: () =>
                       setState(() => _isFocusOpen = !_isFocusOpen),
-                  title: 'Image Assets',
-                  subtitle: _focusSubtitle(),
-                  targetUrl: _focusUrl,
-                  // Falls back to in-memory bytes (e.g. a Segmentation
-                  // preview) when no target address is focused.
-                  imageBytes: _focusUrl == null ? _sidebarImage : null,
+                  tabs: _focusTabs(),
+                  selectedIndex: _focusSelected,
+                  onSelectTab: (i) => setState(() => _focusSelected = i),
                 ),
               ],
             ),
@@ -830,7 +938,8 @@ class _WorkflowPageState extends State<WorkflowPage>
               ),
             ),
 
-          // Selected outline: a distinct ring drawn over the node bounds.
+          // Selected outline: a 2px accent border only — the node's card fill
+          // is left untouched (no background tint, no glow).
           if (_selectedNodeId == node.id)
             Positioned.fill(
               child: IgnorePointer(
@@ -838,12 +947,6 @@ class _WorkflowPageState extends State<WorkflowPage>
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(kNodeRadius),
                     border: Border.all(color: scheme.tertiary, width: 2),
-                    boxShadow: [
-                      BoxShadow(
-                          color: scheme.tertiary,
-                          blurRadius: 6,
-                          spreadRadius: 1),
-                    ],
                   ),
                 ),
               ),
@@ -872,9 +975,9 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'image_display':
         return ImageDisplayNode(
           node: node,
-          // `urlInput` — the source location arrives from an upstream URL
-          // Source node's AA payload; the edge is recorded on drop.
-          aaInput: _aaInputFor(node.id),
+          // `urlInput` — AA location from an upstream node, over the port bus.
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputPort: (port) => _aaInputPorts[node.id] = port,
           onInputConnect: (source) => _connect(source, node.id),
           // The lower-right indicator opens the Focus Panel for this instance.
           onViewImageAssets: _openImageAssets,
@@ -900,57 +1003,68 @@ class _WorkflowPageState extends State<WorkflowPage>
           // `urlInput` — a raw location from an upstream URL Source node.
           locationInput: _locationInputFor(node.id),
           onInputConnect: (source) => _connect(source, node.id),
-          // Catalog row for AA consumers, plus the fetched asset itself.
-          onConnect: (stream) => _aaOutputs[node.id] = stream,
-          onContentConnect: (stream) => _contentOutputs[node.id] = stream,
+          // `entry` AA on the port bus; content asset stays a stream.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          onContentConnect: (stream) {
+            _contentOutputs[node.id] = stream;
+            // Also expose the fetched content as a raw byte stream, so a
+            // downstream Preview (which consumes Uint8List) can display it.
+            // Stored once (stable identity) so Preview doesn't re-subscribe.
+            _outputs[node.id] = stream.map((c) => c.bytes);
+          },
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'fetch':
         return FetchNode(
           node: node,
-          // Consume the upstream URLNode AA and record the input edge.
-          aaInput: _aaInputFor(node.id),
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputPort: (port) => _aaInputPorts[node.id] = port,
           onInputConnect: (source) => _connect(source, node.id),
-          // Publish the cleaned-text AA for a downstream ChunkNode.
-          onConnect: (stream) => _aaOutputs[node.id] = stream,
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'chunk':
         return ChunkNode(
           node: node,
-          // Consume the upstream FetchNode AA and record the input edge.
-          aaInput: _aaInputFor(node.id),
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputPort: (port) => _aaInputPorts[node.id] = port,
           onInputConnect: (source) => _connect(source, node.id),
-          // Publish the passage AA for downstream processing.
-          onConnect: (stream) => _aaOutputs[node.id] = stream,
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'review':
         return ReviewNode(
           node: node,
-          // Consume the upstream ChunkNode AA and record the input edge.
-          aaInput: _aaInputFor(node.id),
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputPort: (port) => _aaInputPorts[node.id] = port,
           onInputConnect: (source) => _connect(source, node.id),
-          // Publish the curated AA (approved + edited) for AA2JSONLNode.
-          onConnect: (stream) => _aaOutputs[node.id] = stream,
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'aa2jsonl':
         return Aa2JsonlNode(
           node: node,
-          // Consume the upstream ChunkNode/ReviewNode AA and record the edge.
-          aaInput: _aaInputFor(node.id),
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputPort: (port) => _aaInputPorts[node.id] = port,
           onInputConnect: (source) => _connect(source, node.id),
-          // Publish the provenance AA (write manifest) for downstream use.
-          onConnect: (stream) => _aaOutputs[node.id] = stream,
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'preview':
         return PreviewNode(
           node: node,
-          input: _inputFor(node.id),
+          // `bytes` input (idx 0) — image/text byte stream.
+          input: _inputForAt(node.id, 0),
           fileName: _fileNameFor(node.id),
-          onConnect: (source) => _connect(source, node.id),
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onConnect: (source) => _connectAt(source, node.id, 0),
+          // `aa` input (idx 1) — an associative array over the port bus.
+          aaConnected: _hasIncomingEdgeAt(node.id, 1),
+          onAaConnect: (source) => _connectAt(source, node.id, 1),
+          onAaInputPort: (port) => _aaInputPorts[node.id] = port,
+          // Route decoded content to the Focus Panel tab for this node.
+          onContent: _pushFocusContent,
+          onView: _openFocusTab,
         );
       case 'sam3':
         return Sam3Node(
@@ -963,11 +1077,16 @@ class _WorkflowPageState extends State<WorkflowPage>
           previewInput: _inputFor(node.id),
           previewFileName: _fileNameFor(node.id),
           connectedOutputs: _connectedOutputs(node.id),
-          onPreviewImage: (bytes, name) => setState(() {
-            _sidebarImage = bytes;
-            _sidebarName = name;
-            _sidebarBytes = bytes.length;
-          }),
+          onPreviewImage: (bytes, name) => _pushFocusContent(
+            node.id,
+            FocusContent.image(
+              bytes: bytes,
+              subtitle: [
+                if (name != null && name.isNotEmpty) name,
+                _humanSize(bytes.length),
+              ].join(' · '),
+            ),
+          ),
         );
       default:
         return PlaceholderNode(node: node);
@@ -1010,8 +1129,9 @@ class _EdgePainter extends CustomPainter {
       if (from == null || to == null) continue;
 
       // Anchor each endpoint on the actual port dot: same Edge-Anchor geometry
-      // the wrapper uses to position the ports (lane top + idx * spacing).
-      final start = Offset(from.x + _kNodeWidth,
+      // the wrapper uses to position the ports (lane top + idx * spacing), with
+      // the source's true width so wide nodes (Inventory/Review) anchor right.
+      final start = Offset(from.x + _nodeWidthFor(from.type),
           from.y + kPortLaneTop + e.from.idx * kPortSpacing);
       final end = Offset(to.x, to.y + kPortLaneTop + e.to.idx * kPortSpacing);
       final path = _edgePath(start, end);
@@ -1081,7 +1201,7 @@ class _PendingEdgePainter extends CustomPainter {
     final from = byId[src.nodeId];
     if (from == null) return;
 
-    final start = Offset(from.x + _kNodeWidth,
+    final start = Offset(from.x + _nodeWidthFor(from.type),
         from.y + kPortLaneTop + src.idx * kPortSpacing);
     final path = _edgePath(start, end);
 

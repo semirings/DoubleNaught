@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import '../../../models/aa_payload.dart';
 import '../../../models/content_payload.dart';
 import '../../../models/workflow.dart';
+import '../../../services/infobus/output_port.dart';
 import '../../../services/inventory_api.dart';
 import '../../../services/inventory_store.dart';
 import '../base/double_naught_node_wrapper.dart';
@@ -36,8 +37,8 @@ class InventoryNode extends StatefulWidget {
 
   final WorkflowNode node;
 
-  /// Called once with the node's output stream — the `entry` connector.
-  final void Function(Stream<AaPayload> entry)? onConnect;
+  /// Registers this node's `entry` egress OutputPort with the canvas bridge.
+  final void Function(OutputPort port)? onOutputPort;
 
   /// Called once with the fetched-asset stream — the `content` connector.
   final void Function(Stream<ContentPayload> content)? onContentConnect;
@@ -58,7 +59,7 @@ class InventoryNode extends StatefulWidget {
   const InventoryNode({
     super.key,
     required this.node,
-    this.onConnect,
+    this.onOutputPort,
     this.onContentConnect,
     this.locationInput,
     this.onInputConnect,
@@ -85,7 +86,9 @@ class _InventoryNodeState extends State<InventoryNode> {
   bool _busy = false;
   String? _error;
 
-  late final StreamController<AaPayload> _output;
+  /// The `entry` egress port (retained-replay built in). Registered with the
+  /// canvas bridge in [initState].
+  final OutputPort _out = OutputPort('entry');
   AaPayload? _lastOutput;
   String? _sentId; // entry most recently emitted downstream
 
@@ -107,10 +110,9 @@ class _InventoryNodeState extends State<InventoryNode> {
   @override
   void initState() {
     super.initState();
-    _output = StreamController<AaPayload>.broadcast(onListen: _replayLast);
     _contentOutput =
         StreamController<ContentPayload>.broadcast(onListen: _replayLastContent);
-    widget.onConnect?.call(_output.stream);
+    widget.onOutputPort?.call(_out);
     widget.onContentConnect?.call(_contentOutput.stream);
     _subscribeLocations();
     _load();
@@ -125,17 +127,9 @@ class _InventoryNodeState extends State<InventoryNode> {
   @override
   void dispose() {
     _locationSub?.cancel();
-    _output.close();
+    _out.dispose();
     _contentOutput.close();
     super.dispose();
-  }
-
-  void _replayLast() {
-    final payload = _lastOutput;
-    if (payload == null) return;
-    scheduleMicrotask(() {
-      if (!_output.isClosed) _output.add(payload);
-    });
   }
 
   void _replayLastContent() {
@@ -357,7 +351,7 @@ class _InventoryNodeState extends State<InventoryNode> {
       final payload = _store.selectAa(entry);
       if (!mounted) return;
       _lastOutput = payload;
-      _output.add(payload);
+      _out.emit(payload);
       setState(() => _sentId = entry.entryId);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -591,7 +585,7 @@ class _EntryFormDialogState extends State<_EntryFormDialog> {
   late final TextEditingController _title;
   late final TextEditingController _selector;
   late final TextEditingController _description;
-  String? _author;
+  late final TextEditingController _author;
   String? _validationError;
 
   @override
@@ -602,7 +596,7 @@ class _EntryFormDialogState extends State<_EntryFormDialog> {
     _title = TextEditingController(text: e?.workTitle ?? '');
     _selector = TextEditingController(text: e?.workSelector ?? '');
     _description = TextEditingController(text: e?.description ?? '');
-    _author = e?.author;
+    _author = TextEditingController(text: e?.author ?? '');
   }
 
   @override
@@ -611,11 +605,14 @@ class _EntryFormDialogState extends State<_EntryFormDialog> {
     _title.dispose();
     _selector.dispose();
     _description.dispose();
+    _author.dispose();
     super.dispose();
   }
 
   void _submit() {
-    if (_url.text.trim().isEmpty || _title.text.trim().isEmpty || _author == null) {
+    if (_url.text.trim().isEmpty ||
+        _title.text.trim().isEmpty ||
+        _author.text.trim().isEmpty) {
       setState(() => _validationError = 'URL, Author and Work Title are required');
       return;
     }
@@ -623,7 +620,7 @@ class _EntryFormDialogState extends State<_EntryFormDialog> {
       context,
       InventoryFields(
         url: _url.text.trim(),
-        author: _author!,
+        author: _author.text.trim(),
         workTitle: _title.text.trim(),
         workSelector: _selector.text.trim(),
         description: _description.text.trim(),
@@ -649,15 +646,13 @@ class _EntryFormDialogState extends State<_EntryFormDialog> {
             children: [
               TextField(controller: _url, decoration: deco('URL', 'https://…')),
               const SizedBox(height: 12),
-              DropdownButtonFormField<String>(
-                initialValue: _author,
-                decoration: deco('Author'),
-                hint: const Text('select author'),
-                items: [
-                  for (final a in InventoryNode.authors)
-                    DropdownMenuItem(value: a, child: Text(a)),
-                ],
-                onChanged: (v) => setState(() => _author = v),
+              // Free-text so any author can be added; the known corpus authors
+              // are shown as a hint rather than an enforced list.
+              TextField(
+                controller: _author,
+                decoration: deco('Author', 'e.g. chesterton').copyWith(
+                  helperText: 'Known: ${InventoryNode.authors.join(', ')}',
+                ),
               ),
               const SizedBox(height: 12),
               TextField(controller: _title, decoration: deco('Work Title')),

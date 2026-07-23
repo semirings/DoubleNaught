@@ -1,10 +1,10 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
+import '../../../services/infobus/input_port.dart';
+import '../../../services/infobus/output_port.dart';
 import '../../../services/review_api.dart';
 import '../../../services/storage_service.dart';
 import '../base/double_naught_node_wrapper.dart';
@@ -28,14 +28,17 @@ class ReviewNode extends StatefulWidget {
 
   final WorkflowNode node;
 
-  /// Upstream AA stream wired into the input, or null when nothing is connected.
-  final Stream<AaPayload>? aaInput;
+  /// True when an edge feeds this node's input (drives the port highlight).
+  final bool inputConnected;
 
   /// Called with the source endpoint when an edge is dropped on the input port.
   final void Function(PortRef source)? onInputConnect;
 
-  /// Called once with the node's output stream — the `curated` connector.
-  final void Function(Stream<AaPayload> curated)? onConnect;
+  /// Registers this node's ingress InputPort with the canvas bridge.
+  final void Function(InputPort port)? onInputPort;
+
+  /// Registers this node's egress OutputPort with the canvas bridge.
+  final void Function(OutputPort port)? onOutputPort;
 
   /// Output port indices with an outgoing edge — drives the connected highlight.
   final Set<int> connectedOutputs;
@@ -49,9 +52,10 @@ class ReviewNode extends StatefulWidget {
   ReviewNode({
     super.key,
     required this.node,
-    this.aaInput,
+    this.inputConnected = false,
     this.onInputConnect,
-    this.onConnect,
+    this.onInputPort,
+    this.onOutputPort,
     this.connectedOutputs = const {},
     this.api = const ReviewApi(),
     StorageService? storage,
@@ -62,7 +66,11 @@ class ReviewNode extends StatefulWidget {
 }
 
 class _ReviewNodeState extends State<ReviewNode> {
-  StreamSubscription<AaPayload>? _inputSub;
+  /// Ingress/egress ports. The node listens to its own [_in] from birth, so the
+  /// upstream's retained value is delivered when the canvas calls connect().
+  final InputPort _in = InputPort('chunks');
+  final OutputPort _out = OutputPort('curated');
+
   AaPayload? _incoming;
 
   ReviewSession? _session;
@@ -74,7 +82,6 @@ class _ReviewNodeState extends State<ReviewNode> {
   bool _busy = false;
   String? _error;
 
-  late final StreamController<AaPayload> _output;
   AaPayload? _lastOutput;
 
   final FocusNode _focusNode = FocusNode(debugLabel: 'reviewNode');
@@ -84,42 +91,25 @@ class _ReviewNodeState extends State<ReviewNode> {
   @override
   void initState() {
     super.initState();
-    _output = StreamController<AaPayload>.broadcast(onListen: _replayLast);
-    widget.onConnect?.call(_output.stream);
-    _subscribeInput();
+    widget.onInputPort?.call(_in);
+    widget.onOutputPort?.call(_out);
+    _in.onDataArrived.listen(_onIncoming);
     _tryResumeFromStorage();
   }
 
   @override
-  void didUpdateWidget(ReviewNode oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.aaInput != widget.aaInput) _subscribeInput();
-  }
-
-  @override
   void dispose() {
-    _inputSub?.cancel();
+    _in.dispose();
+    _out.dispose();
     _editController.dispose();
     _focusNode.dispose();
-    _output.close();
     super.dispose();
   }
 
-  void _replayLast() {
-    final payload = _lastOutput;
-    if (payload == null) return;
-    scheduleMicrotask(() {
-      if (!_output.isClosed) _output.add(payload);
-    });
-  }
-
-  void _subscribeInput() {
-    _inputSub?.cancel();
-    _inputSub = widget.aaInput?.listen((payload) {
-      if (!mounted) return;
-      setState(() => _incoming = payload);
-      _startReview(payload);
-    });
+  void _onIncoming(AaPayload payload) {
+    if (!mounted) return;
+    setState(() => _incoming = payload);
+    _startReview(payload);
   }
 
   /// Resume a saved session on (re)mount — before any upstream re-emits.
@@ -213,7 +203,7 @@ class _ReviewNodeState extends State<ReviewNode> {
       final forwarded = _forwardable(full);
       if (!mounted) return;
       _lastOutput = forwarded;
-      _output.add(forwarded);
+      _out.emit(forwarded);
       setState(() {}); // refresh the output-port highlight
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -289,7 +279,7 @@ class _ReviewNodeState extends State<ReviewNode> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final wired = widget.aaInput != null;
+    final wired = widget.inputConnected;
     final session = _session;
     final hasOutput = _lastOutput != null;
 

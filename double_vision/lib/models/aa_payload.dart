@@ -33,6 +33,14 @@ class AaPayload {
         vals: [for (final v in (json['vals'] as List? ?? const [])) v as Object],
       );
 
+  /// A single-triple status payload — e.g. a node reporting `thinking` / `idle`.
+  /// Read it back with `value('status')`.
+  factory AaPayload.status(String state) => AaPayload(
+        rows: const ['status'],
+        cols: const ['status'],
+        vals: [state],
+      );
+
   Map<String, dynamic> toJson() => {
         'rows': rows,
         'cols': cols,

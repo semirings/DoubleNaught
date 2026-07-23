@@ -1,8 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:path_provider/path_provider.dart';
-
 import '../models/aa_payload.dart';
 import 'inventory_api.dart' show InventoryEntry, InventoryFields;
 
@@ -15,12 +13,19 @@ import 'inventory_api.dart' show InventoryEntry, InventoryFields;
 ///
 /// Note `dart:io` makes this desktop/mobile only.
 class InventoryStore {
-  /// Explicit file path, for tests or a deliberate override. When null the
-  /// store resolves the platform's application-support directory on first use.
+  /// Absolute directory for the local JSON catalog. Absolute (not CWD-relative)
+  /// because a bundled macOS app runs with a working directory of `/`. Defaults
+  /// to the repo's `storage/` so the file is visible in the workspace; override
+  /// per run with `--dart-define=DN_STORAGE_DIR=/path` (run.sh DV passes it).
   ///
-  /// That resolution matters: a CWD-relative path (`../storage/...`) escapes
-  /// the macOS app container — a bundled app's working directory is `/`, so it
-  /// would try to create `/storage` and fail with a PathAccessException.
+  /// Writing here requires the app to be **un-sandboxed** — the debug build
+  /// disables `com.apple.security.app-sandbox` for exactly this reason.
+  static const _storageDir = String.fromEnvironment(
+    'DN_STORAGE_DIR',
+    defaultValue: '/Users/gcr/populi.Wk/DoubleNaught/storage',
+  );
+
+  /// Explicit file path, for tests or a deliberate override.
   final String? overridePath;
 
   File? _cachedFile;
@@ -31,11 +36,7 @@ class InventoryStore {
   Future<File> resolveFile() async {
     final cached = _cachedFile;
     if (cached != null) return cached;
-    final override = overridePath;
-    final file = override != null
-        ? File(override)
-        : File('${(await getApplicationSupportDirectory()).path}'
-            '/inventory.json');
+    final file = File(overridePath ?? '$_storageDir/inventory.json');
     _cachedFile = file;
     return file;
   }

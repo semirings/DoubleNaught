@@ -1014,3 +1014,49 @@ Create the following layout under `double_vision/lib/widgets/nodes/`:
 5. Verification: Ensure all code compiles cleanly with no broken relative imports or missing symbol errors.
 
 Please analyze the current contents of `lib/widgets/`, present the planned file moves, and execute the refactoring.
+
+## manually added
+
+I have manually added the new core reactive primitives (`OutputPort`, `InputPort`, and `AgentNode`) to the codebase. We are moving from our legacy direct-call execution to a fully decoupled PubSub event architecture.
+
+Please execute this task in two clear phases:
+
+### Phase 1: Code Review & Validation
+Review the implementation of `OutputPort`, `InputPort`, and `AgentNode` against the following criteria:
+1. Stream Lifecycle & Memory Safety: Are Dart Streams, `StreamSubscription`s, and `StreamController`s properly disposed of when ports or nodes are disconnected or destroyed?
+2. Queue & Backpressure Handling: How does `InputPort` handle incoming payloads when the node is busy or executing? Are there edge cases with missing or late-arriving data?
+3. Type Safety & Schema Guardrails: Are `AaPayload` objects validated correctly on ingress?
+4. Naming & Style Rules: Ensure all code uses lowerCamelCase for members, UpperCamelCase for types, and lower_snake_case for filenames. User-facing labels must use standard human text formatting (not camelCase).
+
+Provide a concise summary of any critical findings or improvements needed before integration.
+
+### Phase 2: Integration Plan & Refactoring
+Once the core primitives are verified, outline and execute a step-by-step refactoring plan to replace our legacy execution engine:
+1. Target Analysis: Identify all legacy node definitions, execution callers, and UI wire-binding components currently in use.
+2. Step-by-Step Refactoring: Rewrite the legacy execution components to inherit from or delegate to `AgentNode`, using `InputPort.connect(outputPort)` for wire connections.
+3. Verification: Ensure all relative and package imports compile without errors and that nodes cleanly emit and consume `AaPayload` messages across the canvas.
+
+Please start with Phase 1 (Code Review) and present your findings before we proceed to Phase 2.
+
+## when selecting or dragging a node
+
+We need to update the drag-and-drop / selection visual feedback for nodes on our Flutter visual canvas.
+
+### Issue
+Currently, when selecting or dragging a node, the **entire node container highlights** (filling the background). 
+
+### Desired Behavior
+Change the visual selection feedback so that **only the outer border highlights** upon selection/drag, while the node's main card background color remains unchanged.
+
+### Requirements & Code Rules
+1. Selection Visuals:
+   - Keep the normal node card/container background color constant during selection or dragging state changes.
+   - Apply the active accent/selection color strictly to the node card's `Border` or `BoxDecoration` border width/color (e.g., a 2px accent outline).
+2. Canvas State Management:
+   - Locate the node widget's `BoxDecoration` or wrapping selection container (e.g., in `NodeWidget`, `CanvasNode`, or custom painter).
+   - Ensure hover, selected, and dragging visual states are driven cleanly by selection state flags without altering the inner child fill.
+3. Code Standards:
+   - Maintain lowerCamelCase for internal variables/properties.
+   - Ensure user-facing labels or tooltips remain formatted in standard text.
+
+Please inspect our node visual canvas widget, update the selection/drag decoration styling to highlight only the border, and confirm that it compiles cleanly.

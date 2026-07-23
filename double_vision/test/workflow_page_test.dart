@@ -8,7 +8,9 @@ import 'package:flutter_test/flutter_test.dart';
 Future<void> _add(WidgetTester tester, String name) async {
   await tester.tap(find.text('Workflow'));
   await tester.pumpAndSettle();
-  await tester.tap(find.text(name));
+  // `.last` targets the menu item in the popup overlay, not an on-canvas node
+  // whose title bar may show the same text.
+  await tester.tap(find.text(name).last);
   await tester.pumpAndSettle();
 }
 

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../models/workflow.dart';
+import 'base_node.dart' show kPortRowHeight;
 import 'connection_drag_scope.dart';
 
 /// A node's output port: a labelled connector dot on the right edge of a node.
@@ -48,15 +49,20 @@ class OutputConnector extends StatelessWidget {
     );
 
     // Output label sits to the LEFT of the dot (right-aligned toward the edge).
-    final content = Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(label, style: TextStyle(color: scheme.onSurfaceVariant)),
-          const SizedBox(width: 6),
-          dot,
-        ],
+    // Fixed-height slot: the wrapper centers it on the port anchor, so the dot's
+    // center coincides with the connected noodle's endpoint.
+    final content = SizedBox(
+      height: kPortRowHeight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(label, style: TextStyle(color: scheme.onSurfaceVariant)),
+            const SizedBox(width: 6),
+            dot,
+          ],
+        ),
       ),
     );
 
@@ -74,10 +80,7 @@ class OutputConnector extends StatelessWidget {
         onDragEnd: (_) => scope?.onDragEnd(),
         onDraggableCanceled: (_, __) => scope?.onDragEnd(),
         feedback: _DragDot(color: scheme.primary),
-        child: MouseRegion(
-          cursor: SystemMouseCursors.grab,
-          child: content,
-        ),
+        child: MouseRegion(cursor: SystemMouseCursors.grab, child: content),
       );
     }
 

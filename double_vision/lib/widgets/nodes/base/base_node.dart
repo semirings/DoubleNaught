@@ -32,6 +32,12 @@ const double kPortSpacing = 24;
 /// over the node's boundary edge.
 const double kPortDotRadius = 7;
 
+/// Fixed height of a port's hit slot. The dot is vertically centered inside it,
+/// and the wrapper centers the slot on the port's anchor line ([kPortLaneTop] +
+/// idx*[kPortSpacing]); so the dot's center — and thus the connected noodle —
+/// lands exactly on that line, regardless of how tall the port label's text is.
+const double kPortRowHeight = 20;
+
 /// Height of the node's title bar. It doubles as the primary drag handle, so
 /// the canvas overlays a drag/select target of exactly this height over each
 /// node's top. Kept below [kPortLaneTop] so the first port sits in the body,
@@ -113,8 +119,9 @@ class BaseNodeFrame extends StatelessWidget {
                         maxLines: 1,
                         softWrap: false,
                         overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.titleSmall
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                        style: theme.textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
                   ],
@@ -150,9 +157,6 @@ abstract class BaseNode extends StatelessWidget {
   Widget buildBody(BuildContext context);
 
   @override
-  Widget build(BuildContext context) => BaseNodeFrame(
-        title: title,
-        icon: icon,
-        child: buildBody(context),
-      );
+  Widget build(BuildContext context) =>
+      BaseNodeFrame(title: title, icon: icon, child: buildBody(context));
 }

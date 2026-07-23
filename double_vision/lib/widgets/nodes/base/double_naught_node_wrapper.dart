@@ -9,6 +9,7 @@ import 'base_node.dart'
         kPortLaneTop,
         kPortSpacing,
         kPortDotRadius,
+        kPortRowHeight,
         kTitleBarHeight;
 
 /// The universal node shell — the compositional successor to the (now
@@ -115,13 +116,15 @@ class DoubleNaughtNodeWrapper extends StatelessWidget {
             for (var i = 0; i < inputPorts.length; i++)
               Positioned(
                 left: -kPortDotRadius,
-                top: kPortLaneTop + i * kPortSpacing - kPortDotRadius,
+                // Center the fixed-height slot on the anchor line, so the dot's
+                // center lands exactly on it regardless of label text height.
+                top: kPortLaneTop + i * kPortSpacing - kPortRowHeight / 2,
                 child: inputPorts[i],
               ),
             for (var i = 0; i < outputPorts.length; i++)
               Positioned(
                 right: -kPortDotRadius,
-                top: kPortLaneTop + i * kPortSpacing - kPortDotRadius,
+                top: kPortLaneTop + i * kPortSpacing - kPortRowHeight / 2,
                 child: outputPorts[i],
               ),
           ],
@@ -146,8 +149,11 @@ class _Header extends StatelessWidget {
       children: [
         // Subtle drag affordance — the title bar is the handle (the old six-dot
         // grip cluster is gone).
-        Icon(Icons.drag_indicator,
-            size: 14, color: theme.colorScheme.outlineVariant),
+        Icon(
+          Icons.drag_indicator,
+          size: 14,
+          color: theme.colorScheme.outlineVariant,
+        ),
         const SizedBox(width: 4),
         Icon(icon, size: 18, color: theme.colorScheme.primary),
         const SizedBox(width: 6),
@@ -157,8 +163,9 @@ class _Header extends StatelessWidget {
             maxLines: 1,
             softWrap: false,
             overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.titleSmall
-                ?.copyWith(fontWeight: FontWeight.w600),
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ),
       ],

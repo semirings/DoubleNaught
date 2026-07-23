@@ -1,10 +1,10 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
 import '../../../services/chunk_api.dart';
+import '../../../services/infobus/input_port.dart';
+import '../../../services/infobus/output_port.dart';
 import '../base/double_naught_node_wrapper.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
@@ -25,14 +25,17 @@ class ChunkNode extends StatefulWidget {
   /// Graph metadata for this node (id/type/position).
   final WorkflowNode node;
 
-  /// Upstream AA stream wired into the input, or null when nothing is connected.
-  final Stream<AaPayload>? aaInput;
+  /// True when an edge feeds this node's input (drives the port highlight).
+  final bool inputConnected;
 
   /// Called with the source endpoint when an edge is dropped on the input port.
   final void Function(PortRef source)? onInputConnect;
 
-  /// Called once with the node's output stream — the `chunks` connector.
-  final void Function(Stream<AaPayload> chunks)? onConnect;
+  /// Registers this node's ingress InputPort with the canvas bridge.
+  final void Function(InputPort port)? onInputPort;
+
+  /// Registers this node's egress OutputPort with the canvas bridge.
+  final void Function(OutputPort port)? onOutputPort;
 
   /// Output port indices with an outgoing edge — drives the connected-port
   /// highlight, matching every other node.
@@ -44,9 +47,10 @@ class ChunkNode extends StatefulWidget {
   const ChunkNode({
     super.key,
     required this.node,
-    this.aaInput,
+    this.inputConnected = false,
     this.onInputConnect,
-    this.onConnect,
+    this.onInputPort,
+    this.onOutputPort,
     this.connectedOutputs = const {},
     this.api = const ChunkApi(),
   });
@@ -56,17 +60,15 @@ class ChunkNode extends StatefulWidget {
 }
 
 class _ChunkNodeState extends State<ChunkNode> {
-  StreamSubscription<AaPayload>? _inputSub;
+  /// Ingress/egress ports. The node listens to its own [_in] from birth, so the
+  /// upstream's retained value is delivered when the canvas calls connect().
+  final InputPort _in = InputPort('rawText');
+  final OutputPort _out = OutputPort('chunks');
 
   /// The most recent AA payload received from upstream, or null.
   AaPayload? _incoming;
 
-  /// Broadcast output port. Created in [initState] so [onConnect] can hand it to
-  /// downstream nodes before any chunking runs; its onListen replays the last
-  /// emitted payload to late subscribers.
-  late final StreamController<AaPayload> _output;
-
-  /// The most recent passage AA emitted, retained for replay.
+  /// The most recent passage AA emitted, retained for the highlight.
   AaPayload? _lastOutput;
 
   /// Statistics from the last successful chunking run.
@@ -80,44 +82,26 @@ class _ChunkNodeState extends State<ChunkNode> {
   @override
   void initState() {
     super.initState();
-    _output = StreamController<AaPayload>.broadcast(onListen: _replayLast);
-    widget.onConnect?.call(_output.stream);
-    _subscribeInput();
-  }
-
-  @override
-  void didUpdateWidget(ChunkNode oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.aaInput != widget.aaInput) _subscribeInput();
+    widget.onInputPort?.call(_in);
+    widget.onOutputPort?.call(_out);
+    _in.onDataArrived.listen(_onIncoming);
   }
 
   @override
   void dispose() {
-    _inputSub?.cancel();
-    _output.close();
+    _in.dispose();
+    _out.dispose();
     super.dispose();
   }
 
-  void _replayLast() {
-    final payload = _lastOutput;
-    if (payload == null) return;
-    scheduleMicrotask(() {
-      if (!_output.isClosed) _output.add(payload);
-    });
-  }
-
-  /// (Re)subscribe to the upstream AA stream. A fresh upstream payload resets the
-  /// node to idle so the user can re-chunk the new document.
-  void _subscribeInput() {
-    _inputSub?.cancel();
-    _inputSub = widget.aaInput?.listen((payload) {
-      if (!mounted) return;
-      setState(() {
-        _incoming = payload;
-        _status = ChunkStatus.idle;
-        _stats = null;
-        _error = null;
-      });
+  /// A fresh upstream payload resets the node to idle so the user can re-chunk.
+  void _onIncoming(AaPayload payload) {
+    if (!mounted) return;
+    setState(() {
+      _incoming = payload;
+      _status = ChunkStatus.idle;
+      _stats = null;
+      _error = null;
     });
   }
 
@@ -132,7 +116,7 @@ class _ChunkNodeState extends State<ChunkNode> {
       final result = await widget.api.chunk(incoming);
       if (!mounted) return;
       _lastOutput = result.aa;
-      _output.add(result.aa);
+      _out.emit(result.aa);
       setState(() {
         _stats = result.stats;
         _status = ChunkStatus.complete;
@@ -150,7 +134,7 @@ class _ChunkNodeState extends State<ChunkNode> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final wired = widget.aaInput != null;
+    final wired = widget.inputConnected;
     final hasOutput = _lastOutput != null;
 
     return DoubleNaughtNodeWrapper(

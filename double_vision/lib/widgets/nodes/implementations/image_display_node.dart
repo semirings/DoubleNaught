@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
+import '../../../services/infobus/input_port.dart';
 import '../base/double_naught_node_wrapper.dart';
 import '../../focus_panel.dart' show resolveImageProvider;
 import '../base/input_connector.dart';
@@ -47,8 +48,11 @@ class ImageDisplayNode extends StatefulWidget {
   /// Graph metadata for this node (id/type/position).
   final WorkflowNode node;
 
-  /// Upstream payload carrying the source location, or null when unconnected.
-  final Stream<AaPayload>? aaInput;
+  /// True when an edge feeds `urlInput` (drives the port highlight).
+  final bool inputConnected;
+
+  /// Registers this node's `urlInput` InputPort with the canvas bridge.
+  final void Function(InputPort port)? onInputPort;
 
   /// Called with the source endpoint when an edge is dropped on `urlInput`.
   final void Function(PortRef source)? onInputConnect;
@@ -76,7 +80,8 @@ class ImageDisplayNode extends StatefulWidget {
   const ImageDisplayNode({
     super.key,
     required this.node,
-    this.aaInput,
+    this.inputConnected = false,
+    this.onInputPort,
     this.onInputConnect,
     this.onViewImageAssets,
     this.onPromptConnect,
@@ -91,7 +96,9 @@ class ImageDisplayNode extends StatefulWidget {
 }
 
 class _ImageDisplayNodeState extends State<ImageDisplayNode> {
-  StreamSubscription<AaPayload>? _inputSub;
+  /// `urlInput` ingress port. Listened to from birth, so the upstream's
+  /// retained AA is delivered when the canvas calls connect().
+  final InputPort _in = InputPort('urlInput');
 
   final StreamController<String> _promptOutput =
       StreamController<String>.broadcast();
@@ -113,7 +120,7 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
   ImageStream? _imageStream;
   ImageStreamListener? _imageListener;
 
-  bool get _wired => widget.aaInput != null;
+  bool get _wired => widget.inputConnected;
 
   @override
   void initState() {
@@ -140,18 +147,13 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
       ),
     );
 
-    _subscribeInput();
-  }
-
-  @override
-  void didUpdateWidget(ImageDisplayNode oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.aaInput != widget.aaInput) _subscribeInput();
+    widget.onInputPort?.call(_in);
+    _in.onDataArrived.listen(_onIncoming);
   }
 
   @override
   void dispose() {
-    _inputSub?.cancel();
+    _in.dispose();
     _detachImageStream();
     _promptOutput.close();
     _boxSelectOutput.close();
@@ -160,21 +162,18 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
   }
 
   /// Take the location off the upstream payload and begin loading it.
-  void _subscribeInput() {
-    _inputSub?.cancel();
-    _inputSub = widget.aaInput?.listen((payload) {
-      if (!mounted) return;
-      final url = payload.value('url') ?? '';
-      if (url.isEmpty) return;
-      setState(() {
-        targetUrl = url;
-        isImageLoaded = false;
-        loadError = null;
-        imageWidth = null;
-        imageHeight = null;
-      });
-      _loadImage(url);
+  void _onIncoming(AaPayload payload) {
+    if (!mounted) return;
+    final url = payload.value('url') ?? '';
+    if (url.isEmpty) return;
+    setState(() {
+      targetUrl = url;
+      isImageLoaded = false;
+      loadError = null;
+      imageWidth = null;
+      imageHeight = null;
     });
+    _loadImage(url);
   }
 
   void _detachImageStream() {

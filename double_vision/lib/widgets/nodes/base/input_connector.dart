@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../models/workflow.dart';
+import 'base_node.dart' show kPortRowHeight;
 
 /// A node's input port: a labelled connector dot on the left edge of a node.
 /// Acts as a drop target for an [OutputConnector] drag — when an output
@@ -35,34 +36,39 @@ class InputConnector extends StatelessWidget {
       builder: (context, candidate, rejected) {
         final hovering = candidate.isNotEmpty;
         final color = (active || hovering) ? scheme.primary : scheme.outline;
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 14,
-                height: 14,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: (active || hovering) ? color : scheme.surface,
-                  border: Border.all(color: color, width: 2),
-                  // Glow while a compatible output is dragged over this port —
-                  // visual confirmation that the connection will snap here.
-                  boxShadow: hovering
-                      ? [
-                          BoxShadow(
-                            color: scheme.primary,
-                            blurRadius: 8,
-                            spreadRadius: 2,
-                          ),
-                        ]
-                      : null,
+        return SizedBox(
+          // Fixed-height slot: the wrapper centers it on the port anchor, so
+          // the dot's center coincides with the connected noodle's endpoint.
+          height: kPortRowHeight,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 14,
+                  height: 14,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: (active || hovering) ? color : scheme.surface,
+                    border: Border.all(color: color, width: 2),
+                    // Glow while a compatible output is dragged over this port —
+                    // visual confirmation that the connection will snap here.
+                    boxShadow: hovering
+                        ? [
+                            BoxShadow(
+                              color: scheme.primary,
+                              blurRadius: 8,
+                              spreadRadius: 2,
+                            ),
+                          ]
+                        : null,
+                  ),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Text(label, style: TextStyle(color: scheme.onSurfaceVariant)),
-            ],
+                const SizedBox(width: 6),
+                Text(label, style: TextStyle(color: scheme.onSurfaceVariant)),
+              ],
+            ),
           ),
         );
       },
