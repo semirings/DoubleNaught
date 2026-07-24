@@ -1,27 +1,30 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:path_provider/path_provider.dart';
-
 /// Local JSON-file persistence for the DoubleNaught front-end.
 ///
-/// This is a development stub: each record is a JSON file under `../storage/`
-/// (relative to the process working directory, i.e. the repo's `storage/`
-/// folder sitting alongside `double_vision/`). It exists so features can read
-/// and write state before a real backend is available.
+/// This is a development stub: each record is a JSON file under the repo's
+/// `storage/` folder (the same visible location [InventoryStore] uses), so
+/// saved state sits next to `inventory.json` where the developer can find it —
+/// *not* in the macOS app-support container. It exists so features can read and
+/// write state before a real backend is available.
 ///
 /// TODO: swap for backend API. Replace the dart:io file reads/writes with HTTP
 /// calls to the DoubleNaught service layer (double_down / double_mind, etc.).
 /// The method signatures are intended to survive that swap — only the bodies
 /// should change. Note dart:io makes this stub unavailable on Flutter web.
 class StorageService {
+  /// Storage root. Overridable per run with
+  /// `--dart-define=DN_STORAGE_DIR=/path` (run.sh DV passes it); defaults to the
+  /// repo `storage/` folder so a bundled/debug app still writes somewhere the
+  /// developer is watching. Mirrors [InventoryStore] so both land side by side.
+  static const _storageDir = String.fromEnvironment(
+    'DN_STORAGE_DIR',
+    defaultValue: '/Users/gcr/populi.Wk/DoubleNaught/storage',
+  );
+
   /// Explicit directory, for tests or a deliberate override. When null the
-  /// service resolves the platform's application-support directory on first
-  /// use.
-  ///
-  /// That resolution matters: a CWD-relative path (`../storage`) escapes the
-  /// macOS app container — a bundled app's working directory is `/`, so it
-  /// would try to create `/storage` and fail with a PathAccessException.
+  /// service uses [_storageDir].
   final String? overridePath;
 
   Directory? _cachedDir;
@@ -30,15 +33,11 @@ class StorageService {
 
   /// The storage directory, resolved once and cached.
   Future<Directory> resolveBaseDir() async {
-    final cached = _cachedDir;
-    if (cached != null) return cached;
-    final override = overridePath;
-    final dir = override != null
-        ? Directory(override)
-        : await getApplicationSupportDirectory();
-    _cachedDir = dir;
-    return dir;
+    return _cachedDir ??= Directory(overridePath ?? _storageDir);
   }
+
+  /// Absolute path of the resolved storage directory (for status messages).
+  String get storageDirPath => overridePath ?? _storageDir;
 
   /// Resolve a record key to its backing file (`<baseDir>/<key>.json`).
   Future<File> _fileFor(String key) async =>

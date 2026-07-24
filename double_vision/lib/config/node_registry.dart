@@ -17,6 +17,9 @@ class NodeType {
 /// Registry of available node kinds. Add new entries here (and a case in
 /// `_WorkflowPageState._buildNode`) as the `double_*` service nodes land.
 const List<NodeType> nodeTypes = [
+  NodeType(name: 'Start', type: 'start'),
+  NodeType(name: 'Load Model', type: 'load_model'),
+  NodeType(name: 'Model Classifier', type: 'model_classifier'),
   NodeType(name: 'File Source', type: 'file_source'),
   NodeType(name: 'Image Display', type: 'image_display'),
   NodeType(name: 'Inventory', type: 'inventory'),
@@ -42,8 +45,6 @@ class PlaceholderNode extends BaseNode {
   IconData get icon => Icons.help_outline;
 
   @override
-  Widget buildBody(BuildContext context) => Text(
-        '(not implemented)',
-        style: Theme.of(context).textTheme.bodySmall,
-      );
+  Widget buildBody(BuildContext context) =>
+      Text('(not implemented)', style: Theme.of(context).textTheme.bodySmall);
 }

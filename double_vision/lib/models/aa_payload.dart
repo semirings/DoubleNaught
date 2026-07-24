@@ -28,24 +28,17 @@ class AaPayload {
   });
 
   factory AaPayload.fromJson(Map<String, dynamic> json) => AaPayload(
-        rows: [for (final r in (json['rows'] as List? ?? const [])) r as String],
-        cols: [for (final c in (json['cols'] as List? ?? const [])) c as String],
-        vals: [for (final v in (json['vals'] as List? ?? const [])) v as Object],
-      );
+    rows: [for (final r in (json['rows'] as List? ?? const [])) r as String],
+    cols: [for (final c in (json['cols'] as List? ?? const [])) c as String],
+    vals: [for (final v in (json['vals'] as List? ?? const [])) v as Object],
+  );
 
   /// A single-triple status payload — e.g. a node reporting `thinking` / `idle`.
   /// Read it back with `value('status')`.
-  factory AaPayload.status(String state) => AaPayload(
-        rows: const ['status'],
-        cols: const ['status'],
-        vals: [state],
-      );
+  factory AaPayload.status(String state) =>
+      AaPayload(rows: const ['status'], cols: const ['status'], vals: [state]);
 
-  Map<String, dynamic> toJson() => {
-        'rows': rows,
-        'cols': cols,
-        'vals': vals,
-      };
+  Map<String, dynamic> toJson() => {'rows': rows, 'cols': cols, 'vals': vals};
 
   /// Number of stored triples.
   int get length => cols.length;

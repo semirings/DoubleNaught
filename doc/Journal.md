@@ -1060,3 +1060,145 @@ Change the visual selection feedback so that **only the outer border highlights*
    - Ensure user-facing labels or tooltips remain formatted in standard text.
 
 Please inspect our node visual canvas widget, update the selection/drag decoration styling to highlight only the border, and confirm that it compiles cleanly.
+
+We need to refactor and correct our canvas workflow and node management system, as well as fix a UI layout restriction on our split view. Please read these functional requirements carefully and implement the necessary architecture updates across both frontend and backend handlers.
+
+---
+
+### 1. Reconceptualize & Disambiguate: Node Catalog vs. Workflow Inventory
+
+There is currently a design confusion in the UI regarding nodes and workflows:
+* **Node Catalog (Inventory):** A catalog of individual, available functional/agentic node primitives that can be dragged or placed onto the canvas.
+* **Saved Workflows:** Configured node graphs (nodes, connections/edges, spatial coordinates, and parameter states) that have been saved and can be loaded back onto the canvas.
+
+#### Required UI & State Fixes:
+1. **Rename the existing dropdown:** The current dropdown incorrectly lists node primitives under the title "Workflows". Rename or re-purpose this UI area to **"Node Catalog"** (or "Node Inventory").
+2. **Add a true "Workflow Inventory" Dropdown / Drawer:**
+   * Create a dedicated UI control labeled **"Workflows"** that lists all previously saved workflow files/configs.
+   * Selecting a workflow from this list loads its complete graph state onto the canvas.
+
+---
+
+### 2. Implement Full Workflow Lifecycle (Save, Save As, Load)
+
+Implement standard file-like lifecycle management for canvas graph states:
+
+1. **Save Operations:**
+   * **Initial Save:** If the active canvas has not yet been saved, clicking "Save Workflow" must open a modal prompting the user for a **Workflow Name**.
+   * **Uniqueness Validation:** Enforce unique names. If the user enters a name that already exists, prompt them to overwrite or choose a different name.
+   * **Save As:** Provide a "Save As" menu option allowing the user to save the current canvas state under a new distinct name.
+   * **Overwrite Save:** If the workflow already has a name, "Save" silently updates the existing saved workflow file/record.
+2. **Persistence & Payload:**
+   * A saved workflow payload must capture:
+     * Workflow ID and unique Name.
+     * List of node instances (node type, unique instance ID, canvas coordinates $x, y$, parameter configurations).
+     * List of connections/edges (source node, output port, target node, input port).
+   * Persist workflows to a dedicated local storage directory or backend configuration registry (e.g., `storage/workflows/` or `workflows.json`).
+3. **Execution & Re-loading:**
+   * Selecting a workflow from the **Workflows** dropdown must clear or offer to replace the current canvas with the saved workflow state.
+   * Loaded workflows can be re-executed, modified, re-saved, or exported.
+
+---
+
+### 3. Node Inventory File Storage (`storage/inventory.json`)
+
+Establish clear separation for individual node definition storage:
+
+* **Location:** Maintain node definitions in `storage/inventory.json`.
+* **Behavior:**
+  * Populate `inventory.json` whenever a new custom node definition is created.
+  * Update or patch entries in `inventory.json` whenever a node definition is renamed, updated, or deleted.
+* Write the necessary backend/storage handler code to support CRUD operations on `storage/inventory.json`.
+
+---
+
+### 4. Resizable Canvas vs. Preview Split Panel
+
+Currently, the border dividing the canvas and the preview area is rigid/fixed.
+
+* **Requirement:** Convert the divider between the main canvas and the preview/inspector panel into an interactive **Resizable Split View** (drag handle / splitter bar).
+* Allow the user to drag the handle left/right (or up/down depending on layout) to dynamically resize the canvas relative to the preview panel.
+* Ensure the canvas view-box and redraw handlers update their responsive bounds dynamically during drag events.
+
+---
+
+### Task Summary for Claude:
+1. Update the UI layout to split the **Node Catalog** from the **Saved Workflows** dropdown.
+2. Implement modal-driven "Save", "Save As", and "Load" handlers for complete canvas graph states.
+3. Add backend/local file logic to manage node primitives in `storage/inventory.json`.
+4. Replace the static panel divider between canvas and preview with a flexible, draggable resizable panel container.
+
+Please outline the file changes required and provide the full code implementations.
+
+We are implementing the `Start` execution node, the `LoadModel` functional node, and model storage. 
+
+CRITICAL REQUIREMENT: All data payloads, model catalog storage, and node contracts MUST follow our standard Associative Array (AA) JSON schema. Use our existing Dart AA implementation (`*.dart`) for loading and persisting AA objects.
+
+---
+
+### 1. Model Catalog AA Storage (`storage/models_aa.json`)
+
+1. Store model definitions in an AA-compliant JSON structure at `storage/models_aa.json`.
+2. Each model entry is a Row in the AA matrix, using attributes for key properties:
+   * **Row Key:** `model:<modelId>`
+   * **Attributes:** `displayName`, `sourceType` (`local` | `huggingface` | `remote_url`), `pathOrUrl`, `format` (`safetensors` | `gguf` | `mlx` | `onnx`), `task` (`zero-shot-classification` | `text-generation` | etc.).
+3. Use the Dart AA class (`*.dart`) to load, update, slice, and save `storage/models_aa.json`.
+
+---
+
+### 2. Implement `LoadModel` Node (AA Payload Native)
+
+Create the `LoadModel` node:
+
+* **Inputs:**
+  * `urlIn` (Optional String Port): Receives a URL string or Hugging Face model ID.
+  * `modelSelect` (Dropdown UI): Populated directly from the `displayName` attributes of rows in `models_aa.json`.
+* **Behavior:**
+  * If `urlIn` receives a payload, it overrides the dropdown and loads from the incoming URL.
+  * If `urlIn` is empty, it resolves the selected model from the AA catalog.
+  * Newly loaded remote models can be saved back into `storage/models_aa.json` as a new AA row using the Dart AA writer.
+* **Output:** Emits a standard `AaPayload` containing the resolved model attributes down the canvas edge.
+
+---
+
+### 3. Implement `Start` Node with Canvas Trigger Button
+
+Create the `Start` execution catalyst node:
+
+* **Node UI:** Render an interactive button labeled **`Go`** directly inside the node card on the canvas.
+* **Behavior:**
+  * Clicking **`Go`** launches canvas workflow execution starting from this node.
+  * While active, visually indicate execution state on the button (`Running...`).
+  * Emits an initial trigger signal as an `AaPayload` downstream to connected nodes (e.g., `LoadModel` or `IngestNode`).
+
+---
+
+### Task Summary for Claude:
+1. Ensure `storage/models_aa.json` is formatted as a valid AA array and integrated with our Dart AA load/save code.
+2. Build `LoadModel` using AA inputs/outputs.
+3. Build `Start` with an inline `Go` button to trigger the reactive pipeline execution loop.
+
+We need to implement the `ModelClassifierNode` in Dart using our `rcvs.json` schema for AA data interchange.
+
+### Requirements:
+
+1. **Model Catalog (`storage/models_rcvs.json`):**
+   * Refactor model storage to use parallel `rows`, `cols`, and `vals` lists adhering to `rcvs.json`.
+   * Use `package:d4m` to load `models_rcvs.json` into a Dart `AssociativeArray` instance.
+
+2. **Node UI & Parameters:**
+   * Build `ModelClassifierNode` extending our standard canvas node class.
+   * **Picklist UI:** Extract all distinct model names from the AA where `col == "displayName"` and render them in a dropdown selector.
+   * **Manual Input:** Provide a text field for a custom path/URL.
+   * **Ports:**
+     * `urlIn` (Optional String Port): Overrides the dropdown/manual path if connected.
+     * `textIn` (Required String/AA Port): Accepts text input originating from the Inventory node output.
+     * `classifiedAaOut` (Output Port): Emits an AA payload formatted in `rcvs.json`.
+
+3. **Execution Logic:**
+   * Resolve target model path (`urlIn` -> `manual input` -> `picklist selection`).
+   * **Model Identifier Resolution:** 
+     * If `sourceType == "huggingface"`, ensure the Hugging Face repo ID (e.g., `MoritzLaurer/ModernBERT-large-zeroshot-v2.0`) is passed directly to the classification runner endpoint.
+     * If formatted as a web URL or local file path, pass the resolved path.
+   * Pass text from `textIn` to the classification runner.
+   * Format the classification results (document IDs vs. category scores) into an `AssociativeArray` object and serialize to `rcvs.json` for downstream nodes.

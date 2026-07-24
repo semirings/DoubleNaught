@@ -1,7 +1,5 @@
-import 'dart:convert';
-import 'dart:io';
-
 import '../models/aa_payload.dart';
+import 'aa_file.dart';
 import 'inventory_api.dart' show InventoryEntry, InventoryFields;
 
 /// Local, file-backed inventory persistence — no backend required.
@@ -13,33 +11,14 @@ import 'inventory_api.dart' show InventoryEntry, InventoryFields;
 ///
 /// Note `dart:io` makes this desktop/mobile only.
 class InventoryStore {
-  /// Absolute directory for the local JSON catalog. Absolute (not CWD-relative)
-  /// because a bundled macOS app runs with a working directory of `/`. Defaults
-  /// to the repo's `storage/` so the file is visible in the workspace; override
-  /// per run with `--dart-define=DN_STORAGE_DIR=/path` (run.sh DV passes it).
-  ///
-  /// Writing here requires the app to be **un-sandboxed** — the debug build
-  /// disables `com.apple.security.app-sandbox` for exactly this reason.
-  static const _storageDir = String.fromEnvironment(
-    'DN_STORAGE_DIR',
-    defaultValue: '/Users/gcr/populi.Wk/DoubleNaught/storage',
-  );
+  /// AA-at-rest storage for the catalog (`storage/inventory.json`). See [AaFile]
+  /// for path resolution (DN_STORAGE_DIR) and the un-sandboxed-write requirement.
+  final AaFile _file;
 
-  /// Explicit file path, for tests or a deliberate override.
-  final String? overridePath;
-
-  File? _cachedFile;
-
-  InventoryStore({this.overridePath});
-
-  /// The backing file, resolved once and cached.
-  Future<File> resolveFile() async {
-    final cached = _cachedFile;
-    if (cached != null) return cached;
-    final file = File(overridePath ?? '$_storageDir/inventory.json');
-    _cachedFile = file;
-    return file;
-  }
+  /// [overridePath] points the catalog at a specific file (tests); otherwise it
+  /// resolves to `storage/inventory.json`.
+  InventoryStore({String? overridePath})
+    : _file = AaFile('inventory.json', overridePath: overridePath);
 
   static const List<String> _columns = [
     'url',
@@ -52,23 +31,18 @@ class InventoryStore {
   /// Read the catalog. Returns an empty list when the file is absent, empty, or
   /// malformed — never throws for those cases.
   Future<List<InventoryEntry>> load() async {
-    final file = await resolveFile();
-    if (!await file.exists()) return const [];
-    final raw = (await file.readAsString()).trim();
-    if (raw.isEmpty) return const [];
-
-    final decoded = jsonDecode(raw);
-    // Preferred shape: a plain JSON array of entry objects.
+    final decoded = await _file.loadRaw();
+    // AA envelope: canonical parallel {rows, cols, vals}.
+    if (decoded is Map<String, dynamic> && decoded['cols'] is List) {
+      return _entriesFromAa(AaFile.decode(decoded));
+    }
+    // Legacy shape: a plain JSON array of entry objects. Still read so existing
+    // files load; the next mutation rewrites the file as AA.
     if (decoded is List) {
       return [
         for (final item in decoded)
           if (item is Map<String, dynamic>) _entryFromJson(item),
       ];
-    }
-    // Tolerate a catalog previously written by the backend in D4M/AA form so an
-    // existing file does not crash the node.
-    if (decoded is Map<String, dynamic> && decoded['cols'] is List) {
-      return _entriesFromAa(AaPayload.fromJson(decoded));
     }
     return const [];
   }
@@ -95,7 +69,9 @@ class InventoryStore {
 
   /// Replace the fields of [entryId] and persist.
   Future<List<InventoryEntry>> update(
-      String entryId, InventoryFields fields) async {
+    String entryId,
+    InventoryFields fields,
+  ) async {
     final entries = [
       for (final e in await load())
         if (e.entryId == entryId)
@@ -155,57 +131,73 @@ class InventoryStore {
     if (cleaned.isEmpty) return 'Untitled';
     var tail = cleaned.split('/').last;
     tail = tail.split('?').first.split('#').first;
-    final stem = tail.contains('.') ? tail.substring(0, tail.lastIndexOf('.')) : tail;
+    final stem = tail.contains('.')
+        ? tail.substring(0, tail.lastIndexOf('.'))
+        : tail;
     return stem.isEmpty ? 'Untitled' : stem;
   }
 
-  Future<void> _save(List<InventoryEntry> entries) async {
-    final file = await resolveFile();
-    final dir = file.parent;
-    if (!await dir.exists()) await dir.create(recursive: true);
-    final payload = [for (final e in entries) _entryToJson(e)];
-    await file.writeAsString(
-        const JsonEncoder.withIndent('  ').convert(payload));
+  /// Row-key prefix for a persisted inventory entry in the AA (`entry:<id>`).
+  static const String _rowPrefix = 'entry:';
+
+  // Persist as an associative array (rows/cols/vals) — the same AA contract used
+  // on the `entry` port and by the model catalog — via the shared AA file.
+  Future<void> _save(List<InventoryEntry> entries) =>
+      _file.save(_toAa(entries));
+
+  /// Encode the catalog as a single AA: one row `entry:<entryId>` per entry,
+  /// one column triple per field.
+  AaPayload _toAa(List<InventoryEntry> entries) {
+    final rows = <String>[];
+    final cols = <String>[];
+    final vals = <Object>[];
+    for (final e in entries) {
+      final row = '$_rowPrefix${e.entryId}';
+      final values = <String, String>{
+        'url': e.url,
+        'author': e.author,
+        'work_title': e.workTitle,
+        'work_selector': e.workSelector,
+        'description': e.description,
+      };
+      for (final col in _columns) {
+        rows.add(row);
+        cols.add(col);
+        vals.add(values[col] ?? '');
+      }
+    }
+    return AaPayload(rows: rows, cols: cols, vals: vals);
   }
 
   String _newEntryId() =>
       'entry-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
 
-  Map<String, dynamic> _entryToJson(InventoryEntry e) => {
-        'entryId': e.entryId,
-        'url': e.url,
-        'author': e.author,
-        'workTitle': e.workTitle,
-        'workSelector': e.workSelector,
-        'description': e.description,
-      };
-
   InventoryEntry _entryFromJson(Map<String, dynamic> json) => InventoryEntry(
-        entryId: (json['entryId'] ?? json['entry_id'] ?? _newEntryId()) as String,
-        url: (json['url'] ?? '') as String,
-        author: (json['author'] ?? '') as String,
-        workTitle: (json['workTitle'] ?? json['work_title'] ?? '') as String,
-        workSelector:
-            (json['workSelector'] ?? json['work_selector'] ?? '') as String,
-        description: (json['description'] ?? '') as String,
-      );
+    entryId: (json['entryId'] ?? json['entry_id'] ?? _newEntryId()) as String,
+    url: (json['url'] ?? '') as String,
+    author: (json['author'] ?? '') as String,
+    workTitle: (json['workTitle'] ?? json['work_title'] ?? '') as String,
+    workSelector:
+        (json['workSelector'] ?? json['work_selector'] ?? '') as String,
+    description: (json['description'] ?? '') as String,
+  );
 
-  /// Convert a legacy backend-written AA catalog into entries.
+  /// Parse an AA catalog into entries, grouping triples by row and preserving
+  /// first-appearance order. The `entry:` row prefix is stripped back to the raw
+  /// entryId; a row without the prefix (older/backend-written AA) is used as-is.
   List<InventoryEntry> _entriesFromAa(AaPayload aa) {
-    final byRow = <String, Map<String, String>>{};
-    for (var i = 0; i < aa.cols.length && i < aa.rows.length; i++) {
-      byRow.putIfAbsent(aa.rows[i], () => {})[aa.cols[i]] =
-          aa.vals[i].toString();
-    }
+    final byRow = AaFile.groupByRow(aa);
     return [
-      for (final entry in byRow.entries)
+      for (final e in byRow.entries)
         InventoryEntry(
-          entryId: entry.key,
-          url: entry.value['url'] ?? '',
-          author: entry.value['author'] ?? '',
-          workTitle: entry.value['work_title'] ?? '',
-          workSelector: entry.value['work_selector'] ?? '',
-          description: entry.value['description'] ?? '',
+          entryId: e.key.startsWith(_rowPrefix)
+              ? e.key.substring(_rowPrefix.length)
+              : e.key,
+          url: e.value['url'] ?? '',
+          author: e.value['author'] ?? '',
+          workTitle: e.value['work_title'] ?? '',
+          workSelector: e.value['work_selector'] ?? '',
+          description: e.value['description'] ?? '',
         ),
     ];
   }

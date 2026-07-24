@@ -137,18 +137,43 @@ class AssocArray(CamelModel):
 
     ``rows``/``cols``/``vals`` are parallel lists: entry *k* is the triple
     ``(rows[k], cols[k], vals[k])``. Values are strings for most columns;
-    inherently-numeric columns (e.g. ChunkNode's ``position`` / ``token_count``)
-    carry integers. This is the same ``(row, col, val)`` shape D4M's
-    ``aa.find()`` yields, so it round-trips cleanly to/from a real AA.
+    inherently-numeric columns carry integers (e.g. ChunkNode's ``position`` /
+    ``token_count``) or floats (e.g. ModelClassifierNode's category scores). This
+    is the same ``(row, col, val)`` shape D4M's ``aa.find()`` yields, so it
+    round-trips cleanly to/from a real AA (``AAschema/schemas/rcvs.json``).
     """
 
     rows: list[str]
     cols: list[str]
-    vals: list[Union[str, int]]
+    vals: list[Union[str, int, float]]
 
 
 class UrlPayloadResponse(CamelModel):
     node_id: str
+    aa: AssocArray
+
+
+# --- Model Classifier node (ModelClassifierNode) ----------------------------
+# A functional node: it runs zero-shot classification over incoming documents
+# against a set of candidate labels and emits a documents×labels score AA.
+
+
+class ClassifyRequest(CamelModel):
+    # Model identifier passed to the runner verbatim: a Hugging Face repo id
+    # (e.g. "MoritzLaurer/ModernBERT-large-zeroshot-v2.0"), or a resolved web
+    # URL / local path.
+    model: str
+    # "huggingface" | "remote_url" | "local".
+    source_type: str = ""
+    task: str = "zero-shot-classification"
+    # Candidate labels to score each document against.
+    labels: list[str]
+    # Documents to classify: rows = document id, col ``text``, val = the text.
+    documents: AssocArray
+
+
+class ClassifyResponse(CamelModel):
+    # Result AA: rows = document id, cols = labels, vals = scores (0..1).
     aa: AssocArray
 
 

@@ -46,17 +46,18 @@ class FocusContent {
   });
 
   const FocusContent.image({Uint8List? bytes, String? url, String? subtitle})
-      : this._(
-            kind: FocusContentKind.image,
-            imageBytes: bytes,
-            imageUrl: url,
-            subtitle: subtitle);
+    : this._(
+        kind: FocusContentKind.image,
+        imageBytes: bytes,
+        imageUrl: url,
+        subtitle: subtitle,
+      );
 
   const FocusContent.text(String value, {String? subtitle})
-      : this._(kind: FocusContentKind.text, text: value, subtitle: subtitle);
+    : this._(kind: FocusContentKind.text, text: value, subtitle: subtitle);
 
   const FocusContent.aa(AaPayload value, {String? subtitle})
-      : this._(kind: FocusContentKind.aa, aa: value, subtitle: subtitle);
+    : this._(kind: FocusContentKind.aa, aa: value, subtitle: subtitle);
 }
 
 /// One tab in the Focus Panel, owned by the node with [nodeId].
@@ -76,8 +77,8 @@ class FocusTab {
 /// dataframes) renders here in tabs, so canvas nodes stay compact routing boxes.
 ///
 /// A slim rail on the leading edge stays visible to toggle open/closed; the body
-/// animates between ~45% of the window and 0px, and hosts one tab per node that
-/// has pushed content.
+/// shows at [openWidth] (driven by the page's draggable splitter) when open and
+/// 0px when closed, and hosts one tab per node that has pushed content.
 class FocusPanel extends StatelessWidget {
   final bool isOpen;
   final VoidCallback onToggle;
@@ -89,8 +90,9 @@ class FocusPanel extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<int> onSelectTab;
 
-  /// Fraction of the window width the open panel occupies.
-  final double openFraction;
+  /// Width of the panel body when open, in logical pixels. Owned by the parent
+  /// (a draggable splitter drives it), so the panel resizes 1:1 with the drag.
+  final double openWidth;
 
   const FocusPanel({
     super.key,
@@ -99,23 +101,21 @@ class FocusPanel extends StatelessWidget {
     this.tabs = const [],
     this.selectedIndex = 0,
     required this.onSelectTab,
-    this.openFraction = 0.45,
+    this.openWidth = 420,
   });
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final openWidth = MediaQuery.sizeOf(context).width * openFraction;
 
     return Row(
       children: [
         _Rail(isOpen: isOpen, onToggle: onToggle),
-        // Clip + OverflowBox keeps the body laid out at full width while the
-        // container animates to 0, so nothing reflows during the slide.
+        // Clip + OverflowBox keeps the body laid out at [openWidth] even while
+        // the visible width is 0 (closed), so nothing reflows on toggle. No
+        // width animation here — the parent's splitter needs 1:1 drag response.
         ClipRect(
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 250),
-            curve: Curves.easeInOut,
+          child: Container(
             width: isOpen ? openWidth : 0,
             decoration: BoxDecoration(
               color: scheme.surfaceContainer,
@@ -139,9 +139,12 @@ class FocusPanel extends StatelessWidget {
 
     if (tabs.isEmpty) {
       return Center(
-        child: Text('Nothing to display yet',
-            style: theme.textTheme.bodyMedium
-                ?.copyWith(color: scheme.onSurfaceVariant)),
+        child: Text(
+          'Nothing to display yet',
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
       );
     }
 
@@ -151,19 +154,18 @@ class FocusPanel extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _TabStrip(
-          tabs: tabs,
-          selectedIndex: index,
-          onSelect: onSelectTab,
-        ),
+        _TabStrip(tabs: tabs, selectedIndex: index, onSelect: onSelectTab),
         if (tab.content.subtitle != null && tab.content.subtitle!.isNotEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-            child: Text(tab.content.subtitle!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: scheme.onSurfaceVariant)),
+            child: Text(
+              tab.content.subtitle!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
           ),
         Expanded(child: _content(context, tab.content)),
       ],
@@ -197,15 +199,18 @@ class FocusPanel extends StatelessWidget {
           image = Image(
             image: provider,
             fit: BoxFit.contain,
-            errorBuilder: (_, __, ___) => _placeholder(
-                theme, 'That image could not be loaded.'),
+            errorBuilder: (_, __, ___) =>
+                _placeholder(theme, 'That image could not be loaded.'),
             loadingBuilder: (_, child, progress) => progress == null
                 ? child
                 : const Center(child: CircularProgressIndicator()),
           );
         } else if (content.imageBytes != null) {
-          image = Image.memory(content.imageBytes!,
-              fit: BoxFit.contain, gaplessPlayback: true);
+          image = Image.memory(
+            content.imageBytes!,
+            fit: BoxFit.contain,
+            gaplessPlayback: true,
+          );
         } else {
           return _placeholder(theme, 'No image loaded');
         }
@@ -217,14 +222,17 @@ class FocusPanel extends StatelessWidget {
   }
 
   Widget _placeholder(ThemeData theme, String message) => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(message,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodyMedium
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+    child: Padding(
+      padding: const EdgeInsets.all(24),
+      child: Text(
+        message,
+        textAlign: TextAlign.center,
+        style: theme.textTheme.bodyMedium?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
         ),
-      );
+      ),
+    ),
+  );
 }
 
 /// Horizontal tab strip across the top of the panel body.
@@ -254,7 +262,10 @@ class _TabStrip extends StatelessWidget {
               InkWell(
                 onTap: () => onSelect(i),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
                   decoration: BoxDecoration(
                     border: Border(
                       bottom: BorderSide(
@@ -269,8 +280,9 @@ class _TabStrip extends StatelessWidget {
                     tabs[i].title,
                     style: TextStyle(
                       fontSize: 13,
-                      fontWeight:
-                          i == selectedIndex ? FontWeight.w600 : FontWeight.w400,
+                      fontWeight: i == selectedIndex
+                          ? FontWeight.w600
+                          : FontWeight.w400,
                       color: i == selectedIndex
                           ? scheme.onSurface
                           : scheme.onSurfaceVariant,

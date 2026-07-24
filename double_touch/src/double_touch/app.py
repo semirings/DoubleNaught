@@ -28,6 +28,7 @@ from .chunking import (
     get_strategy,
     normalize_units,
 )
+from .classify import ClassifierEngine, StubClassifierEngine
 from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cxcywh_to_xyxy
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
@@ -42,6 +43,8 @@ from .models import (
     ChunkRequest,
     ChunkResponse,
     ChunkStats,
+    ClassifyRequest,
+    ClassifyResponse,
     CreateSessionResponse,
     FetchRequest,
     FetchResponse,
@@ -88,6 +91,7 @@ app.add_middleware(
 
 store = SessionStore()
 engine: InferenceEngine = StubInferenceEngine()
+classifier: ClassifierEngine = StubClassifierEngine()
 
 # Disk-backed review sessions (survive interruption; resumable). Tests point
 # `review_store.base_dir` at a temp directory.
@@ -413,6 +417,34 @@ def _strip_gutenberg(text: str) -> str:
     if not end:
         return text
     return text[start.end() : end.start()].strip()
+
+
+@app.post("/classify", response_model=ClassifyResponse)
+async def classify_documents(request: ClassifyRequest) -> ClassifyResponse:
+    """Zero-shot classify each incoming document against the candidate labels.
+
+    AA-in (``documents``: rows = doc id, col ``text``) -> AA-out (rows = doc id,
+    cols = labels, vals = scores). The model identifier is passed to the engine
+    verbatim — a Hugging Face repo id, or a resolved URL/path.
+    """
+    labels = [label.strip() for label in request.labels if label.strip()]
+    if not labels:
+        raise HTTPException(status_code=422, detail="no candidate labels provided")
+    records = aa_rows(request.documents)
+    if not records:
+        raise HTTPException(status_code=422, detail="documents AA is empty")
+
+    rows: list[str] = []
+    cols: list[str] = []
+    vals: list[float] = []
+    for doc_id, fields in records:
+        text = str(fields.get("text", "")).strip()
+        scores = classifier.classify(text, labels)
+        for label in labels:
+            rows.append(doc_id)
+            cols.append(label)
+            vals.append(scores.get(label, 0.0))
+    return ClassifyResponse(aa=AssocArray(rows=rows, cols=cols, vals=vals))
 
 
 @app.post("/fetch", response_model=FetchResponse)
