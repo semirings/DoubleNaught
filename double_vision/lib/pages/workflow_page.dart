@@ -252,6 +252,10 @@ class _WorkflowPageState extends State<WorkflowPage>
         // Three inputs: `aaIn` (AA, idx 0), `modelIn` (String, idx 1),
         // `categoryIn` (AA, idx 2).
         return const [0, 1, 2];
+      case 'save_file':
+        // Three inputs: `aaIn` (AA, idx 0), `textIn` (String, idx 1),
+        // `imageIn` (bytes, idx 2).
+        return const [0, 1, 2];
       case 'sam3':
       case 'fetch':
       case 'chunk':
@@ -1487,6 +1491,24 @@ class _WorkflowPageState extends State<WorkflowPage>
           // Route decoded content to the Focus Panel tab for this node.
           onContent: _pushFocusContent,
           onView: _openFocusTab,
+        );
+      case 'save_file':
+        return SaveFileNode(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `aaIn` input (idx 0) — associative array over the port bus.
+          aaConnected: _hasIncomingEdgeAt(node.id, 0),
+          onAaConnect: (source) => _connectAt(source, node.id, 0),
+          onAaInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `textIn` input (idx 1) — text stream from upstream.
+          textConnected: _hasIncomingEdgeAt(node.id, 1),
+          onTextConnect: (source) => _connectAt(source, node.id, 1),
+          textInput: _locationInputForAt(node.id, 1),
+          // `imageIn` input (idx 2) — image bytes stream from upstream.
+          imageConnected: _hasIncomingEdgeAt(node.id, 2),
+          onImageConnect: (source) => _connectAt(source, node.id, 2),
+          imageInput: _inputForAt(node.id, 2),
         );
       case 'sam3':
         return Sam3Node(

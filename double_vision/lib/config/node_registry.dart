@@ -30,6 +30,7 @@ const List<NodeType> nodeTypes = [
   NodeType(name: 'Review', type: 'review'),
   NodeType(name: 'AA → JSONL', type: 'aa2jsonl'),
   NodeType(name: 'Preview', type: 'preview'),
+  NodeType(name: 'Save File', type: 'save_file'),
   NodeType(name: 'SAM3 Control', type: 'sam3'),
 ];
 
