@@ -123,6 +123,17 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// Cached listing for the Workflows dropdown; refreshed after save/delete.
   List<WorkflowMeta> _savedWorkflows = const [];
 
+  /// Per-node saved settings (dropdown selections, manual fields, …), keyed by
+  /// node id. Nodes report changes via their `onParams` callback; the value is
+  /// captured into each node's [WorkflowNode.params] at save time and restored
+  /// as `initialParams` on load.
+  final Map<int, Map<String, String>> _nodeParams = {};
+
+  /// Bumped on every workflow load so node widget keys change, forcing fresh
+  /// State (and thus a re-read of restored `initialParams`) even when the loaded
+  /// graph reuses the same node ids as the canvas it replaced.
+  int _loadGeneration = 0;
+
   /// Emit sinks for each Image Display node, so the Focus Panel can route
   /// overlay interactions back out of the node that owns the image.
   final Map<int, ImageDisplayOutputs> _imageDisplayOutputs = {};
@@ -399,6 +410,7 @@ class _WorkflowPageState extends State<WorkflowPage>
       _locationOutputs.remove(id);
       _contentOutputs.remove(id);
       _sourceNames.remove(id);
+      _nodeParams.remove(id);
       _focusContent.remove(id);
       _focusOrder.remove(id);
       _focusSelected = _focusSelected.clamp(
@@ -856,7 +868,11 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   Future<void> _writeWorkflow(String slug, String name) async {
     setState(() => _saving = true);
-    final workflow = Workflow(version: _version, nodes: _nodes, edges: _edges);
+    // Capture each node's current settings into its params at save time.
+    final nodes = [
+      for (final n in _nodes) n.copyWith(params: _nodeParams[n.id] ?? n.params),
+    ];
+    final workflow = Workflow(version: _version, nodes: nodes, edges: _edges);
     String message;
     try {
       await WorkflowStore().write(slug, name, workflow);
@@ -901,7 +917,13 @@ class _WorkflowPageState extends State<WorkflowPage>
       _resetCanvasState();
       _nodes.addAll(wf.nodes);
       _edges.addAll(wf.edges);
+      // Restore each node's saved settings so its widget can re-read them.
+      for (final n in wf.nodes) {
+        if (n.params.isNotEmpty) _nodeParams[n.id] = Map.of(n.params);
+      }
       _nextId = _nodes.fold<int>(0, (m, n) => n.id > m ? n.id : m) + 1;
+      // New generation → fresh node State → restored params are read in initState.
+      _loadGeneration++;
       _currentWorkflowSlug = meta.slug;
       _currentWorkflowName = meta.name;
     });
@@ -1034,6 +1056,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     _locationOutputs.clear();
     _contentOutputs.clear();
     _sourceNames.clear();
+    _nodeParams.clear();
     _focusContent.clear();
     _focusOrder.clear();
     _focusSelected = 0;
@@ -1235,7 +1258,12 @@ class _WorkflowPageState extends State<WorkflowPage>
         child: Stack(
           clipBehavior: Clip.none,
           children: [
-            KeyedSubtree(key: ValueKey(node.id), child: _buildNode(node)),
+            KeyedSubtree(
+              // Load bumps [_loadGeneration], changing the key so the node gets
+              // a fresh State that re-reads its restored `initialParams`.
+              key: ValueKey('${node.id}#$_loadGeneration'),
+              child: _buildNode(node),
+            ),
 
             // Title-bar drag handle — spans the node's real width, top strip.
             Positioned(
@@ -1293,6 +1321,8 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'load_model':
         return LoadModelNode(
           node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
           // `trigger` AA input (idx 0) — e.g. from Start.
           triggerConnected: _hasIncomingEdgeAt(node.id, 0),
           onTriggerConnect: (source) => _connectAt(source, node.id, 0),
@@ -1308,10 +1338,13 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'model_classifier':
         return ModelClassifierNode(
           node: node,
-          // `textIn` AA input (idx 0) — e.g. from Inventory `entry`.
-          textConnected: _hasIncomingEdgeAt(node.id, 0),
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `textIn` byte-stream input (idx 0) — the document text, e.g. from
+          // Inventory `content`, decoded to text and classified.
+          input: _inputForAt(node.id, 0),
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onTextConnect: (source) => _connectAt(source, node.id, 0),
-          onInputPort: (port) => _aaInputPorts[node.id] = port,
           // `urlIn` String input (idx 1) — e.g. from URL Source.
           urlConnected: _hasIncomingEdgeAt(node.id, 1),
           onUrlConnect: (source) => _connectAt(source, node.id, 1),
@@ -1353,6 +1386,8 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'inventory':
         return InventoryNode(
           node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
           // `urlInput` — a raw location from an upstream URL Source node.
           locationInput: _locationInputFor(node.id),
           onInputConnect: (source) => _connect(source, node.id),

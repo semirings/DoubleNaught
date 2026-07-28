@@ -113,7 +113,8 @@ class InventoryStore {
       entry.description,
       DateTime.now().toUtc().toIso8601String(),
     ];
-    final cols = [..._columns, 'selected_timestamp'];
+    final cols = [..._columns, 'selected_timestamp', 'raw_text'];
+    values.add(entry.url);
     return AaPayload(
       rows: List<String>.filled(cols.length, entry.entryId),
       cols: cols,

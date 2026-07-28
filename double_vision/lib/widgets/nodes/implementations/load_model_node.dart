@@ -48,8 +48,13 @@ class LoadModelNode extends StatefulWidget {
   final Set<int> connectedOutputs;
 
   /// AA-native catalog store. Injectable for tests; defaults to
-  /// `storage/models_aa.json`.
+  /// `storage/models_rcvs.json`.
   final ModelCatalogStore? store;
+
+  /// Saved settings to restore (the selected model id), and a callback to report
+  /// them back to the canvas for persistence.
+  final Map<String, String>? initialParams;
+  final void Function(Map<String, String> params)? onParams;
 
   const LoadModelNode({
     super.key,
@@ -63,6 +68,8 @@ class LoadModelNode extends StatefulWidget {
     this.onOutputPort,
     this.connectedOutputs = const {},
     this.store,
+    this.initialParams,
+    this.onParams,
   });
 
   @override
@@ -100,12 +107,18 @@ class _LoadModelNodeState extends State<LoadModelNode> {
   @override
   void initState() {
     super.initState();
+    // Restore a saved selection so it survives save/reload.
+    final saved = widget.initialParams?['selectedId'];
+    if (saved != null && saved.isNotEmpty) _selectedId = saved;
     widget.onInputPort?.call(_trigger);
     widget.onOutputPort?.call(_out);
     _trigger.onDataArrived.listen(_onTrigger);
     _subscribeUrl();
     _load();
   }
+
+  void _reportParams() =>
+      widget.onParams?.call({'selectedId': _selectedId ?? ''});
 
   @override
   void didUpdateWidget(LoadModelNode oldWidget) {
@@ -209,6 +222,7 @@ class _LoadModelNodeState extends State<LoadModelNode> {
         _urlOverride = null; // now a catalog row; the dropdown owns it
         _resolvedRemote = null;
       });
+      _reportParams();
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -384,11 +398,14 @@ class _LoadModelNodeState extends State<LoadModelNode> {
       // Choosing from the dropdown clears any urlIn override.
       onChanged: _busy
           ? null
-          : (id) => setState(() {
-              _selectedId = id;
-              _urlOverride = null;
-              _resolvedRemote = null;
-            }),
+          : (id) {
+              setState(() {
+                _selectedId = id;
+                _urlOverride = null;
+                _resolvedRemote = null;
+              });
+              _reportParams();
+            },
     );
   }
 

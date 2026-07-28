@@ -18,17 +18,19 @@ from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
 from .aa_utils import aa_rows, pick_text_column
 from .chunking import (
     available_strategies,
+    chunk_to_aa,
     count_tokens,
     extract_work,
     get_strategy,
     normalize_units,
 )
-from .classify import ClassifierEngine, StubClassifierEngine
+from .classify import ClassifierEngine, default_classifier, transformers_available
 from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cxcywh_to_xyxy
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
@@ -91,7 +93,9 @@ app.add_middleware(
 
 store = SessionStore()
 engine: InferenceEngine = StubInferenceEngine()
-classifier: ClassifierEngine = StubClassifierEngine()
+# Local transformers engine when torch/transformers are installed, else the
+# deterministic stub (see double_touch.classify.default_classifier).
+classifier: ClassifierEngine = default_classifier()
 
 # Disk-backed review sessions (survive interruption; resumable). Tests point
 # `review_store.base_dir` at a temp directory.
@@ -160,7 +164,11 @@ def _respond(
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
     return HealthResponse(
-        status="healthy", engine=engine.name, active_sessions=len(store)
+        status="healthy",
+        engine=engine.name,
+        active_sessions=len(store),
+        classifier=classifier.name,
+        classifier_local_available=transformers_available(),
     )
 
 
@@ -434,16 +442,24 @@ async def classify_documents(request: ClassifyRequest) -> ClassifyResponse:
     if not records:
         raise HTTPException(status_code=422, detail="documents AA is empty")
 
-    rows: list[str] = []
-    cols: list[str] = []
-    vals: list[float] = []
-    for doc_id, fields in records:
-        text = str(fields.get("text", "")).strip()
-        scores = classifier.classify(text, labels)
-        for label in labels:
-            rows.append(doc_id)
-            cols.append(label)
-            vals.append(scores.get(label, 0.0))
+    def _run() -> tuple[list[str], list[str], list[float]]:
+        # Blocking: model load (cold start) + inference. Runs in a worker thread
+        # so it never blocks the event loop.
+        rows: list[str] = []
+        cols: list[str] = []
+        vals: list[float] = []
+        for doc_id, fields in records:
+            text = str(fields.get("text", "")).strip()
+            scores = classifier.classify(
+                text, labels, model=request.model, task=request.task
+            )
+            for label in labels:
+                rows.append(doc_id)
+                cols.append(label)
+                vals.append(float(scores.get(label, 0.0)))
+        return rows, cols, vals
+
+    rows, cols, vals = await run_in_threadpool(_run)
     return ClassifyResponse(aa=AssocArray(rows=rows, cols=cols, vals=vals))
 
 
@@ -485,10 +501,6 @@ async def fetch_text(request: FetchRequest) -> FetchResponse:
 
 # --- Chunk node (ChunkNode) -------------------------------------------------
 
-# Output AA columns, in order. `position` and `token_count` carry integers; the
-# rest are strings.
-_CHUNK_COLUMNS = ["text", "author", "work_title", "position", "token_count", "chunk_strategy"]
-
 
 @app.post("/chunk", response_model=ChunkResponse)
 async def chunk_text(request: ChunkRequest) -> ChunkResponse:
@@ -510,7 +522,14 @@ async def chunk_text(request: ChunkRequest) -> ChunkResponse:
     work_selector = _aa_value(request.aa, "work_selector") or ""
 
     try:
-        strategy = get_strategy(author)
+        run_id = uuid4().hex[:8]
+        rows, cols, vals = chunk_to_aa(
+            raw_text,
+            author,
+            work_title,
+            work_selector=work_selector,
+            run_id=f"chunk:{run_id}",
+        )
     except KeyError:
         raise HTTPException(
             status_code=422,
@@ -518,31 +537,15 @@ async def chunk_text(request: ChunkRequest) -> ChunkResponse:
             f"known strategies: {available_strategies()}",
         )
 
-    work_text = extract_work(raw_text, work_selector)
-    passages = normalize_units(strategy.split(work_text))
-
-    run_id = uuid4().hex[:8]
-    rows: list[str] = []
-    cols: list[str] = []
-    vals: list = []
-    token_counts: list[int] = []
-    for position, passage in enumerate(passages):
-        chunk_id = f"chunk:{run_id}:{position:05d}"
-        tokens = count_tokens(passage)
-        token_counts.append(tokens)
-        row_values = [passage, author, work_title, position, tokens, strategy.name]
-        for col, value in zip(_CHUNK_COLUMNS, row_values):
-            rows.append(chunk_id)
-            cols.append(col)
-            vals.append(value)
-
+    # Extract token_count values for stats (they're at indices where col == "token_count")
+    token_counts = [vals[i] for i, col in enumerate(cols) if col == "token_count"]
     total_tokens = sum(token_counts)
     stats = ChunkStats(
-        chunk_count=len(passages),
+        chunk_count=len(token_counts),
         total_tokens=total_tokens,
         min_tokens=min(token_counts) if token_counts else 0,
         max_tokens=max(token_counts) if token_counts else 0,
-        mean_tokens=round(total_tokens / len(passages), 1) if passages else 0.0,
+        mean_tokens=round(total_tokens / len(token_counts), 1) if token_counts else 0.0,
     )
     return ChunkResponse(aa=AssocArray(rows=rows, cols=cols, vals=vals), stats=stats)
 

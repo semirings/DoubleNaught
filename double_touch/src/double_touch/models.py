@@ -93,6 +93,11 @@ class HealthResponse(CamelModel):
     status: str
     engine: str
     active_sessions: int
+    # The active classification engine ("localTransformers" | "stub") and whether
+    # the optional torch/transformers deps are importable. Lets a caller tell at a
+    # glance whether real local inference is running or the placeholder stub is.
+    classifier: str = "stub"
+    classifier_local_available: bool = False
 
 
 # --- URL source node (URLNode) ----------------------------------------------

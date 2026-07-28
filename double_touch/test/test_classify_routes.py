@@ -7,9 +7,21 @@ network or model weights involved — the default classifier is the deterministi
 stub.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
+from double_touch import app as app_module
 from double_touch.app import app
+from double_touch.classify import (
+    LocalTransformersClassifierEngine,
+    StubClassifierEngine,
+    default_classifier,
+    transformers_available,
+)
+
+# Force the deterministic stub so the suite is hermetic and offline even if the
+# optional torch/transformers ('.[local]') deps are installed.
+app_module.classifier = StubClassifierEngine()
 
 client = TestClient(app)
 
@@ -80,3 +92,26 @@ def test_classify_rejects_empty_documents():
         },
     )
     assert resp.status_code == 422
+
+
+def test_default_classifier_matches_environment():
+    engine = default_classifier()
+    assert engine.name == (
+        "localTransformers" if transformers_available() else "stub"
+    )
+
+
+def test_local_engine_falls_back_when_deps_missing():
+    # Without torch/transformers, the local engine must not crash — it degrades
+    # to the deterministic (content-aware) stub. Skipped when the deps exist,
+    # since then a bad model id would hit the network.
+    if transformers_available():
+        pytest.skip("torch/transformers installed; missing-deps path not applicable")
+    engine = LocalTransformersClassifierEngine()
+    scores = engine.classify(
+        "a treatise on philosophy",
+        ["philosophy", "sports"],
+        model="some/nonexistent-model",
+    )
+    assert abs(sum(scores.values()) - 1.0) < 1e-6
+    assert scores["philosophy"] > scores["sports"]

@@ -56,6 +56,11 @@ class InventoryNode extends StatefulWidget {
   /// `../storage/inventory.json`. No backend is involved.
   final InventoryStore? store;
 
+  /// Saved settings to restore (the selected entry id), and a callback to report
+  /// them back to the canvas for persistence.
+  final Map<String, String>? initialParams;
+  final void Function(Map<String, String> params)? onParams;
+
   const InventoryNode({
     super.key,
     required this.node,
@@ -65,6 +70,8 @@ class InventoryNode extends StatefulWidget {
     this.onInputConnect,
     this.connectedOutputs = const {},
     this.store,
+    this.initialParams,
+    this.onParams,
   });
 
   @override
@@ -79,6 +86,7 @@ class _InventoryNodeState extends State<InventoryNode> {
 
   List<InventoryEntry> _entries = [];
   String? _selectedId;
+
   /// Ordering for the picker. Fixed now that the sort control is gone.
   final _SortBy _sortBy = _SortBy.author;
 
@@ -91,6 +99,10 @@ class _InventoryNodeState extends State<InventoryNode> {
   final OutputPort _out = OutputPort('entry');
   AaPayload? _lastOutput;
   String? _sentId; // entry most recently emitted downstream
+
+  /// The `content` egress port emitting fetched text as AA with raw_text column.
+  final OutputPort _contentOut = OutputPort('content');
+  AaPayload? _lastContentOutput;
 
   /// Fetched-asset output, replaying the last payload to late subscribers.
   late final StreamController<ContentPayload> _contentOutput;
@@ -110,13 +122,22 @@ class _InventoryNodeState extends State<InventoryNode> {
   @override
   void initState() {
     super.initState();
-    _contentOutput =
-        StreamController<ContentPayload>.broadcast(onListen: _replayLastContent);
+    _contentOutput = StreamController<ContentPayload>.broadcast(
+      onListen: _replayLastContent,
+    );
+    // Restore a saved selection so it survives save/reload (kept by [_load] when
+    // the entry is present in the catalog).
+    final saved = widget.initialParams?['selectedId'];
+    if (saved != null && saved.isNotEmpty) _selectedId = saved;
     widget.onOutputPort?.call(_out);
+    widget.onOutputPort?.call(_contentOut);
     widget.onContentConnect?.call(_contentOutput.stream);
     _subscribeLocations();
     _load();
   }
+
+  void _reportParams() =>
+      widget.onParams?.call({'selectedId': _selectedId ?? ''});
 
   @override
   void didUpdateWidget(InventoryNode oldWidget) {
@@ -128,6 +149,7 @@ class _InventoryNodeState extends State<InventoryNode> {
   void dispose() {
     _locationSub?.cancel();
     _out.dispose();
+    _contentOut.dispose();
     _contentOutput.close();
     super.dispose();
   }
@@ -197,8 +219,20 @@ class _InventoryNodeState extends State<InventoryNode> {
       if (!mounted) return;
       _lastContent = payload;
       _contentOutput.add(payload);
-      setState(() => _contentStatus =
-          'Fetched ${payload.byteCount} bytes${payload.contentType != null ? ' · ${payload.contentType}' : ''}');
+
+      // Convert ContentPayload to AaPayload with raw_text column for downstream processing
+      final textContent = String.fromCharCodes(payload.bytes);
+      _lastContentOutput = AaPayload(
+        rows: const ['content'],
+        cols: const ['raw_text', 'author', 'work_title', 'source_url', 'content_type'],
+        vals: [textContent, payload.author, payload.workTitle, payload.sourceUrl, payload.contentType ?? ''],
+      );
+      _contentOut.emit(_lastContentOutput!);
+
+      setState(
+        () => _contentStatus =
+            'Fetched ${payload.byteCount} bytes${payload.contentType != null ? ' · ${payload.contentType}' : ''}',
+      );
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {
@@ -208,7 +242,9 @@ class _InventoryNodeState extends State<InventoryNode> {
 
   /// Web addresses go over HTTP; anything else is read from local disk.
   Future<ContentPayload> _readLocation(
-      String location, InventoryEntry entry) async {
+    String location,
+    InventoryEntry entry,
+  ) async {
     final uri = Uri.tryParse(location);
     final isWeb =
         uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
@@ -217,7 +253,8 @@ class _InventoryNodeState extends State<InventoryNode> {
       final response = await http.get(uri);
       if (response.statusCode != 200) {
         throw Exception(
-            'Fetch failed for $location (status ${response.statusCode}).');
+          'Fetch failed for $location (status ${response.statusCode}).',
+        );
       }
       return ContentPayload(
         sourceUrl: location,
@@ -228,7 +265,9 @@ class _InventoryNodeState extends State<InventoryNode> {
       );
     }
 
-    final path = uri != null && uri.scheme == 'file' ? uri.toFilePath() : location;
+    final path = uri != null && uri.scheme == 'file'
+        ? uri.toFilePath()
+        : location;
     final file = File(path);
     if (!await file.exists()) {
       throw Exception('No file found at $path.');
@@ -280,11 +319,15 @@ class _InventoryNodeState extends State<InventoryNode> {
   List<InventoryEntry> _sorted(List<InventoryEntry> entries) {
     final sorted = [...entries];
     int cmp(String a, String b) => a.toLowerCase().compareTo(b.toLowerCase());
-    sorted.sort((a, b) => switch (_sortBy) {
-          _SortBy.author =>
-            cmp(a.author, b.author) != 0 ? cmp(a.author, b.author) : cmp(a.workTitle, b.workTitle),
-          _SortBy.workTitle => cmp(a.workTitle, b.workTitle),
-        });
+    sorted.sort(
+      (a, b) => switch (_sortBy) {
+        _SortBy.author =>
+          cmp(a.author, b.author) != 0
+              ? cmp(a.author, b.author)
+              : cmp(a.workTitle, b.workTitle),
+        _SortBy.workTitle => cmp(a.workTitle, b.workTitle),
+      },
+    );
     return sorted;
   }
 
@@ -309,10 +352,18 @@ class _InventoryNodeState extends State<InventoryNode> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete entry?'),
-        content: Text(entry.description.isNotEmpty ? entry.description : entry.workTitle),
+        content: Text(
+          entry.description.isNotEmpty ? entry.description : entry.workTitle,
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
         ],
       ),
     );
@@ -371,7 +422,7 @@ class _InventoryNodeState extends State<InventoryNode> {
       width: InventoryNode._width,
       inputPorts: [
         InputConnector(
-          label: 'urlInput',
+          label: 'trigger',
           idx: 0,
           active: widget.locationInput != null,
           onConnect: widget.onInputConnect,
@@ -387,7 +438,7 @@ class _InventoryNodeState extends State<InventoryNode> {
         OutputConnector(
           label: 'content',
           idx: 1,
-          active: _lastContent != null || widget.connectedOutputs.contains(1),
+          active: _lastContentOutput != null || widget.connectedOutputs.contains(1),
           dragData: PortRef(nodeId: widget.node.id, idx: 1),
         ),
       ],
@@ -409,14 +460,20 @@ class _InventoryNodeState extends State<InventoryNode> {
             const SizedBox(height: 8),
             Row(
               children: [
-                const Icon(Icons.check_circle_outline, size: 14, color: Colors.green),
+                const Icon(
+                  Icons.check_circle_outline,
+                  size: 14,
+                  color: Colors.green,
+                ),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(
                     'Sent “${_entries.firstWhere((e) => e.entryId == _sentId, orElse: () => _blank).workTitle}” downstream',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(color: Colors.green),
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: Colors.green,
+                    ),
                   ),
                 ),
               ],
@@ -427,20 +484,24 @@ class _InventoryNodeState extends State<InventoryNode> {
             Row(
               children: [
                 const SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: CircularProgressIndicator(strokeWidth: 2)),
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
                 const SizedBox(width: 8),
                 Text('Fetching content', style: theme.textTheme.labelSmall),
               ],
             ),
           ] else if (_contentStatus != null) ...[
             const SizedBox(height: 8),
-            Text(_contentStatus!,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelSmall
-                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            Text(
+              _contentStatus!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
           ],
         ],
       ),
@@ -448,14 +509,21 @@ class _InventoryNodeState extends State<InventoryNode> {
   }
 
   static const _blank = InventoryEntry(
-      entryId: '', url: '', author: '', workTitle: '', workSelector: '', description: '');
+    entryId: '',
+    url: '',
+    author: '',
+    workTitle: '',
+    workSelector: '',
+    description: '',
+  );
 
   /// Compact icon action bar — tooltips instead of wide text buttons.
   Widget _actionBar(ThemeData theme) {
     final hasSelection = _selected != null;
     final blocked = _busy || _fetching;
 
-    Widget action(IconData icon, String tip, VoidCallback? onPressed) => IconButton(
+    Widget action(IconData icon, String tip, VoidCallback? onPressed) =>
+        IconButton(
           onPressed: onPressed,
           tooltip: tip,
           icon: Icon(icon, size: 18),
@@ -470,25 +538,35 @@ class _InventoryNodeState extends State<InventoryNode> {
       crossAxisAlignment: WrapCrossAlignment.center,
       children: [
         action(Icons.add, 'Add an entry', blocked ? null : _add),
-        action(Icons.edit_outlined, 'Edit the selected entry',
-            (blocked || !hasSelection) ? null : _edit),
-        action(Icons.delete_outline, 'Delete the selected entry',
-            (blocked || !hasSelection) ? null : _delete),
+        action(
+          Icons.edit_outlined,
+          'Edit the selected entry',
+          (blocked || !hasSelection) ? null : _edit,
+        ),
+        action(
+          Icons.delete_outline,
+          'Delete the selected entry',
+          (blocked || !hasSelection) ? null : _delete,
+        ),
         const SizedBox(width: 4),
-        action(Icons.send, 'Send the selected entry downstream',
-            (blocked || !hasSelection)
-                ? null
-                : () async {
-                    await _select();
-                    await _fetchActiveContent();
-                  }),
+        action(
+          Icons.send,
+          'Send the selected entry downstream',
+          (blocked || !hasSelection)
+              ? null
+              : () async {
+                  await _select();
+                  await _fetchActiveContent();
+                },
+        ),
         if (blocked)
           const Padding(
             padding: EdgeInsets.only(left: 6),
             child: SizedBox(
-                width: 12,
-                height: 12,
-                child: CircularProgressIndicator(strokeWidth: 2)),
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
           ),
       ],
     );
@@ -502,8 +580,9 @@ class _InventoryNodeState extends State<InventoryNode> {
     if (_entries.isEmpty) {
       return Text(
         'No entries yet. Use Add, or connect a URL Source.',
-        style: theme.textTheme.bodySmall
-            ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
       );
     }
     return DropdownButtonFormField<String>(
@@ -521,13 +600,19 @@ class _InventoryNodeState extends State<InventoryNode> {
         for (final e in _sorted(_entries))
           DropdownMenuItem(
             value: e.entryId,
-            child: Text(_entryLabel(e),
-                maxLines: 1, overflow: TextOverflow.ellipsis),
+            child: Text(
+              _entryLabel(e),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
       ],
       onChanged: (_busy || _fetching)
           ? null
-          : (id) => setState(() => _selectedId = id),
+          : (id) {
+              setState(() => _selectedId = id);
+              _reportParams();
+            },
     );
   }
 
@@ -541,7 +626,9 @@ class _InventoryNodeState extends State<InventoryNode> {
   /// One concise line — never a raw stack trace inside the node bounds.
   Widget _errorBanner(ThemeData theme) {
     final message = _error!.replaceAll('\n', ' ').trim();
-    final concise = message.length > 90 ? '${message.substring(0, 90)}…' : message;
+    final concise = message.length > 90
+        ? '${message.substring(0, 90)}…'
+        : message;
     return Tooltip(
       message: message,
       child: Row(
@@ -553,8 +640,9 @@ class _InventoryNodeState extends State<InventoryNode> {
               concise,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelSmall
-                  ?.copyWith(color: theme.colorScheme.error),
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
             ),
           ),
         ],
@@ -565,7 +653,10 @@ class _InventoryNodeState extends State<InventoryNode> {
 
 /// Shows the Add/Edit form dialog; returns the entered [InventoryFields], or
 /// null if cancelled. Pre-fills from [initial] when editing.
-Future<InventoryFields?> _showEntryForm(BuildContext context, {InventoryEntry? initial}) {
+Future<InventoryFields?> _showEntryForm(
+  BuildContext context, {
+  InventoryEntry? initial,
+}) {
   return showDialog<InventoryFields>(
     context: context,
     builder: (_) => _EntryFormDialog(initial: initial),
@@ -613,7 +704,9 @@ class _EntryFormDialogState extends State<_EntryFormDialog> {
     if (_url.text.trim().isEmpty ||
         _title.text.trim().isEmpty ||
         _author.text.trim().isEmpty) {
-      setState(() => _validationError = 'URL, Author and Work Title are required');
+      setState(
+        () => _validationError = 'URL, Author and Work Title are required',
+      );
       return;
     }
     Navigator.pop(
@@ -631,11 +724,11 @@ class _EntryFormDialogState extends State<_EntryFormDialog> {
   @override
   Widget build(BuildContext context) {
     InputDecoration deco(String label, [String? hint]) => InputDecoration(
-          labelText: label,
-          hintText: hint,
-          isDense: true,
-          border: const OutlineInputBorder(),
-        );
+      labelText: label,
+      hintText: hint,
+      isDense: true,
+      border: const OutlineInputBorder(),
+    );
     return AlertDialog(
       title: Text(widget.initial == null ? 'Add entry' : 'Edit entry'),
       content: SizedBox(
@@ -658,21 +751,36 @@ class _EntryFormDialogState extends State<_EntryFormDialog> {
               TextField(controller: _title, decoration: deco('Work Title')),
               const SizedBox(height: 12),
               TextField(
-                  controller: _selector,
-                  decoration: deco('Work Selector (optional)', 'e.g. THE MIKADO; OR, …')),
+                controller: _selector,
+                decoration: deco(
+                  'Work Selector (optional)',
+                  'e.g. THE MIKADO; OR, …',
+                ),
+              ),
               const SizedBox(height: 12),
-              TextField(controller: _description, decoration: deco('Description')),
+              TextField(
+                controller: _description,
+                decoration: deco('Description'),
+              ),
               if (_validationError != null) ...[
                 const SizedBox(height: 10),
-                Text(_validationError!,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12)),
+                Text(
+                  _validationError!,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.error,
+                    fontSize: 12,
+                  ),
+                ),
               ],
             ],
           ),
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
         FilledButton(onPressed: _submit, child: const Text('Save')),
       ],
     );

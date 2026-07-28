@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../models/aa_payload.dart';
@@ -77,6 +79,11 @@ class _FetchNodeState extends State<FetchNode> {
   FetchStatus _status = FetchStatus.idle;
   String? _error;
 
+  // Auto-execution: fetch when a new upstream AA arrives, debounced and
+  // de-duplicated (don't re-fetch the same URL).
+  Timer? _autoTimer;
+  String? _lastFetchedUrl;
+
   bool get _canFetch => _incoming != null && _status != FetchStatus.fetching;
 
   @override
@@ -89,18 +96,32 @@ class _FetchNodeState extends State<FetchNode> {
 
   @override
   void dispose() {
+    _autoTimer?.cancel();
     _in.dispose();
     _out.dispose();
     super.dispose();
   }
 
-  /// A fresh upstream payload resets the node to idle so the user can re-fetch.
+  /// A fresh upstream payload resets the node to idle, then auto-fetches.
   void _onIncoming(AaPayload payload) {
     if (!mounted) return;
     setState(() {
       _incoming = payload;
       _status = FetchStatus.idle;
       _error = null;
+    });
+    _maybeAutoFetch();
+  }
+
+  /// Fetch when input arrives — debounced, skipping a URL already fetched. The
+  /// manual Fetch button still works regardless.
+  void _maybeAutoFetch() {
+    _autoTimer?.cancel();
+    _autoTimer = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted || !_canFetch) return;
+      final url = _incoming?.value('url');
+      if (url == null || url.isEmpty || url == _lastFetchedUrl) return;
+      _fetch();
     });
   }
 
@@ -115,6 +136,7 @@ class _FetchNodeState extends State<FetchNode> {
       final result = await widget.api.fetch(incoming);
       if (!mounted) return;
       _lastOutput = result;
+      _lastFetchedUrl = incoming.value('url');
       _out.emit(result);
       setState(() => _status = FetchStatus.complete);
     } catch (e) {
@@ -185,8 +207,9 @@ class _FetchNodeState extends State<FetchNode> {
     if (incoming == null) {
       return Text(
         'Connect a URL Source',
-        style: theme.textTheme.bodySmall
-            ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
       );
     }
     final url = incoming.value('url') ?? '(no url)';
@@ -203,15 +226,18 @@ class _FetchNodeState extends State<FetchNode> {
           url,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
         ),
         if (facts.isNotEmpty)
           Text(
             facts.join('  •  '),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.labelSmall
-                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
           ),
       ],
     );

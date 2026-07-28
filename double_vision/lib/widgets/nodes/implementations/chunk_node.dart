@@ -62,7 +62,7 @@ class ChunkNode extends StatefulWidget {
 class _ChunkNodeState extends State<ChunkNode> {
   /// Ingress/egress ports. The node listens to its own [_in] from birth, so the
   /// upstream's retained value is delivered when the canvas calls connect().
-  final InputPort _in = InputPort('rawText');
+  final InputPort _in = InputPort('text');
   final OutputPort _out = OutputPort('chunks');
 
   /// The most recent AA payload received from upstream, or null.
@@ -142,7 +142,7 @@ class _ChunkNodeState extends State<ChunkNode> {
       icon: Icons.segment,
       inputPorts: [
         InputConnector(
-          label: 'rawText',
+          label: 'text',
           idx: 0,
           active: wired,
           onConnect: widget.onInputConnect,

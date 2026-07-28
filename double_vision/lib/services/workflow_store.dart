@@ -52,6 +52,7 @@ class WorkflowStore {
   static const _metaRow = 'workflow';
   static const _nodePrefix = 'node:';
   static const _edgePrefix = 'edge:';
+  static const _paramPrefix = 'param:';
 
   /// Deliberate override (tests); when null the store uses [_storageDir].
   final String? overrideDir;
@@ -169,6 +170,10 @@ class WorkflowStore {
       add(r, 'type', n.type);
       add(r, 'x', n.x);
       add(r, 'y', n.y);
+      // Per-node saved settings ride as `param:<key>` columns on the node row.
+      for (final e in n.params.entries) {
+        add(r, '$_paramPrefix${e.key}', e.value);
+      }
     }
     for (var i = 0; i < wf.edges.length; i++) {
       final e = wf.edges[i];
@@ -192,12 +197,18 @@ class WorkflowStore {
       if (row.startsWith(_nodePrefix)) {
         final id = int.tryParse(row.substring(_nodePrefix.length));
         if (id == null) continue;
+        final params = <String, String>{
+          for (final e in m.entries)
+            if (e.key.startsWith(_paramPrefix))
+              e.key.substring(_paramPrefix.length): e.value,
+        };
         nodes.add(
           WorkflowNode(
             id: id,
             type: m['type'] ?? '',
             x: double.tryParse(m['x'] ?? '') ?? 0,
             y: double.tryParse(m['y'] ?? '') ?? 0,
+            params: params,
           ),
         );
       } else if (row.startsWith(_edgePrefix)) {

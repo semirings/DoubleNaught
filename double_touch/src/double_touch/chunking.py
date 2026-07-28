@@ -235,6 +235,44 @@ def normalize_units(
     return cleaned
 
 
+# --- Chunking pipeline (AA-compatible) ------------------------------------------
+
+_CHUNK_COLUMNS = ["text", "author", "work_title", "position", "token_count", "chunk_strategy"]
+
+
+def chunk_to_aa(
+    text: str,
+    author: str,
+    work_title: str,
+    work_selector: str = "",
+    run_id: str = "chunk",
+) -> tuple[list[str], list[str], list]:
+    """Chunk text and return rows, cols, vals for an Associative Array.
+
+    Returns a tuple of (rows, cols, vals) parallel lists ready to be wrapped
+    in an AssocArray. Values maintain their types: strings for text/metadata,
+    ints for position/token_count.
+    """
+    strategy = get_strategy(author.strip().lower())
+    work_text = extract_work(text, work_selector)
+    passages = normalize_units(strategy.split(work_text))
+
+    rows: list[str] = []
+    cols: list[str] = []
+    vals: list = []
+
+    for position, passage in enumerate(passages):
+        chunk_id = f"{run_id}:{position:05d}"
+        tokens = count_tokens(passage)
+        row_values = [passage, author, work_title, position, tokens, strategy.name]
+        for col, value in zip(_CHUNK_COLUMNS, row_values):
+            rows.append(chunk_id)
+            cols.append(col)
+            vals.append(value)
+
+    return rows, cols, vals
+
+
 # --- Strategy registry ------------------------------------------------------
 
 class ChunkStrategy(ABC):

@@ -1,12 +1,12 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
-import '../../../services/aa_file.dart';
 import '../../../services/classify_api.dart';
-import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/model_catalog_store.dart';
 import '../base/double_naught_node_wrapper.dart';
@@ -17,13 +17,17 @@ import '../base/output_connector.dart';
 /// idx 0, `urlIn` at idx 1) clear the body controls.
 const double _kPortLaneInset = 26;
 
-/// A **functional node** that runs zero-shot classification over incoming text
-/// and emits the results as an rcvs.json associative array.
+/// Upper bound on the characters sent to the classifier. Zero-shot models
+/// truncate to a few hundred tokens anyway, so classifying the whole of a large
+/// document is wasteful; the head is representative enough.
+const int _kMaxClassifyChars = 8000;
+
+/// A **functional node** that runs zero-shot classification over incoming
+/// **text** and emits the results as an rcvs.json associative array.
 ///
 /// Inputs:
-///  * `textIn` (AA, idx 0, required) — documents to classify, typically the
-///    Inventory node's `entry` output. Each AA row is one document; its text is
-///    taken from the first text-like column (or a join of its values).
+///  * `textIn` (text bytes, idx 0, required) — the document text to classify,
+///    typically Inventory's `content` output (a byte stream), decoded as UTF-8.
 ///  * `urlIn` (String, idx 1, optional) — a model URL / Hugging Face id / local
 ///    path that **overrides** the manual field and the dropdown.
 ///
@@ -31,17 +35,17 @@ const double _kPortLaneInset = 26;
 /// Hugging Face repo id is passed to the runner verbatim; a web/local path is
 /// passed as resolved.
 ///
-/// Output `classifiedAaOut` (AA, idx 0): rows = document ids, cols = category
-/// labels, vals = scores — a documents×categories score matrix in rcvs form.
+/// Output `classifiedAaOut` (AA, idx 0): rows = document id, cols = category
+/// labels, vals = scores — a document×categories score matrix in rcvs form.
 class ModelClassifierNode extends StatefulWidget {
   static const double _width = 320;
 
   final WorkflowNode node;
 
-  // textIn (AA) — idx 0
-  final bool textConnected;
+  // textIn (document text bytes) — idx 0
+  final Stream<Uint8List>? input;
+  final bool inputConnected;
   final void Function(PortRef source)? onTextConnect;
-  final void Function(InputPort port)? onInputPort;
 
   // urlIn (String) — idx 1
   final bool urlConnected;
@@ -58,12 +62,17 @@ class ModelClassifierNode extends StatefulWidget {
   /// Classification backend client. Injectable for tests.
   final ClassifyApi api;
 
+  /// Saved settings to restore (selected model, manual path, categories), and a
+  /// callback to report them back to the canvas for persistence.
+  final Map<String, String>? initialParams;
+  final void Function(Map<String, String> params)? onParams;
+
   const ModelClassifierNode({
     super.key,
     required this.node,
-    this.textConnected = false,
+    this.input,
+    this.inputConnected = false,
     this.onTextConnect,
-    this.onInputPort,
     this.urlConnected = false,
     this.onUrlConnect,
     this.locationInput,
@@ -71,6 +80,8 @@ class ModelClassifierNode extends StatefulWidget {
     this.connectedOutputs = const {},
     this.store,
     this.api = const ClassifyApi(),
+    this.initialParams,
+    this.onParams,
   });
 
   @override
@@ -80,7 +91,6 @@ class ModelClassifierNode extends StatefulWidget {
 class _ModelClassifierNodeState extends State<ModelClassifierNode> {
   late final ModelCatalogStore _catalog = widget.store ?? ModelCatalogStore();
 
-  final InputPort _textIn = InputPort('textIn');
   final OutputPort _out = OutputPort('classifiedAaOut');
 
   final TextEditingController _manual = TextEditingController();
@@ -88,10 +98,15 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
     text: 'positive, negative, neutral',
   );
 
+  // textIn: accumulate the incoming byte stream and decode to text.
+  StreamSubscription<Uint8List>? _sub;
+  BytesBuilder _builder = BytesBuilder();
+  String? _text;
+  int _bytes = 0;
+
   List<ModelEntry> _models = [];
   String? _selectedId; // modelId of the dropdown selection
   String? _urlOverride; // latest value from urlIn (overrides the rest)
-  AaPayload? _incoming; // documents from textIn
 
   StreamSubscription<String>? _urlSub;
   bool _loading = true;
@@ -100,8 +115,15 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
   AaPayload? _lastOutput;
   String? _status;
 
+  // Auto-execution: fire when input data arrives, debounced, and de-duplicated
+  // so identical inputs don't re-hit the backend.
+  Timer? _autoTimer;
+  String? _lastRunSig;
+
   bool get _hasOverride =>
       _urlOverride != null && _urlOverride!.trim().isNotEmpty;
+
+  bool get _hasText => _text != null && _text!.trim().isNotEmpty;
 
   ModelEntry? get _selectedModel {
     for (final m in _models) {
@@ -113,23 +135,40 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
   @override
   void initState() {
     super.initState();
-    widget.onInputPort?.call(_textIn);
+    // Restore saved settings so they survive save/reload.
+    final p = widget.initialParams;
+    if (p != null) {
+      final sid = p['selectedId'];
+      if (sid != null && sid.isNotEmpty) _selectedId = sid;
+      if (p['manual'] != null) _manual.text = p['manual']!;
+      if (p['categories'] != null && p['categories']!.isNotEmpty) {
+        _labels.text = p['categories']!;
+      }
+    }
     widget.onOutputPort?.call(_out);
-    _textIn.onDataArrived.listen(_onText);
+    _subscribeText();
     _subscribeUrl();
     _load();
   }
 
+  void _reportParams() => widget.onParams?.call({
+    'selectedId': _selectedId ?? '',
+    'manual': _manual.text,
+    'categories': _labels.text,
+  });
+
   @override
   void didUpdateWidget(ModelClassifierNode oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.input != widget.input) _subscribeText();
     if (oldWidget.locationInput != widget.locationInput) _subscribeUrl();
   }
 
   @override
   void dispose() {
+    _autoTimer?.cancel();
+    _sub?.cancel();
     _urlSub?.cancel();
-    _textIn.dispose();
     _out.dispose();
     _manual.dispose();
     _labels.dispose();
@@ -155,19 +194,54 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
     }
   }
 
+  void _subscribeText() {
+    _sub?.cancel();
+    _builder = BytesBuilder();
+    _text = null;
+    _bytes = 0;
+    _sub = widget.input?.listen(_onChunk);
+  }
+
+  void _onChunk(Uint8List chunk) {
+    if (!mounted) return;
+    _builder.add(chunk);
+    final data = _builder.toBytes();
+    setState(() {
+      _bytes = data.length;
+      _text = utf8.decode(data, allowMalformed: true);
+      _status = null;
+    });
+    _maybeAutoClassify();
+  }
+
   void _subscribeUrl() {
     _urlSub?.cancel();
     _urlSub = widget.locationInput?.listen((location) {
       if (!mounted) return;
       setState(() => _urlOverride = location.trim());
+      _maybeAutoClassify();
     });
   }
 
-  void _onText(AaPayload payload) {
-    if (!mounted) return;
-    setState(() {
-      _incoming = payload;
-      _status = null;
+  /// Signature of the inputs a classify run depends on — used to skip re-running
+  /// on identical data.
+  String? _runSignature() {
+    final m = _resolveModel();
+    if (m == null || !_hasText) return null;
+    return '${m.identifier}|${_labelList().join(",")}|'
+        '${_text!.length}:${_text!.hashCode}';
+  }
+
+  /// Fire a classification when input data arrives — debounced, skipping a run
+  /// whose inputs match the last one. Manual [_classify] via the button still
+  /// works regardless.
+  void _maybeAutoClassify() {
+    _autoTimer?.cancel();
+    _autoTimer = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted || _busy || !_canClassify) return;
+      final sig = _runSignature();
+      if (sig == null || sig == _lastRunSig) return;
+      _classify();
     });
   }
 
@@ -214,36 +288,19 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
     return 'local';
   }
 
-  /// Build the documents AA (rows = doc id, col `text`) from the textIn payload.
-  AaPayload? _documents() {
-    final aa = _incoming;
-    if (aa == null) return null;
-    final byRow = AaFile.groupByRow(aa);
-    if (byRow.isEmpty) return null;
-    final rows = <String>[];
-    final cols = <String>[];
-    final vals = <Object>[];
-    for (final e in byRow.entries) {
-      rows.add(e.key);
-      cols.add('text');
-      vals.add(_textOf(e.value));
-    }
-    return AaPayload(rows: rows, cols: cols, vals: vals);
-  }
-
-  String _textOf(Map<String, String> row) {
-    for (final k in const [
-      'rawText',
-      'cleanedText',
-      'text',
-      'content',
-      'body',
-      'description',
-    ]) {
-      final v = row[k];
-      if (v != null && v.trim().isNotEmpty) return v;
-    }
-    return row.values.where((v) => v.trim().isNotEmpty).join(' ');
+  /// The single incoming document as a 1-row AA (rows = `document`, col `text`),
+  /// truncated to [_kMaxClassifyChars]. Null when no text has arrived.
+  AaPayload? _document() {
+    final text = _text?.trim();
+    if (text == null || text.isEmpty) return null;
+    final clipped = text.length > _kMaxClassifyChars
+        ? text.substring(0, _kMaxClassifyChars)
+        : text;
+    return AaPayload(
+      rows: const ['document'],
+      cols: const ['text'],
+      vals: [clipped],
+    );
   }
 
   List<String> _labelList() => [
@@ -252,26 +309,23 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
   ];
 
   bool get _canClassify =>
-      !_busy &&
-      _incoming != null &&
-      _resolveModel() != null &&
-      _labelList().isNotEmpty;
+      !_busy && _hasText && _resolveModel() != null && _labelList().isNotEmpty;
 
   Future<void> _classify() async {
     final model = _resolveModel();
-    final docs = _documents();
+    final docs = _document();
     final labels = _labelList();
     if (model == null || docs == null || labels.isEmpty) {
       setState(
-        () => _error =
-            'Need documents on textIn, a model, and at least one category.',
+        () =>
+            _error = 'Need text on textIn, a model, and at least one category.',
       );
       return;
     }
     setState(() {
       _busy = true;
       _error = null;
-      _status = 'Classifying ${docs.distinctRows().length} document(s)…';
+      _status = 'Classifying…';
     });
     try {
       final result = await widget.api.classify(
@@ -282,6 +336,7 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
       );
       if (!mounted) return;
       _lastOutput = result;
+      _lastRunSig = _runSignature();
       _out.emit(result);
       setState(
         () => _status =
@@ -289,8 +344,10 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
       );
     } catch (e) {
       if (mounted) {
-        setState(() => _status = null);
-        setState(() => _error = '$e');
+        setState(() {
+          _status = null;
+          _error = '$e';
+        });
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -313,7 +370,7 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
         InputConnector(
           label: 'textIn',
           idx: 0,
-          active: widget.textConnected,
+          active: widget.inputConnected,
           onConnect: widget.onTextConnect,
         ),
         InputConnector(
@@ -351,7 +408,10 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
                 vertical: 10,
               ),
             ),
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) {
+              setState(() {});
+              _reportParams();
+            },
           ),
           if (_hasOverride) ...[
             const SizedBox(height: 6),
@@ -370,7 +430,10 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
                 vertical: 10,
               ),
             ),
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) {
+              setState(() {});
+              _reportParams();
+            },
           ),
           const SizedBox(height: 8),
           _textInInfo(theme, muted),
@@ -475,7 +538,12 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
             ),
           ),
       ],
-      onChanged: _busy ? null : (id) => setState(() => _selectedId = id),
+      onChanged: _busy
+          ? null
+          : (id) {
+              setState(() => _selectedId = id);
+              _reportParams();
+            },
     );
   }
 
@@ -498,11 +566,19 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
   );
 
   Widget _textInInfo(ThemeData theme, TextStyle? muted) {
-    final aa = _incoming;
-    if (aa == null) {
-      return Text('Connect textIn (e.g. Inventory entry).', style: muted);
+    if (!_hasText) {
+      return Text('Connect textIn (document text).', style: muted);
     }
-    final docs = aa.distinctRows().length;
-    return Text('$docs document(s) on textIn', style: muted);
+    final chars = _text!.length;
+    final clipped = chars > _kMaxClassifyChars;
+    final detail = clipped
+        ? '$_bytes bytes · classifying first $_kMaxClassifyChars chars'
+        : '$_bytes bytes on textIn';
+    return Text(
+      detail,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: muted,
+    );
   }
 }
