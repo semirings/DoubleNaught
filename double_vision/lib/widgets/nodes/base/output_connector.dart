@@ -84,8 +84,12 @@ class OutputConnector extends StatelessWidget {
       );
     }
 
+    // mouseCursor overrides InkWell's default pointer/hand — output port
+    // dots are not "buttons"; keep the arrow so the UI is consistent with
+    // input ports (only the drag handle itself uses SystemMouseCursors.grab).
     return InkWell(
       onTap: onTap,
+      mouseCursor: SystemMouseCursors.basic,
       borderRadius: BorderRadius.circular(12),
       child: content,
     );

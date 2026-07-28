@@ -43,6 +43,33 @@ class AaPayload {
   /// Number of stored triples.
   int get length => cols.length;
 
+  /// Whether this payload is in **dense** form — `vals` is a row-major
+  /// `rows × cols` matrix — rather than the canonical sparse parallel triples
+  /// (`rows`/`cols`/`vals` all the same length). A hand-authored table such as
+  /// `storage/categories/categories.json` uses the dense shape.
+  bool get isDense =>
+      vals.length != rows.length &&
+      cols.isNotEmpty &&
+      vals.length == rows.length * cols.length;
+
+  /// This payload as canonical sparse triples: a dense (`rows × cols` matrix)
+  /// payload is expanded row-major; an already-sparse payload is returned
+  /// unchanged. Lets AA consumers accept either on-disk / on-wire shape.
+  AaPayload toSparse() {
+    if (!isDense) return this;
+    final r = <String>[];
+    final c = <String>[];
+    final v = <Object>[];
+    for (var i = 0; i < rows.length; i++) {
+      for (var j = 0; j < cols.length; j++) {
+        r.add(rows[i]);
+        c.add(cols[j]);
+        v.add(vals[i * cols.length + j]);
+      }
+    }
+    return AaPayload(rows: r, cols: c, vals: v);
+  }
+
   /// The distinct row keys, in first-appearance order. For a multi-row AA (e.g.
   /// ChunkNode passages) this is the chunk count.
   List<String> distinctRows() {

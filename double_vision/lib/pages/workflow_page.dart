@@ -55,7 +55,11 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// ingress [InputPort] here, keyed by node id, so a drawn wire binds them via
   /// `inputPort.connect(outputPort)` (and `disconnect()` on delete).
   final Map<int, OutputPort> _aaOutputPorts = {};
-  final Map<int, InputPort> _aaInputPorts = {};
+
+  /// AA ingress ports keyed by node id, then by input-port index — a node may
+  /// expose more than one AA input (e.g. Model Classifier's `aaIn` at idx 0 and
+  /// `categoryIn` at idx 2; Preview's `aa` at idx 1).
+  final Map<int, Map<int, InputPort>> _aaInputPorts = {};
 
   /// Raw location strings published by URL Source nodes, keyed by node id.
   /// Consumed by Inventory's `urlInput`.
@@ -245,8 +249,9 @@ class _WorkflowPageState extends State<WorkflowPage>
         // Two inputs: `trigger` (AA, idx 0) and `urlIn` (String, idx 1).
         return const [0, 1];
       case 'model_classifier':
-        // Two inputs: `textIn` (AA, idx 0) and `urlIn` (String, idx 1).
-        return const [0, 1];
+        // Three inputs: `aaIn` (AA, idx 0), `modelIn` (String, idx 1),
+        // `categoryIn` (AA, idx 2).
+        return const [0, 1, 2];
       case 'sam3':
       case 'fetch':
       case 'chunk':
@@ -398,7 +403,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   void _deleteNode(int id) {
     // Unbind any downstream inputs this node was feeding, then drop its ports.
     for (final e in _edges.where((e) => e.from.nodeId == id)) {
-      _unbindAaInput(e.to.nodeId);
+      _unbindAaInput(e.to.nodeId, e.to.idx);
     }
     _unbindAaInput(id);
     setState(() {
@@ -554,9 +559,18 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   void _addNode(NodeType type) {
     setState(() {
-      final offset = 32.0 + _nodes.length % 8 * 30.0;
+      // Grid placement: 3 columns × 280px rows. Column width (360px) exceeds
+      // the widest node (320px); row height (280px) clears tall nodes. Nodes
+      // never overlap on either axis regardless of how many are added.
+      final col = _nodes.length % 3;
+      final row = _nodes.length ~/ 3;
       _nodes.add(
-        WorkflowNode(id: _nextId++, type: type.type, x: offset, y: offset + 24),
+        WorkflowNode(
+          id: _nextId++,
+          type: type.type,
+          x: 32.0 + col * 360.0,
+          y: 48.0 + row * 280.0,
+        ),
       );
     });
   }
@@ -704,32 +718,37 @@ class _WorkflowPageState extends State<WorkflowPage>
   bool _hasIncomingEdgeAt(int nodeId, int idx) =>
       _edges.any((e) => e.to.nodeId == nodeId && e.to.idx == idx);
 
-  /// The input-port index at which [nodeId] exposes its AA ingress port, or null
-  /// if it has none. Preview keeps its AA port at idx 1 (its byte input is idx
-  /// 0); every other AA consumer uses idx 0.
-  int? _aaInputIdxFor(int nodeId) {
-    if (!_aaInputPorts.containsKey(nodeId)) return null;
-    final i = _nodes.indexWhere((n) => n.id == nodeId);
-    if (i < 0) return null;
-    return _nodes[i].type == 'preview' ? 1 : 0;
+  /// Register an AA ingress port for [nodeId] at input-port index [idx]. Nodes
+  /// call this from their `onInputPort`-style callbacks as they build; a node
+  /// may register several (e.g. Model Classifier's `aaIn` at idx 0 and
+  /// `categoryIn` at idx 2).
+  void _registerAaInput(int nodeId, int idx, InputPort port) {
+    (_aaInputPorts[nodeId] ??= <int, InputPort>{})[idx] = port;
   }
 
   /// Bind an AA edge on the port bus: the target's InputPort subscribes to the
-  /// source's OutputPort. No-op unless [targetIdx] is the target's AA input and
-  /// both endpoints carry AA ports.
+  /// source's OutputPort. No-op unless the target exposes an AA input at exactly
+  /// [targetIdx] and the source carries an AA output.
   void _bindAaPorts(PortRef source, int targetId, int targetIdx) {
-    if (_aaInputIdxFor(targetId) != targetIdx) return;
     final out = _aaOutputPorts[source.nodeId];
-    final input = _aaInputPorts[targetId];
+    final input = _aaInputPorts[targetId]?[targetIdx];
     if (out != null && input != null) input.connect(out);
   }
 
-  /// Unbind [targetId]'s AA InputPort (on wire delete / replace / node removal).
-  /// When [targetIdx] is given, only unbinds if it is the AA input index, so a
-  /// byte edge into Preview's idx 0 never severs its AA binding at idx 1.
+  /// Unbind [targetId]'s AA InputPort(s) on wire delete / replace / node
+  /// removal. With [targetIdx] only that one input is severed (so a byte edge
+  /// into Preview's idx 0 never touches its AA binding at idx 1); without it,
+  /// every AA input on the node is disconnected.
   void _unbindAaInput(int targetId, [int? targetIdx]) {
-    if (targetIdx != null && _aaInputIdxFor(targetId) != targetIdx) return;
-    _aaInputPorts[targetId]?.disconnect();
+    final ports = _aaInputPorts[targetId];
+    if (ports == null) return;
+    if (targetIdx != null) {
+      ports[targetIdx]?.disconnect();
+    } else {
+      for (final p in ports.values) {
+        p.disconnect();
+      }
+    }
   }
 
   /// Resolve the raw location stream wired into [nodeId]'s input port 0, if any.
@@ -1045,8 +1064,10 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// Tear down all canvas state — nodes, edges, port registries, focus tabs —
   /// WITHOUT wrapping in setState (callers do). Disconnects AA ports first.
   void _resetCanvasState() {
-    for (final port in _aaInputPorts.values) {
-      port.disconnect();
+    for (final ports in _aaInputPorts.values) {
+      for (final port in ports.values) {
+        port.disconnect();
+      }
     }
     _nodes.clear();
     _edges.clear();
@@ -1326,7 +1347,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           // `trigger` AA input (idx 0) — e.g. from Start.
           triggerConnected: _hasIncomingEdgeAt(node.id, 0),
           onTriggerConnect: (source) => _connectAt(source, node.id, 0),
-          onInputPort: (port) => _aaInputPorts[node.id] = port,
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
           // `urlIn` String input (idx 1) — e.g. from URL Source.
           urlConnected: _hasIncomingEdgeAt(node.id, 1),
           onUrlConnect: (source) => _connectAt(source, node.id, 1),
@@ -1335,20 +1356,30 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
+      case 'categories':
+        return CategoriesNode(
+          node: node,
+          // `categoriesOut` AA egress on the port bus.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
       case 'model_classifier':
         return ModelClassifierNode(
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // `textIn` byte-stream input (idx 0) — the document text, e.g. from
-          // Inventory `content`, decoded to text and classified.
-          input: _inputForAt(node.id, 0),
+          // `aaIn` AA input (idx 0) — e.g. from Chunk or Inventory `content`.
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onTextConnect: (source) => _connectAt(source, node.id, 0),
-          // `urlIn` String input (idx 1) — e.g. from URL Source.
-          urlConnected: _hasIncomingEdgeAt(node.id, 1),
-          onUrlConnect: (source) => _connectAt(source, node.id, 1),
-          locationInput: _locationInputForAt(node.id, 1),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `modelIn` String input (idx 1) — e.g. from URL Source / Load Model.
+          modelConnected: _hasIncomingEdgeAt(node.id, 1),
+          onModelConnect: (source) => _connectAt(source, node.id, 1),
+          modelInput: _locationInputForAt(node.id, 1),
+          // `categoryIn` AA input (idx 2) — e.g. from a Categories node.
+          categoryConnected: _hasIncomingEdgeAt(node.id, 2),
+          onCategoryConnect: (source) => _connectAt(source, node.id, 2),
+          onCategoryPort: (port) => _registerAaInput(node.id, 2, port),
           // `classifiedAaOut` AA egress on the port bus.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
@@ -1358,13 +1389,16 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           onConnect: (stream) => _outputs[node.id] = stream,
           onFileName: (name) => setState(() => _sourceNames[node.id] = name),
+          // `aa` egress (idx 1) — live when the file is an rcvs AA JSON.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
         );
       case 'image_display':
         return ImageDisplayNode(
           node: node,
           // `urlInput` — AA location from an upstream node, over the port bus.
           inputConnected: _hasIncomingEdge(node.id),
-          onInputPort: (port) => _aaInputPorts[node.id] = port,
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
           onInputConnect: (source) => _connect(source, node.id),
           // The lower-right indicator opens the Focus Panel for this instance.
           onViewImageAssets: _openImageAssets,
@@ -1406,7 +1440,7 @@ class _WorkflowPageState extends State<WorkflowPage>
         return FetchNode(
           node: node,
           inputConnected: _hasIncomingEdge(node.id),
-          onInputPort: (port) => _aaInputPorts[node.id] = port,
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
           onInputConnect: (source) => _connect(source, node.id),
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
@@ -1415,7 +1449,7 @@ class _WorkflowPageState extends State<WorkflowPage>
         return ChunkNode(
           node: node,
           inputConnected: _hasIncomingEdge(node.id),
-          onInputPort: (port) => _aaInputPorts[node.id] = port,
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
           onInputConnect: (source) => _connect(source, node.id),
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
@@ -1424,7 +1458,7 @@ class _WorkflowPageState extends State<WorkflowPage>
         return ReviewNode(
           node: node,
           inputConnected: _hasIncomingEdge(node.id),
-          onInputPort: (port) => _aaInputPorts[node.id] = port,
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
           onInputConnect: (source) => _connect(source, node.id),
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
@@ -1433,7 +1467,7 @@ class _WorkflowPageState extends State<WorkflowPage>
         return Aa2JsonlNode(
           node: node,
           inputConnected: _hasIncomingEdge(node.id),
-          onInputPort: (port) => _aaInputPorts[node.id] = port,
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
           onInputConnect: (source) => _connect(source, node.id),
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
@@ -1449,7 +1483,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           // `aa` input (idx 1) — an associative array over the port bus.
           aaConnected: _hasIncomingEdgeAt(node.id, 1),
           onAaConnect: (source) => _connectAt(source, node.id, 1),
-          onAaInputPort: (port) => _aaInputPorts[node.id] = port,
+          onAaInputPort: (port) => _registerAaInput(node.id, 1, port),
           // Route decoded content to the Focus Panel tab for this node.
           onContent: _pushFocusContent,
           onView: _openFocusTab,

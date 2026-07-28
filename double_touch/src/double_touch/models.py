@@ -171,14 +171,21 @@ class ClassifyRequest(CamelModel):
     # "huggingface" | "remote_url" | "local".
     source_type: str = ""
     task: str = "zero-shot-classification"
-    # Candidate labels to score each document against.
-    labels: list[str]
+    # Candidate labels to score each document against. Optional when
+    # ``categories`` is supplied (its ``label`` column supersedes this list).
+    labels: list[str] = []
+    # Optional categories AA (rows = category, cols = ``label`` +
+    # ``hypothesis_template`` + ``threshold``). When present it supersedes
+    # ``labels`` and drives per-category hypothesis templates and thresholds.
+    categories: AssocArray | None = None
     # Documents to classify: rows = document id, col ``text``, val = the text.
     documents: AssocArray
 
 
 class ClassifyResponse(CamelModel):
-    # Result AA: rows = document id, cols = labels, vals = scores (0..1).
+    # Result AA: rows = document id, cols = labels, vals = scores (0..1). When
+    # categories carry thresholds, each document also gains a ``passed`` column
+    # listing the categories that met their threshold.
     aa: AssocArray
 
 

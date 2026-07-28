@@ -7,10 +7,12 @@ import '../models/aa_payload.dart';
 /// Thin client for the zero-shot **classification runner** on the DoubleTouch
 /// backend (`double_touch/`), targeting the camelCase, AA-native contract:
 ///
-///  * `POST /classify` — `{ model, sourceType, task, labels, documents }` where
-///    `documents` is an rcvs AA (rows = document id, col `text`, val = the text)
-///    → `{ aa }` where `aa` is the rcvs result AA: rows = document id, cols =
-///    category labels, vals = scores.
+///  * `POST /classify` — `{ model, sourceType, task, labels, categories?,
+///    documents }` where `documents` is an rcvs AA (rows = document id, col
+///    `text`, val = the text) → `{ aa }` where `aa` is the rcvs result AA: rows
+///    = document id, cols = category labels, vals = scores. When `categories`
+///    (an rcvs AA of `label` / `hypothesis_template` / `threshold` rows) is
+///    supplied it supersedes `labels`, and the result gains a `passed` column.
 ///
 /// Like the other clients it only performs the call and decodes the body — it
 /// holds no UI state. The model identifier is passed through verbatim: for a
@@ -29,6 +31,7 @@ class ClassifyApi {
     required String sourceType,
     required List<String> labels,
     required AaPayload documents,
+    AaPayload? categories,
     String task = 'zero-shot-classification',
   }) async {
     final response = await http.post(
@@ -39,6 +42,7 @@ class ClassifyApi {
         'sourceType': sourceType,
         'task': task,
         'labels': labels,
+        if (categories != null) 'categories': categories.toJson(),
         'documents': documents.toJson(),
       }),
     );

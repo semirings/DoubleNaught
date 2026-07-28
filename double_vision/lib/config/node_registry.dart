@@ -19,6 +19,7 @@ class NodeType {
 const List<NodeType> nodeTypes = [
   NodeType(name: 'Start', type: 'start'),
   NodeType(name: 'Load Model', type: 'load_model'),
+  NodeType(name: 'Categories', type: 'categories'),
   NodeType(name: 'Model Classifier', type: 'model_classifier'),
   NodeType(name: 'File Source', type: 'file_source'),
   NodeType(name: 'Image Display', type: 'image_display'),

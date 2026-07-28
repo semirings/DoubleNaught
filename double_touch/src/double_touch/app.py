@@ -30,7 +30,12 @@ from .chunking import (
     get_strategy,
     normalize_units,
 )
-from .classify import ClassifierEngine, default_classifier, transformers_available
+from .classify import (
+    ClassifierEngine,
+    default_classifier,
+    parse_categories_aa,
+    transformers_available,
+)
 from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cxcywh_to_xyxy
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
@@ -432,35 +437,55 @@ async def classify_documents(request: ClassifyRequest) -> ClassifyResponse:
     """Zero-shot classify each incoming document against the candidate labels.
 
     AA-in (``documents``: rows = doc id, col ``text``) -> AA-out (rows = doc id,
-    cols = labels, vals = scores). The model identifier is passed to the engine
+    cols = label names, vals = scores). The model identifier is passed to the engine
     verbatim — a Hugging Face repo id, or a resolved URL/path.
+
+    Candidate labels come from the ``categories`` AA when supplied (its ``label``
+    column, plus per-category ``hypothesis_template`` and ``threshold``); otherwise
+    from the flat ``labels`` list.
     """
-    labels = [label.strip() for label in request.labels if label.strip()]
+    templates: list | None = None
+    thresholds: list | None = None
+    if request.categories is not None and request.categories.rows:
+        categories_dict = {
+            "row": request.categories.rows,
+            "col": request.categories.cols,
+            "val": request.categories.vals,
+        }
+        labels, templates, thresholds = parse_categories_aa(categories_dict)
+    else:
+        labels = [label.strip() for label in request.labels if label.strip()]
     if not labels:
         raise HTTPException(status_code=422, detail="no candidate labels provided")
-    records = aa_rows(request.documents)
-    if not records:
+    if not request.documents.rows:
         raise HTTPException(status_code=422, detail="documents AA is empty")
 
-    def _run() -> tuple[list[str], list[str], list[float]]:
+    def _run() -> dict:
         # Blocking: model load (cold start) + inference. Runs in a worker thread
         # so it never blocks the event loop.
-        rows: list[str] = []
-        cols: list[str] = []
-        vals: list[float] = []
-        for doc_id, fields in records:
-            text = str(fields.get("text", "")).strip()
-            scores = classifier.classify(
-                text, labels, model=request.model, task=request.task
-            )
-            for label in labels:
-                rows.append(doc_id)
-                cols.append(label)
-                vals.append(float(scores.get(label, 0.0)))
-        return rows, cols, vals
+        # Convert AssocArray to dict (row/col/val keys instead of rows/cols/vals)
+        aa_in = {
+            "row": request.documents.rows,
+            "col": request.documents.cols,
+            "val": request.documents.vals,
+        }
+        return classifier.classify_aa(
+            aa_in,
+            labels,
+            model=request.model,
+            task=request.task,
+            templates=templates,
+            thresholds=thresholds,
+        )
 
-    rows, cols, vals = await run_in_threadpool(_run)
-    return ClassifyResponse(aa=AssocArray(rows=rows, cols=cols, vals=vals))
+    aa_out = await run_in_threadpool(_run)
+    return ClassifyResponse(
+        aa=AssocArray(
+            rows=aa_out.get("row", []),
+            cols=aa_out.get("col", []),
+            vals=aa_out.get("val", []),
+        )
+    )
 
 
 @app.post("/fetch", response_model=FetchResponse)

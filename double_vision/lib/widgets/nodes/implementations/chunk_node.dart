@@ -150,7 +150,7 @@ class _ChunkNodeState extends State<ChunkNode> {
       ],
       outputPorts: [
         OutputConnector(
-          label: 'chunks',
+          label: 'aaOut',
           idx: 0,
           active: hasOutput || widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),

@@ -36,38 +36,47 @@ class InputConnector extends StatelessWidget {
       builder: (context, candidate, rejected) {
         final hovering = candidate.isNotEmpty;
         final color = (active || hovering) ? scheme.primary : scheme.outline;
-        return SizedBox(
-          // Fixed-height slot: the wrapper centers it on the port anchor, so
-          // the dot's center coincides with the connected noodle's endpoint.
-          height: kPortRowHeight,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 14,
-                  height: 14,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: (active || hovering) ? color : scheme.surface,
-                    border: Border.all(color: color, width: 2),
-                    // Glow while a compatible output is dragged over this port —
-                    // visual confirmation that the connection will snap here.
-                    boxShadow: hovering
-                        ? [
-                            BoxShadow(
-                              color: scheme.primary,
-                              blurRadius: 8,
-                              spreadRadius: 2,
-                            ),
-                          ]
-                        : null,
+        // MouseRegion overrides any click-cursor that Material ancestors emit
+        // — ports are drop targets, not tappable buttons.
+        return MouseRegion(
+          cursor: SystemMouseCursors.basic,
+          child: SizedBox(
+            // The visible slot is kPortRowHeight tall. A trailing invisible
+            // extension pushes the DragTarget's hit area 80px rightward into
+            // the node body, so users don't have to aim at the 14px dot.
+            height: kPortRowHeight,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 4, right: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 14,
+                    height: 14,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: (active || hovering) ? color : scheme.surface,
+                      border: Border.all(color: color, width: 2),
+                      // Glow while a compatible output is dragged over this
+                      // port — visual confirmation the connection will land.
+                      boxShadow: hovering
+                          ? [
+                              BoxShadow(
+                                color: scheme.primary,
+                                blurRadius: 8,
+                                spreadRadius: 2,
+                              ),
+                            ]
+                          : null,
+                    ),
                   ),
-                ),
-                const SizedBox(width: 6),
-                Text(label, style: TextStyle(color: scheme.onSurfaceVariant)),
-              ],
+                  const SizedBox(width: 6),
+                  Text(label, style: TextStyle(color: scheme.onSurfaceVariant)),
+                  // Invisible extension — widens the drop zone without
+                  // changing what the user sees.
+                  const SizedBox(width: 80),
+                ],
+              ),
             ),
           ),
         );

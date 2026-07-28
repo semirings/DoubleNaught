@@ -64,21 +64,102 @@ def test_classify_shape_and_content():
     assert resp.status_code == 200
     aa = resp.json()["aa"]
 
-    # One triple per (document, label): 2 docs x 2 labels = 4.
-    assert len(aa["rows"]) == len(aa["cols"]) == len(aa["vals"]) == 4
-    assert set(aa["cols"]) == {"philosophy", "sports"}
+    # Original metadata (1 text triple) + 2 score triples per doc × 2 docs = 6.
+    assert len(aa["rows"]) == len(aa["cols"]) == len(aa["vals"]) == 6
+    assert set(aa["cols"]) == {"text", "score:philosophy", "score:sports"}
 
     s1, s2 = _scores(aa, "doc:1"), _scores(aa, "doc:2")
-    # Scores form a distribution per document.
-    assert abs(sum(s1.values()) - 1.0) < 1e-6
-    assert abs(sum(s2.values()) - 1.0) < 1e-6
+    # Score columns form a distribution per document.
+    score_vals_1 = [v for k, v in s1.items() if k.startswith("score:")]
+    score_vals_2 = [v for k, v in s2.items() if k.startswith("score:")]
+    assert abs(sum(score_vals_1) - 1.0) < 1e-6
+    assert abs(sum(score_vals_2) - 1.0) < 1e-6
     # Content-aware: each document leans toward its matching label.
-    assert s1["philosophy"] > s1["sports"]
-    assert s2["sports"] > s2["philosophy"]
+    assert s1["score:philosophy"] > s1["score:sports"]
+    assert s2["score:sports"] > s2["score:philosophy"]
 
 
 def test_classify_rejects_empty_labels():
     resp = client.post("/classify", json=_body([], [("doc:1", "text")]))
+    assert resp.status_code == 422
+
+
+def _categories_aa(cats):
+    """A categories AA on the wire: cats = list of (label, template, threshold)."""
+    rows, cols, vals = [], [], []
+    for i, (label, template, threshold) in enumerate(cats):
+        row = f"cat:{i}"
+        for col, val in (
+            ("label", label),
+            ("hypothesis_template", template),
+            ("threshold", threshold),
+        ):
+            rows.append(row)
+            cols.append(col)
+            vals.append(val)
+    return {"rows": rows, "cols": cols, "vals": vals}
+
+
+def test_classify_categories_supersede_labels_and_flag_passed():
+    body = _body([], [("doc:1", "A treatise on philosophy and metaphysics.")])
+    # Flat labels are ignored; the categories AA supplies the candidate labels.
+    body["categories"] = _categories_aa(
+        [
+            ("philosophy", "This passage is {}", 0.1),
+            ("sports", "This passage is {}", 0.9),
+        ]
+    )
+    resp = client.post("/classify", json=body)
+    assert resp.status_code == 200
+    aa = resp.json()["aa"]
+
+    scores = _scores(aa, "doc:1")
+    # Category `label`s become score: columns; original text is preserved.
+    assert {"text", "score:philosophy", "score:sports", "passed"} == set(scores)
+    # philosophy clears its low 0.1 threshold; sports cannot clear 0.9.
+    assert "philosophy" in scores["passed"]
+    assert "sports" not in scores["passed"]
+
+
+def test_classify_accepts_dense_categories_aa():
+    # The shape of storage/categories/categories.json: rows/cols are the axes
+    # and vals is a flattened rows×cols matrix (dense, not sparse triples).
+    body = _body([], [("doc:1", "A grandiloquent rhetorical oration.")])
+    body["categories"] = {
+        "rows": ["cat:rhetorical", "cat:periodic", "cat:primitive"],
+        "cols": ["label", "hypothesis_template", "threshold"],
+        "vals": [
+            "grandiloquent rhetorical speech", "This passage is {}", 0.1,
+            "balanced periodic sentence", "This passage is {}", 0.9,
+            "direct primitive narrative", "This passage is {}", 0.9,
+        ],
+    }
+    resp = client.post("/classify", json=body)
+    assert resp.status_code == 200
+    aa = resp.json()["aa"]
+
+    scores = _scores(aa, "doc:1")
+    # All three category labels are recovered as score: columns (spaces → _);
+    # original text triple is preserved; passed carries bare label names.
+    assert {
+        "text",
+        "score:grandiloquent_rhetorical_speech",
+        "score:balanced_periodic_sentence",
+        "score:direct_primitive_narrative",
+        "passed",
+    } == set(scores)
+    assert "grandiloquent rhetorical speech" in scores["passed"]
+
+
+def test_classify_rejects_categories_without_labels():
+    body = _body([], [("doc:1", "text")])
+    # A categories AA with rows but no usable `label` column -> no candidates.
+    body["categories"] = {
+        "rows": ["cat:0"],
+        "cols": ["threshold"],
+        "vals": [0.5],
+    }
+    resp = client.post("/classify", json=body)
     assert resp.status_code == 422
 
 

@@ -1,0 +1,9 @@
+{
+  "rows": ["cat:rhetorical", "cat:periodic", "cat:primitive"],
+  "cols": ["label", "hypothesis_template", "threshold"],
+  "vals": [
+    "grandiloquent rhetorical speech", "This passage is {}", 0.75,
+    "balanced periodic sentence",     "This passage is {}", 0.80,
+    "direct primitive narrative",     "This passage is {}", 0.60
+  ]
+}

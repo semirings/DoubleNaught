@@ -1,15 +1,19 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
+import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
+import '../../../services/aa_file.dart';
+import '../../../services/infobus/output_port.dart';
 import '../base/double_naught_node_wrapper.dart';
 import '../base/output_connector.dart';
 
 /// A workflow source node that opens the local file dialog and streams the
-/// chosen file's bytes out of a single output connector ("contents").
+/// chosen file's bytes out of a `contents` connector (idx 0).
 ///
 /// The clickpoint (the node body / "Choose file…" area) calls [openFile] from
 /// `file_selector`, which presents the native dialog (and the browser picker on
@@ -17,8 +21,14 @@ import '../base/output_connector.dart';
 /// `Stream<Uint8List>` that is re-broadcast on the output port so any number of
 /// downstream listeners can consume it.
 ///
-/// [onConnect] is invoked once with the broadcast output stream, modelling the
-/// edge attached to this node's output port (`PortRef{nodeId: node.id, idx: 0}`).
+/// When the chosen file is a `.json` file that conforms to the rcvs AA schema
+/// (`{rows, cols, vals}`), it is *also* parsed and emitted as an [AaPayload] on
+/// a second `aa` connector (idx 1), so a downstream Preview (or any AA
+/// consumer) can display it as a table rather than raw text. Non-AA files leave
+/// that port inert.
+///
+/// [onConnect] is invoked once with the broadcast byte stream; [onOutputPort]
+/// registers the AA egress port with the canvas bus.
 class FileSourceNode extends StatefulWidget {
   /// Graph metadata for this node (id/type/position).
   final WorkflowNode node;
@@ -31,12 +41,38 @@ class FileSourceNode extends StatefulWidget {
   /// carries no filename). Lets a downstream Preview label the content.
   final void Function(String fileName)? onFileName;
 
+  /// Registers this node's AA egress OutputPort (`aa`, idx 1) with the canvas
+  /// bridge, so a wired AA edge binds to it.
+  final void Function(OutputPort port)? onOutputPort;
+
+  /// Output port indices with an outgoing edge — drives the connected-port
+  /// highlight, matching every other node.
+  final Set<int> connectedOutputs;
+
   const FileSourceNode({
     super.key,
     required this.node,
     this.onConnect,
     this.onFileName,
+    this.onOutputPort,
+    this.connectedOutputs = const {},
   });
+
+  /// If [bytes] is a `.json` file (by [fileName]) that parses as an rcvs
+  /// associative array, returns it normalised to canonical sparse triples;
+  /// otherwise null. A dense (`rows × cols` matrix) file is expanded via
+  /// [AaPayload.toSparse]. Pure + static so it is unit-testable.
+  static AaPayload? detectAa(Uint8List bytes, String? fileName) {
+    if (fileName == null || !fileName.toLowerCase().endsWith('.json')) {
+      return null;
+    }
+    try {
+      final aa = AaFile.decode(jsonDecode(utf8.decode(bytes))).toSparse();
+      return aa.cols.isNotEmpty ? aa : null;
+    } catch (_) {
+      return null; // not JSON / not an AA — stays a plain byte source
+    }
+  }
 
   @override
   State<FileSourceNode> createState() => _FileSourceNodeState();
@@ -52,6 +88,13 @@ class _FileSourceNodeState extends State<FileSourceNode> {
   /// to downstream nodes before any file is chosen; its onListen replays
   /// [_buffer] to late subscribers.
   late final StreamController<Uint8List> _output;
+
+  /// AA egress port (`aa`, idx 1). Retains the last payload, so a Preview wired
+  /// up after the file loaded still receives it (see [OutputPort]).
+  final OutputPort _aaOut = OutputPort('aa');
+
+  /// The AA parsed from the chosen file when it is rcvs JSON, else null.
+  AaPayload? _aa;
 
   /// The file chosen from local storage, or null before any selection.
   XFile? _selectedFile;
@@ -70,8 +113,9 @@ class _FileSourceNodeState extends State<FileSourceNode> {
   void initState() {
     super.initState();
     _output = StreamController<Uint8List>.broadcast(onListen: _replayBuffer);
-    // Publish the output connector immediately.
+    // Publish the output connectors immediately, before any file is chosen.
     widget.onConnect?.call(_output.stream);
+    widget.onOutputPort?.call(_aaOut);
   }
 
   /// When a downstream node subscribes, replay whatever has already been loaded.
@@ -91,6 +135,7 @@ class _FileSourceNodeState extends State<FileSourceNode> {
   @override
   void dispose() {
     _output.close();
+    _aaOut.dispose();
     super.dispose();
   }
 
@@ -109,6 +154,7 @@ class _FileSourceNodeState extends State<FileSourceNode> {
       _isStreaming = true;
       _allDone = false;
       _errorMessage = null;
+      _aa = null; // a prior file's AA no longer applies
     });
     _buffer.clear(); // dropping a prior file's bytes from the replay buffer
 
@@ -120,12 +166,25 @@ class _FileSourceNodeState extends State<FileSourceNode> {
         _output.add(chunk);
         setState(() => _bytesStreamed += chunk.length);
       }
-      if (mounted) setState(() => _allDone = true);
+      if (mounted) {
+        setState(() => _allDone = true);
+        _detectAndEmitAa();
+      }
     } catch (e) {
       if (mounted) setState(() => _errorMessage = '$e');
     } finally {
       if (mounted) setState(() => _isStreaming = false);
     }
+  }
+
+  /// After the full file has buffered, parse it as an rcvs AA (when it's JSON)
+  /// and emit it on the `aa` port so AA consumers can display it as a table.
+  void _detectAndEmitAa() {
+    final all = Uint8List.fromList(_buffer.expand((c) => c).toList());
+    final aa = FileSourceNode.detectAa(all, _selectedFile?.name);
+    if (aa == null) return;
+    setState(() => _aa = aa);
+    _aaOut.emit(aa);
   }
 
   @override
@@ -147,11 +206,21 @@ class _FileSourceNodeState extends State<FileSourceNode> {
           // Drag this dot onto a node's input to wire an edge.
           dragData: PortRef(nodeId: widget.node.id, idx: 0),
         ),
+        OutputConnector(
+          label: 'aa',
+          idx: 1,
+          // Live only when the chosen file parsed as an rcvs AA.
+          active: _aa != null || widget.connectedOutputs.contains(1),
+          dragData: PortRef(nodeId: widget.node.id, idx: 1),
+        ),
       ],
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Clear the two edge-anchored output labels (`contents` idx 0,
+          // `aa` idx 1) before the body controls begin.
+          const SizedBox(height: 28),
           // Clickpoint: opens the native local-storage dialog.
           InkWell(
             onTap: _isStreaming ? null : _pickAndStream,
@@ -182,8 +251,37 @@ class _FileSourceNodeState extends State<FileSourceNode> {
 
           // loadingProgress bar / allDone indicator / error.
           _buildStatus(theme),
+
+          // rcvs-AA detection: surface that the `aa` port is live.
+          if (_aa != null) ...[
+            const SizedBox(height: 6),
+            _buildAaIndicator(theme),
+          ],
         ],
       ),
+    );
+  }
+
+  /// One-line note that the chosen file parsed as an AA and is being emitted on
+  /// the `aa` port (rows × cols).
+  Widget _buildAaIndicator(ThemeData theme) {
+    final aa = _aa!;
+    final rows = aa.distinctRows().length;
+    final cols = <String>{...aa.cols}.length;
+    return Row(
+      children: [
+        Icon(Icons.table_chart_outlined, size: 14, color: theme.colorScheme.primary),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            'AA · $rows rows × $cols cols on aa',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: theme.colorScheme.primary),
+          ),
+        ),
+      ],
     );
   }
 
