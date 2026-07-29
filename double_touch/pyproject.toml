@@ -26,6 +26,13 @@ local = [
     "torch>=2.2",
     "transformers>=4.44",
 ]
+# Real generative text inference via mlx-lm on Apple Silicon. Without it,
+# /text/infer falls back to the deterministic stub. Install with:
+#   pip install -e '.[text]'
+text = [
+    "mlx>=0.14",
+    "mlx-lm>=0.14",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

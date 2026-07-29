@@ -31,6 +31,10 @@ const List<NodeType> nodeTypes = [
   NodeType(name: 'AA → JSONL', type: 'aa2jsonl'),
   NodeType(name: 'Preview', type: 'preview'),
   NodeType(name: 'Save File', type: 'save_file'),
+  NodeType(name: 'Text Model Loader', type: 'text_model_loader'),
+  NodeType(name: 'Text Prompt', type: 'text_prompt'),
+  NodeType(name: 'Text Inference', type: 'text_inference'),
+  NodeType(name: 'Text Preview', type: 'text_preview'),
   NodeType(name: 'SAM3 Control', type: 'sam3'),
 ];
 
