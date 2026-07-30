@@ -1170,6 +1170,20 @@ class _WorkflowPageState extends State<WorkflowPage>
                       _maxFocusWidth,
                     ),
                   ),
+                  // AA edit: re-push the updated content and re-emit on the
+                  // originating node's AA output port so downstream nodes
+                  // (e.g. a wired AA consumer) see the edited payload.
+                  onAaEdited: (nodeId, edited) {
+                    final existing = _focusContent[nodeId];
+                    _pushFocusContent(
+                      nodeId,
+                      FocusContent.aa(
+                        edited,
+                        subtitle: existing?.subtitle,
+                      ),
+                    );
+                    _aaOutputPorts[nodeId]?.emit(edited);
+                  },
                 ),
               ],
             ),
@@ -1407,12 +1421,12 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
-      case 'file_source':
-        return FileSourceNode(
+      case 'load_file':
+      case 'file_source': // backward-compat alias
+        return LoadFileNode(
           node: node,
           onConnect: (stream) => _outputs[node.id] = stream,
           onFileName: (name) => setState(() => _sourceNames[node.id] = name),
-          // `aa` egress (idx 1) — live when the file is an rcvs AA JSON.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );

@@ -16,6 +16,7 @@ export 'implementations/categories_node.dart';
 export 'implementations/chunk_node.dart';
 export 'implementations/fetch_node.dart';
 export 'implementations/file_source_node.dart';
+export 'implementations/load_file_node.dart';
 export 'implementations/image_display_node.dart';
 export 'implementations/inventory_node.dart';
 export 'implementations/load_model_node.dart';

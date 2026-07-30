@@ -1202,3 +1202,275 @@ We need to implement the `ModelClassifierNode` in Dart using our `rcvs.json` sch
      * If formatted as a web URL or local file path, pass the resolved path.
    * Pass text from `textIn` to the classification runner.
    * Format the classification results (document IDs vs. category scores) into an `AssociativeArray` object and serialize to `rcvs.json` for downstream nodes.
+
+## Implement AA editing in the existing node/display architecture.
+
+### Objective
+
+Extend the existing AA display workflow so that an AA loaded from a file can be inspected and manually edited in the **Display Panel**.
+
+The desired user workflow is:
+
+```text
+LoadFile
+   │
+   └── AA ───► Preview
+                  │
+                  ▼
+            Display Panel
+              [View] [Edit]
+```
+
+The important architectural point is:
+
+**Edit is NOT a node.**  
+It is a UI capability of the Display Panel.
+
+Do not create an `EditAA` node for this feature.
+
+---
+
+### 1. Rename FileSource to LoadFile
+
+Rename the existing `FileSource` node to `LoadFile`.
+
+Preserve its existing behavior and connections.
+
+The node must continue to provide the same two output ports:
+
+1. Character stream
+    
+2. AA
+    
+
+Do not change the port types, port semantics, or downstream compatibility unless the existing implementation requires a mechanical rename.
+
+The existing file-selection dialog should remain in place and continue to work.
+
+Update all references, labels, serialization, registration, and UI text necessary to make `LoadFile` the canonical node name.
+
+Where backward compatibility is already supported by the application, preserve it.
+
+---
+
+### 2. Keep Preview read-only
+
+The existing Preview node should remain a presentation/inspection node.
+
+Do **not** turn Preview itself into an editor.
+
+Preview should continue to receive the AA and cause it to be displayed in the Display Panel.
+
+However, when the Display Panel is displaying an AA, the panel should expose an editing capability.
+
+---
+
+### 3. Add Edit capability to the Display Panel
+
+When the Display Panel is displaying an AA, provide a clear UI control such as:
+
+```text
+[View] [Edit]
+```
+
+The Edit control belongs to the **Display Panel**.
+
+Clicking Edit should switch the panel from read-only display mode into AA editing mode.
+
+The user should then be able to modify the AA interactively.
+
+At minimum, support:
+
+- editing an existing row/association
+    
+- adding a row/association
+    
+- deleting a row/association
+    
+- editing the associated value
+    
+
+Use terminology appropriate to the actual AA implementation. Do not force AA into a conventional rectangular spreadsheet abstraction if the underlying structure is an associative array.
+
+An AA association should conceptually remain:
+
+```text
+(row key, column key) -> value
+```
+
+---
+
+### 4. Use a working copy while editing
+
+Do not mutate the source AA on every keystroke.
+
+When Edit mode begins:
+
+```text
+source AA
+   ↓
+editable working copy
+```
+
+The user edits the working copy.
+
+Provide explicit controls such as:
+
+```text
+[Apply] [Cancel]
+```
+
+or equivalent.
+
+`Cancel` must discard unsaved changes.
+
+`Apply` must commit the modified AA and make the resulting AA available to the application through the existing display/data model.
+
+Do not silently modify the original loaded object merely because the user entered Edit mode.
+
+---
+
+### 5. Preserve the existing dataflow model
+
+Do not introduce a new graph node merely to support manual editing.
+
+Manual editing is a **human/UI operation**, not a graph transformation.
+
+The conceptual model should be:
+
+```text
+LoadFile
+   │
+   └── AA ───► Preview
+                  │
+                  ▼
+            Display Panel
+             ┌───────────┐
+             │ View      │
+             │ Edit      │
+             └───────────┘
+                  │
+             working AA
+                  │
+             Apply/Cancel
+```
+
+A future automated transformation such as:
+
+```text
+AA → AddRowNode → AA
+```
+
+would be a separate feature and should not be implemented as part of this task.
+
+---
+
+### 6. UI expectations
+
+The AA editor should fit naturally into the existing Display Panel rather than looking like a separate application.
+
+When in View mode, continue to use the current AA visualization.
+
+When in Edit mode, provide a practical editing representation. A table/grid is acceptable if it accurately represents the underlying AA.
+
+For example:
+
+```text
+┌──────────────────────────────────────────┐
+│ AA: training_data                        │
+│                                          │
+│ Row Key       Column Key       Value     │
+│ ──────────────────────────────────────── │
+│ row1          col1             12        │
+│ row1          col2             27        │
+│ row2          col1             8         │
+│                                          │
+│ [+ Add Row]                              │
+│                                          │
+│ [Apply]   [Cancel]                       │
+└──────────────────────────────────────────┘
+```
+
+If the existing AA implementation has a more appropriate native representation, use that instead.
+
+---
+
+### 7. Validation
+
+Use the existing AA validation/data structures.
+
+Prevent invalid edits from being committed.
+
+At minimum:
+
+- row and column identifiers must be valid for the AA implementation
+    
+- values must have the correct type
+    
+- incomplete new associations should not be committed
+    
+- duplicate associations should be handled according to existing AA semantics
+    
+
+Display useful validation errors in the panel rather than failing silently.
+
+---
+
+### 8. State and downstream behavior
+
+Determine how the current application represents node outputs and panel state.
+
+After `Apply`, ensure the modified AA is represented consistently with other node data.
+
+Be careful not to break:
+
+- existing Preview behavior
+    
+- node execution
+    
+- serialization
+    
+- graph persistence
+    
+- existing AA consumers
+    
+- character-stream output from LoadFile
+    
+
+Do not redesign unrelated parts of the application.
+
+---
+
+### 9. Implementation approach
+
+Before changing code:
+
+1. Inspect the existing `FileSource` implementation.
+    
+2. Identify how Preview sends data to the Display Panel.
+    
+3. Identify how the Display Panel currently determines the type of data being displayed.
+    
+4. Identify the existing AA representation and mutation APIs.
+    
+5. Follow the existing application architecture rather than introducing a parallel data model.
+    
+
+Then implement the smallest coherent change that provides the requested behavior.
+
+Please identify the relevant files/classes first and explain briefly how the current dataflow works before making changes.
+
+After implementation, provide:
+
+- files changed
+    
+- architectural decisions
+    
+- any assumptions made
+    
+- any tests added or modified
+    
+- any issues that remain
+    
+
+Do not replace existing architecture with a new framework or component hierarchy unless the current implementation makes that unavoidable.

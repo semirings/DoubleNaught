@@ -21,6 +21,7 @@ const List<NodeType> nodeTypes = [
   NodeType(name: 'Load Model', type: 'load_model'),
   NodeType(name: 'Categories', type: 'categories'),
   NodeType(name: 'Model Classifier', type: 'model_classifier'),
+  NodeType(name: 'Load File', type: 'load_file'),
   NodeType(name: 'File Source', type: 'file_source'),
   NodeType(name: 'Image Display', type: 'image_display'),
   NodeType(name: 'Inventory', type: 'inventory'),

@@ -6,9 +6,6 @@ import 'package:flutter/material.dart';
 import '../models/aa_payload.dart';
 import 'aa_dataframe.dart';
 
-/// Resolve a target string to an image provider. Web addresses load over the
-/// network; everything else is treated as a local filesystem path (a bare path
-/// or a `file://` URI). Local loading uses `dart:io` (desktop/mobile only).
 ImageProvider? resolveImageProvider(String targetUrl) {
   final trimmed = targetUrl.trim();
   if (trimmed.isEmpty) return null;
@@ -32,8 +29,6 @@ class FocusContent {
   final Uint8List? imageBytes;
   final String? imageUrl;
   final AaPayload? aa;
-
-  /// One-line detail (size, dimensions, row×col count, source).
   final String? subtitle;
 
   const FocusContent._({
@@ -73,26 +68,22 @@ class FocusTab {
   });
 }
 
-/// The right-margin slideout Focus Panel: heavy content (images, prose, AA
-/// dataframes) renders here in tabs, so canvas nodes stay compact routing boxes.
+/// The right-margin slideout Focus Panel.
 ///
-/// A slim rail on the leading edge stays visible to toggle open/closed; the body
-/// shows at [openWidth] (driven by the page's draggable splitter) when open and
-/// 0px when closed, and hosts one tab per node that has pushed content.
-class FocusPanel extends StatelessWidget {
+/// For AA tabs, the panel exposes a [View] / [Edit] toggle. In Edit mode a
+/// working copy of the AA is presented in a row-editor; [onAaEdited] is called
+/// with the committed [AaPayload] when the user presses Apply.
+class FocusPanel extends StatefulWidget {
   final bool isOpen;
   final VoidCallback onToggle;
-
-  /// Content tabs, one per contributing node.
   final List<FocusTab> tabs;
-
-  /// Index into [tabs] of the visible tab.
   final int selectedIndex;
   final ValueChanged<int> onSelectTab;
-
-  /// Width of the panel body when open, in logical pixels. Owned by the parent
-  /// (a draggable splitter drives it), so the panel resizes 1:1 with the drag.
   final double openWidth;
+
+  /// Called after the user presses Apply in AA-edit mode.
+  /// [nodeId] identifies the tab whose AA was edited.
+  final void Function(int nodeId, AaPayload edited)? onAaEdited;
 
   const FocusPanel({
     super.key,
@@ -102,29 +93,123 @@ class FocusPanel extends StatelessWidget {
     this.selectedIndex = 0,
     required this.onSelectTab,
     this.openWidth = 420,
+    this.onAaEdited,
   });
 
   @override
+  State<FocusPanel> createState() => _FocusPanelState();
+}
+
+class _FocusPanelState extends State<FocusPanel> {
+  bool _editMode = false;
+
+  // Working copy — null when not editing.
+  // Each triple is stored as a mutable map so cells are individually editable.
+  List<Map<String, String>>? _working;
+  String? _validationError;
+
+  // Track the tab we entered edit mode for; reset if the tab changes.
+  int? _editingTabIndex;
+
+  FocusTab? get _currentTab {
+    if (widget.tabs.isEmpty) return null;
+    final i = widget.selectedIndex.clamp(0, widget.tabs.length - 1);
+    return widget.tabs[i];
+  }
+
+  void _enterEdit() {
+    final tab = _currentTab;
+    if (tab == null || tab.content.aa == null) return;
+    final aa = tab.content.aa!;
+    setState(() {
+      _editMode = true;
+      _editingTabIndex = widget.selectedIndex;
+      _validationError = null;
+      _working = [
+        for (var i = 0; i < aa.rows.length; i++)
+          {
+            'row': aa.rows[i],
+            'col': aa.cols[i],
+            'val': aa.vals[i].toString(),
+          }
+      ];
+    });
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editMode = false;
+      _working = null;
+      _editingTabIndex = null;
+      _validationError = null;
+    });
+  }
+
+  void _applyEdit() {
+    final tab = _currentTab;
+    if (tab == null || _working == null) return;
+
+    // Validate: no blank row or col keys; no duplicate (row, col) pairs.
+    final seen = <String>{};
+    for (final triple in _working!) {
+      final row = triple['row']!.trim();
+      final col = triple['col']!.trim();
+      if (row.isEmpty || col.isEmpty) {
+        setState(() => _validationError =
+            'Row and column keys must not be empty.');
+        return;
+      }
+      final key = '$row\x00$col';
+      if (!seen.add(key)) {
+        setState(
+            () => _validationError = 'Duplicate triple ($row, $col).');
+        return;
+      }
+    }
+
+    final edited = AaPayload(
+      rows: [for (final t in _working!) t['row']!.trim()],
+      cols: [for (final t in _working!) t['col']!.trim()],
+      vals: [for (final t in _working!) t['val']!],
+    );
+
+    widget.onAaEdited?.call(tab.nodeId, edited);
+    setState(() {
+      _editMode = false;
+      _working = null;
+      _editingTabIndex = null;
+      _validationError = null;
+    });
+  }
+
+  // Reset edit state when the selected tab changes away from the one being edited.
+  void _checkTabChange() {
+    if (_editMode &&
+        _editingTabIndex != null &&
+        _editingTabIndex != widget.selectedIndex) {
+      _cancelEdit();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    _checkTabChange();
     final scheme = Theme.of(context).colorScheme;
 
     return Row(
       children: [
-        _Rail(isOpen: isOpen, onToggle: onToggle),
-        // Clip + OverflowBox keeps the body laid out at [openWidth] even while
-        // the visible width is 0 (closed), so nothing reflows on toggle. No
-        // width animation here — the parent's splitter needs 1:1 drag response.
+        _Rail(isOpen: widget.isOpen, onToggle: widget.onToggle),
         ClipRect(
           child: Container(
-            width: isOpen ? openWidth : 0,
+            width: widget.isOpen ? widget.openWidth : 0,
             decoration: BoxDecoration(
               color: scheme.surfaceContainer,
               border: Border(left: BorderSide(color: scheme.outlineVariant)),
             ),
             child: OverflowBox(
               alignment: Alignment.centerLeft,
-              minWidth: openWidth,
-              maxWidth: openWidth,
+              minWidth: widget.openWidth,
+              maxWidth: widget.openWidth,
               child: _body(context),
             ),
           ),
@@ -137,37 +222,101 @@ class FocusPanel extends StatelessWidget {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
 
-    if (tabs.isEmpty) {
+    if (widget.tabs.isEmpty) {
       return Center(
         child: Text(
           'Nothing to display yet',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: scheme.onSurfaceVariant,
-          ),
+          style: theme.textTheme.bodyMedium
+              ?.copyWith(color: scheme.onSurfaceVariant),
         ),
       );
     }
 
-    final index = selectedIndex.clamp(0, tabs.length - 1);
-    final tab = tabs[index];
+    final index = widget.selectedIndex.clamp(0, widget.tabs.length - 1);
+    final tab = widget.tabs[index];
+    final isAa = tab.content.kind == FocusContentKind.aa;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _TabStrip(tabs: tabs, selectedIndex: index, onSelect: onSelectTab),
-        if (tab.content.subtitle != null && tab.content.subtitle!.isNotEmpty)
+        _TabStrip(
+            tabs: widget.tabs,
+            selectedIndex: index,
+            onSelect: widget.onSelectTab),
+
+        // Subtitle row (with optional View/Edit toggle for AA tabs).
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 0),
+          child: Row(
+            children: [
+              if (tab.content.subtitle != null &&
+                  tab.content.subtitle!.isNotEmpty)
+                Expanded(
+                  child: Text(
+                    tab.content.subtitle!,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                )
+              else
+                const Spacer(),
+              if (isAa && !_editMode)
+                TextButton.icon(
+                  onPressed: _enterEdit,
+                  icon: const Icon(Icons.edit_outlined, size: 14),
+                  label: const Text('Edit'),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  ),
+                ),
+              if (isAa && _editMode) ...[
+                TextButton(
+                  onPressed: _cancelEdit,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  ),
+                  child: const Text('Cancel'),
+                ),
+                const SizedBox(width: 4),
+                FilledButton(
+                  onPressed: _applyEdit,
+                  style: FilledButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  ),
+                  child: const Text('Apply'),
+                ),
+                const SizedBox(width: 4),
+              ],
+            ],
+          ),
+        ),
+
+        if (_validationError != null)
           Padding(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
             child: Text(
-              tab.content.subtitle!,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
+              _validationError!,
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: scheme.error),
             ),
           ),
-        Expanded(child: _content(context, tab.content)),
+
+        Expanded(
+          child: _editMode && isAa && _working != null
+              ? _AaEditor(
+                  working: _working!,
+                  onChanged: (w) => setState(() => _working = w),
+                )
+              : _content(context, tab.content),
+        ),
       ],
     );
   }
@@ -222,20 +371,208 @@ class FocusPanel extends StatelessWidget {
   }
 
   Widget _placeholder(ThemeData theme, String message) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Text(
-        message,
-        textAlign: TextAlign.center,
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            message,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
         ),
-      ),
-    ),
-  );
+      );
 }
 
-/// Horizontal tab strip across the top of the panel body.
+// ---------------------------------------------------------------------------
+// AA triple editor
+// ---------------------------------------------------------------------------
+
+/// Inline editor for an AA working copy (a list of `{row, col, val}` maps).
+/// Renders a scrollable table of text fields; supports editing, adding, and
+/// deleting triples.
+class _AaEditor extends StatefulWidget {
+  final List<Map<String, String>> working;
+  final ValueChanged<List<Map<String, String>>> onChanged;
+
+  const _AaEditor({required this.working, required this.onChanged});
+
+  @override
+  State<_AaEditor> createState() => _AaEditorState();
+}
+
+class _AaEditorState extends State<_AaEditor> {
+  // Controllers keyed by (index, field).
+  final Map<String, TextEditingController> _ctrls = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _syncControllers();
+  }
+
+  @override
+  void didUpdateWidget(_AaEditor old) {
+    super.didUpdateWidget(old);
+    if (old.working.length != widget.working.length) {
+      _disposeControllers();
+      _syncControllers();
+    }
+  }
+
+  void _syncControllers() {
+    for (var i = 0; i < widget.working.length; i++) {
+      for (final field in ['row', 'col', 'val']) {
+        final k = '$i:$field';
+        _ctrls.putIfAbsent(
+          k,
+          () => TextEditingController(text: widget.working[i][field] ?? ''),
+        );
+      }
+    }
+  }
+
+  void _disposeControllers() {
+    for (final c in _ctrls.values) {
+      c.dispose();
+    }
+    _ctrls.clear();
+  }
+
+  @override
+  void dispose() {
+    _disposeControllers();
+    super.dispose();
+  }
+
+  TextEditingController _ctrl(int i, String field) {
+    final k = '$i:$field';
+    return _ctrls.putIfAbsent(
+      k,
+      () => TextEditingController(text: widget.working[i][field] ?? ''),
+    );
+  }
+
+  void _notify() {
+    // Flush controller text → working copy before notifying.
+    final updated = <Map<String, String>>[];
+    for (var i = 0; i < widget.working.length; i++) {
+      updated.add({
+        'row': _ctrl(i, 'row').text,
+        'col': _ctrl(i, 'col').text,
+        'val': _ctrl(i, 'val').text,
+      });
+    }
+    widget.onChanged(updated);
+  }
+
+  void _addTriple() {
+    final updated = List<Map<String, String>>.from(widget.working)
+      ..add({'row': '', 'col': '', 'val': ''});
+    widget.onChanged(updated);
+  }
+
+  void _deleteTriple(int index) {
+    // Remove controller entries for this row before re-indexing.
+    for (final field in ['row', 'col', 'val']) {
+      _ctrls.remove('$index:$field')?.dispose();
+    }
+    final updated = List<Map<String, String>>.from(widget.working)
+      ..removeAt(index);
+    widget.onChanged(updated);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+
+    final headerStyle = theme.textTheme.labelMedium
+        ?.copyWith(fontWeight: FontWeight.w700, color: scheme.onSurfaceVariant);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        // Header row.
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 48, 4),
+          child: Row(
+            children: [
+              Expanded(flex: 3, child: Text('Row key', style: headerStyle)),
+              const SizedBox(width: 8),
+              Expanded(flex: 3, child: Text('Column key', style: headerStyle)),
+              const SizedBox(width: 8),
+              Expanded(flex: 4, child: Text('Value', style: headerStyle)),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+
+        // Triple rows.
+        Expanded(
+          child: ListView.builder(
+            itemCount: widget.working.length,
+            itemBuilder: (context, i) => _tripleRow(context, i),
+          ),
+        ),
+
+        const Divider(height: 1),
+
+        // Add-triple button.
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: OutlinedButton.icon(
+            onPressed: _addTriple,
+            icon: const Icon(Icons.add, size: 16),
+            label: const Text('Add triple'),
+            style: OutlinedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _tripleRow(BuildContext context, int i) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 2, 4, 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(flex: 3, child: _cell(_ctrl(i, 'row'))),
+          const SizedBox(width: 8),
+          Expanded(flex: 3, child: _cell(_ctrl(i, 'col'))),
+          const SizedBox(width: 8),
+          Expanded(flex: 4, child: _cell(_ctrl(i, 'val'))),
+          IconButton(
+            onPressed: () => _deleteTriple(i),
+            icon: const Icon(Icons.remove_circle_outline, size: 16),
+            padding: const EdgeInsets.all(4),
+            constraints: const BoxConstraints(),
+            tooltip: 'Delete triple',
+            color: Theme.of(context).colorScheme.error,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _cell(TextEditingController ctrl) => TextField(
+        controller: ctrl,
+        onChanged: (_) => _notify(),
+        decoration: const InputDecoration(
+          isDense: true,
+          border: OutlineInputBorder(),
+          contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+        ),
+        style: const TextStyle(fontSize: 12, fontFamily: 'monospace'),
+      );
+}
+
+// ---------------------------------------------------------------------------
+// Tab strip and rail (unchanged)
+// ---------------------------------------------------------------------------
+
 class _TabStrip extends StatelessWidget {
   final List<FocusTab> tabs;
   final int selectedIndex;
@@ -297,7 +634,6 @@ class _TabStrip extends StatelessWidget {
   }
 }
 
-/// Always-visible vertical rail on the panel's leading edge.
 class _Rail extends StatelessWidget {
   final bool isOpen;
   final VoidCallback onToggle;
