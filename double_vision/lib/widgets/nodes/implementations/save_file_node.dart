@@ -393,6 +393,9 @@ class _SaveFileNodeState extends State<SaveFileNode> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // Clear the deepest port label (imageIn at idx 2, slot bottom Y=98;
+          // body start Y=46; clearance = 52 px).
+          const SizedBox(height: 52),
           // File path input
           TextField(
             controller: _filePathController,

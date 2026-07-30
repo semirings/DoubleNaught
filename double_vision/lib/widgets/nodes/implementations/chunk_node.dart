@@ -94,7 +94,7 @@ class _ChunkNodeState extends State<ChunkNode> {
     super.dispose();
   }
 
-  /// A fresh upstream payload resets the node to idle so the user can re-chunk.
+  /// A fresh upstream payload resets the node to idle and auto-chunks.
   void _onIncoming(AaPayload payload) {
     if (!mounted) return;
     setState(() {
@@ -103,6 +103,7 @@ class _ChunkNodeState extends State<ChunkNode> {
       _stats = null;
       _error = null;
     });
+    _chunk();
   }
 
   Future<void> _chunk() async {
@@ -160,6 +161,8 @@ class _ChunkNodeState extends State<ChunkNode> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Clear port 0 slot (slot bottom Y=50; body start Y=46; 4 px overlap).
+          const SizedBox(height: 4),
           _upstreamInfo(theme),
           const SizedBox(height: 12),
           SizedBox(

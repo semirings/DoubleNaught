@@ -267,6 +267,9 @@ class _PreviewNodeState extends State<PreviewNode> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Clear the deepest port label (aa at idx 1, slot bottom Y=74;
+          // body start Y=46; clearance = 28 px).
+          const SizedBox(height: 28),
           _summary(theme),
           const SizedBox(height: 10),
           SizedBox(

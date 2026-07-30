@@ -13,7 +13,8 @@ import '../base/output_connector.dart';
 
 /// Vertical space reserved so the two edge-anchored input labels (`trigger` at
 /// idx 0, `urlIn` at idx 1) clear the body controls.
-const double _kPortLaneInset = 26;
+/// Clearance = 4 + max_port_idx × 24 = 4 + 1 × 24 = 28 px.
+const double _kPortLaneInset = 28;
 
 /// A **functional node** that resolves a model definition and emits it as a
 /// standard [AaPayload] (row `model:<id>`, attribute columns) for downstream
@@ -395,7 +396,7 @@ class _LoadModelNodeState extends State<LoadModelNode> {
             ),
           ),
       ],
-      // Choosing from the dropdown clears any urlIn override.
+      // Choosing from the dropdown clears any urlIn override and auto-emits.
       onChanged: _busy
           ? null
           : (id) {
@@ -405,6 +406,7 @@ class _LoadModelNodeState extends State<LoadModelNode> {
                 _resolvedRemote = null;
               });
               _reportParams();
+              _resolveAndEmit();
             },
     );
   }
