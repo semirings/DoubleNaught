@@ -449,3 +449,24 @@ class TextHealthResponse(CamelModel):
     backend: str            # "mlx-lm" | "stub"
     mlx_available: bool
     loaded_model_id: Optional[str] = None
+
+
+# --- D4M expression node (D4MNode) ------------------------------------------
+# A functional node: evaluates a user-supplied D4M expression over one or more
+# named input AAs and emits the result AA. Variable names A–D map to the
+# node's four input ports; the expression is evaluated by Python eval() in a
+# namespace containing those Assoc objects.
+
+
+class D4mRequest(CamelModel):
+    # Named input AAs: variable-name → AssocArray. Keys are the slot names
+    # (A, B, C, D) for only those inputs that are currently connected and
+    # have received data.
+    inputs: dict[str, AssocArray]
+    # The D4M expression string, e.g. "A + B" or 'A("chunk: ", "score: ")'.
+    expression: str
+
+
+class D4mResponse(CamelModel):
+    # The result AA emitted on the node's single output port.
+    aa: AssocArray

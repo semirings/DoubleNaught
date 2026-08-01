@@ -83,16 +83,30 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Journal.md",
+                "file": "Clippings/D4M Eval.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Journal"
+              "title": "D4M Eval"
+            }
+          },
+          {
+            "id": "3fd1f8173b87f8a6",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "D4M.jl Performance & Optimization Report.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "D4M.jl Performance & Optimization Report"
             }
           }
         ],
-        "currentTab": 5
+        "currentTab": 6
       }
     ],
     "direction": "vertical"
@@ -254,14 +268,18 @@
       "bases:Create new base": false
     }
   },
-  "active": "f2656190ee7c8f6a",
+  "active": "3fd1f8173b87f8a6",
   "lastOpenFiles": [
+    "Clippings/D4M Eval.md",
+    "D4M.jl Performance & Optimization Report.md",
+    "Clippings/Claude Distillation Data.md",
+    "Clippings/Distilling Claude.md",
+    "Journal.md",
     "URLs.md",
     "Domains.md",
     "Clippings/What SLMs are for.md",
     "Clippings/YT to Discord Transition.md",
     "Clippings/AgentNode.md",
-    "Journal.md",
     "GCC corpus impl.md",
     "Crossing.md",
     "Synopsis.md",
@@ -279,10 +297,6 @@
     "Broader Picture.md",
     "Chapter 10 According to Claude.md",
     "Premise.md",
-    "Node Aide.md",
-    "Project Context 19.Jul.2026.md",
-    "Clippings/Node Identification.md",
-    "Clippings/Questions.md",
     "Clippings",
     "Untitled.canvas",
     "Untitled.base",

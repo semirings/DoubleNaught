@@ -40,6 +40,8 @@ from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cx
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
 from .models import (
+    D4mRequest,
+    D4mResponse,
     REVIEW_STATUSES,
     URL_AUTHORS,
     Aa2JsonlRequest,
@@ -88,6 +90,7 @@ from .text_engine import (
 )
 from .review import ReviewStore
 from .sessions import PromptRecord, Session, SessionStore
+from .d4m_ops import eval_expression
 
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
@@ -921,3 +924,27 @@ async def segment_with_point(request: PointPromptRequest) -> SegmentResponse:
     outcome = engine.point_prompt(session, request.point, request.include)
     elapsed_ms = (time.perf_counter() - start) * 1000
     return _respond(session, "point", outcome, elapsed_ms)
+
+
+# ---------------------------------------------------------------------------
+# D4M expression node (D4MNode)
+# ---------------------------------------------------------------------------
+
+@app.post("/d4m/eval", response_model=D4mResponse)
+async def d4m_eval(request: D4mRequest) -> D4mResponse:
+    """Evaluate a D4M expression over named input AAs and return the result AA.
+
+    ``request.inputs`` is a mapping of variable name → AssocArray (e.g.
+    ``{"A": ..., "B": ...}``); ``request.expression`` is a D4M expression
+    string (``A + B``, ``A("chunk: ", "score: ")``, etc.).  The expression is
+    evaluated by Python :func:`eval` in a namespace containing the named
+    D4M :class:`Assoc` objects.  Returns HTTP 422 when the expression is
+    invalid or the result is not an Assoc.
+    """
+    try:
+        result_aa = await run_in_threadpool(
+            eval_expression, request.inputs, request.expression
+        )
+        return D4mResponse(aa=result_aa)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))

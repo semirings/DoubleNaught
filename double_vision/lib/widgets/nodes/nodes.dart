@@ -14,6 +14,7 @@ export 'base/output_connector.dart';
 export 'implementations/aa2jsonl_node.dart';
 export 'implementations/categories_node.dart';
 export 'implementations/chunk_node.dart';
+export 'implementations/d4m_node.dart';
 export 'implementations/fetch_node.dart';
 export 'implementations/file_source_node.dart';
 export 'implementations/load_file_node.dart';

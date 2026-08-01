@@ -41,13 +41,20 @@ class AaFile {
   /// an empty [AaPayload] rather than throwing.
   Future<AaPayload> load() async => decode(await loadRaw());
 
-  /// Decode the canonical parallel `{rows, cols, vals}` envelope; anything else
-  /// → empty AA.
+  /// Decode a parallel AA envelope; anything else → empty AA.
+  ///
+  /// Accepts both plural keys (`rows`/`cols`/`vals`) and singular variants
+  /// (`row`/`col`/`val`) produced by D4M.py's `to_json()`.
   static AaPayload decode(Object? json) {
-    if (json is Map<String, dynamic> && json['cols'] is List) {
-      return AaPayload.fromJson(json);
-    }
-    return const AaPayload();
+    if (json is! Map<String, dynamic>) return const AaPayload();
+    // Normalise singular → plural so fromJson always sees consistent keys.
+    final m = <String, dynamic>{
+      'rows': json['rows'] ?? json['row'],
+      'cols': json['cols'] ?? json['col'],
+      'vals': json['vals'] ?? json['val'],
+    };
+    if (m['cols'] is! List) return const AaPayload();
+    return AaPayload.fromJson(m);
   }
 
   /// Read and JSON-decode the raw file contents, or null when absent/empty. For

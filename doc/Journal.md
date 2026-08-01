@@ -1474,3 +1474,143 @@ After implementation, provide:
     
 
 Do not replace existing architecture with a new framework or component hierarchy unless the current implementation makes that unavoidable.
+
+## D4MNode
+
+You are implementing a new node called D4MNode in an existing DN pipeline 
+application. DN has a Flutter frontend and a Python backend. The node catalog 
+is already running with multiple existing nodes.
+
+## STEP 1 — READ BEFORE YOU WRITE
+
+Before writing any code, read the following:
+
+1. Find two existing nodes in the Python BE — one simple (single input, 
+   single output) and one with multiple ports if it exists. Read both 
+   implementations fully. Understand:
+   - How a node class is defined and registered in the catalog
+   - How input ports are declared
+   - How output ports are declared
+   - How input data arrives at the node (method signature, data format)
+   - How output data is returned
+   - How node configuration (user-supplied parameters) is passed in
+
+2. Find the corresponding Flutter widgets for those same two nodes. Read 
+   both fully. Understand:
+   - How a node widget is structured and registered
+   - How port connection state is received by the widget
+   - How user input fields (text boxes, etc.) are implemented
+   - How configuration is sent to the BE
+   - How the widget reacts to connections and disconnections
+
+3. Read the AA (Associative Array) display node that is already implemented. 
+   Understand how it receives and renders an AA, since D4MNode outputs an AA 
+   and must be compatible with it.
+
+4. Locate d4m.py in the codebase. It contains the AssocArray class with 
+   D4M operations. If it is not present, the canonical implementation is 
+   in the project files — read it before proceeding. Key facts:
+   - AssocArray uses MATLAB-style call syntax: A("row: ", "col: ")
+   - Trailing space on a selector string means prefix match
+   - Trailing ", " means list match
+   - ":" means all
+   - Supports: +, &, >=, >, * operators
+   - D4M expressions are evaluated with Python eval() in a namespace 
+     containing the named input AAs
+
+Do not write any code until you have read all of the above.
+
+## STEP 2 — WHAT TO BUILD
+
+Implement D4MNode following exactly the patterns you found in Step 1.
+
+### Functional specification
+
+D4MNode performs D4M algebraic operations on Associative Arrays (AAs).
+
+**Inputs:**
+- A variable-arity input port that accepts multiple AA connections.
+- Each connected upstream node provides one AA.
+- Each connected AA has a name. The name is the identifier used to 
+  reference it in the D4M expression (e.g. A, B, orthodoxy, categories).
+  Use the upstream node's output name or a user-assignable alias — 
+  follow whatever pattern your existing multi-input nodes use. If no 
+  such pattern exists, assign names sequentially: A, B, C, ...
+
+**Configuration:**
+- A single text field containing a D4M expression string.
+- Examples of valid expressions:
+    A("chunk: ", "score: ")
+    A + B
+    (A + B)("chunk: ", "score: ") >= 0.75
+    A & B
+    A * B
+    A("chunk: ", "text,passed, ")
+
+**Output:**
+- A single AA output port, compatible with the existing AA display node.
+
+**Execution:**
+- When the node executes, evaluate the D4M expression string using 
+  Python eval() with a namespace containing the named input AAs.
+- The result must be an AssocArray instance.
+- If evaluation fails, surface the error message on the node.
+
+### Flutter widget specification
+
+The widget has three visual zones, from top to bottom:
+
+1. **Connected inputs list** — a read-only text list showing the name 
+   of each currently connected upstream AA, one per line. This list 
+   updates reactively as connections are made and broken. It sits above 
+   the expression text area so the user can see which names are available 
+   when writing their expression. If no AAs are connected, show a 
+   placeholder: "No inputs connected."
+
+2. **D4M expression text area** — a multi-line text input where the user 
+   types the D4M expression. It should be monospaced font. Label it 
+   "D4M Expression". It is the only editable field.
+
+3. **Output port** — single AA output at the bottom of the node, 
+   following your existing output port convention.
+
+The overall visual style, sizing, border, and color scheme must match 
+your existing nodes exactly. Do not introduce new design patterns.
+
+### Python BE specification
+
+Follow the exact class structure and registration pattern of your 
+existing nodes. The core execution logic is:
+
+    def execute(self, inputs: dict[str, AssocArray], expression: str) -> AssocArray:
+        namespace = dict(inputs)
+        result = eval(expression, {"__builtins__": {}}, namespace)
+        if not isinstance(result, AssocArray):
+            raise TypeError(f"Expression must return an AssocArray, got {type(result).__name__}")
+        return result
+
+Wrap this in whatever base class or method signature your existing 
+nodes use.
+
+## STEP 3 — VALIDATION
+
+After implementing, verify:
+
+1. D4MNode appears in the node catalog
+2. Multiple upstream AA nodes can be connected to its input port
+3. Connected node names appear in the list above the text area
+4. Disconnecting a node removes its name from the list
+5. A valid expression executes and the output AA can be connected 
+   to the existing AA display node
+6. An invalid expression surfaces an error without crashing the pipeline
+7. The visual style matches existing nodes
+
+## CONSTRAINTS
+
+- Match existing code style, naming conventions, and file organisation exactly
+- Do not introduce new dependencies unless essential and not already available
+- Do not modify d4m.py — consume it as-is
+- Do not modify any existing node — only add new files and registrations
+- If you find that the existing framework does not support variable-arity 
+  input ports, implement the minimum necessary extension to support it 
+  and document clearly what you changed and why

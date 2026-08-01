@@ -119,7 +119,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// Resizable width of the open Focus Panel body, driven by the splitter drag.
   double _focusPanelWidth = 440;
   static const double _minFocusWidth = 260;
-  static const double _maxFocusWidth = 1100;
+  static const double _maxFocusWidth = 3200;
 
   /// Saved-workflow identity of the current canvas. Null until the graph is
   /// named via Save / Save As; a plain Clear resets it to null (a fresh, unnamed
@@ -1165,7 +1165,7 @@ class _WorkflowPageState extends State<WorkflowPage>
                   // usable minimum (which would overflow the Row).
                   openWidth: _focusPanelWidth.clamp(
                     _minFocusWidth,
-                    (MediaQuery.sizeOf(context).width - 320).clamp(
+                    (MediaQuery.sizeOf(context).width - 120).clamp(
                       _minFocusWidth,
                       _maxFocusWidth,
                     ),
@@ -1488,6 +1488,31 @@ class _WorkflowPageState extends State<WorkflowPage>
           inputConnected: _hasIncomingEdge(node.id),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
           onInputConnect: (source) => _connect(source, node.id),
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'd4m':
+        return D4mNode(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // Slot A — AA input idx 0.
+          aConnected: _hasIncomingEdgeAt(node.id, 0),
+          onAConnect: (source) => _connectAt(source, node.id, 0),
+          onAPort: (port) => _registerAaInput(node.id, 0, port),
+          // Slot B — AA input idx 1.
+          bConnected: _hasIncomingEdgeAt(node.id, 1),
+          onBConnect: (source) => _connectAt(source, node.id, 1),
+          onBPort: (port) => _registerAaInput(node.id, 1, port),
+          // Slot C — AA input idx 2.
+          cConnected: _hasIncomingEdgeAt(node.id, 2),
+          onCConnect: (source) => _connectAt(source, node.id, 2),
+          onCPort: (port) => _registerAaInput(node.id, 2, port),
+          // Slot D — AA input idx 3.
+          dConnected: _hasIncomingEdgeAt(node.id, 3),
+          onDConnect: (source) => _connectAt(source, node.id, 3),
+          onDPort: (port) => _registerAaInput(node.id, 3, port),
+          // `aaOut` AA egress on the port bus.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
