@@ -7,92 +7,88 @@ import '../../../models/workflow.dart';
 import '../../../services/d4m_api.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
+import '../base/base_node.dart' show kPortSpacing;
 import '../base/double_naught_node_wrapper.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
 
-/// Vertical space reserved so the four edge-anchored input labels (A at idx 0,
-/// B at idx 1, C at idx 2, D at idx 3) clear the body controls.
-/// Clearance = 4 + max_port_idx × 24 = 4 + 3 × 24 = 76 px.
-const double _kPortLaneInset = 76;
+// ---------------------------------------------------------------------------
+// Port data model
+// ---------------------------------------------------------------------------
 
-/// Slot names assigned to each of D4MNode's four input ports.
-const List<String> _kSlotNames = ['A', 'B', 'C', 'D'];
+class _D4mPort {
+  String name;
+  final InputPort inputPort;
+  String? handleId; // ingested server-side handle (set after Execute)
 
-/// Lifecycle of a D4M evaluation operation.
-enum _D4mStatus { idle, evaluating, complete, error }
+  _D4mPort(this.name) : inputPort = InputPort(name);
+}
 
-/// A **functional node** (AA-in → AA-out) that evaluates a user-supplied
-/// D4M expression over up to four named input AAs.
+// ---------------------------------------------------------------------------
+// Status
+// ---------------------------------------------------------------------------
+
+enum _D4mStatus { idle, busy, complete, error }
+
+// ---------------------------------------------------------------------------
+// Widget
+// ---------------------------------------------------------------------------
+
+/// A **functional node** (AA-in → AA-out) that executes a multi-line D4M/Julia
+/// script over dynamically-managed input ports.
 ///
-/// Inputs (all AA, idx 0–3):
-///  * `A` (idx 0), `B` (idx 1), `C` (idx 2), `D` (idx 3) — each accepts any
-///    upstream AA.  Connected slots whose AA has arrived are available by their
-///    single-letter name in the expression.
-///
-/// Configuration:
-///  * **D4M Expression** — a multi-line monospaced text field.  Valid examples:
-///    `A + B`, `A("chunk: ", "score: ")`, `(A + B) >= 0.75`, `A & B`.
-///
-/// Output (AA, idx 0):
-///  * `aaOut` — the result of the expression, emitted on the port bus.
-///
-/// Execution fires automatically (debounced 400 ms) whenever a new AA arrives
-/// on any input and the expression is non-empty.  The Evaluate button re-fires
-/// manually without debounce.
+/// * Input ports default to 1, expandable via the `+` button; each supports
+///   inline rename.
+/// * Execute: ingests each port's AA into server-side handles, runs the script,
+///   stores output handle, emits the first 10 000 triples on the port bus.
+/// * Preview: paginated AA table modal.
+/// * Left/Right: spawn adjacent D4M nodes.
+/// * Merge: combine selected D4M nodes' scripts.
 class D4mNode extends StatefulWidget {
-  static const double _width = 320;
+  static const double _width = 340;
 
   final WorkflowNode node;
+  final Map<String, String>? initialParams;
+  final void Function(Map<String, String> params)? onParams;
 
-  // Input port connection flags and callbacks — one per slot A..D.
-  final bool aConnected;
-  final void Function(PortRef source)? onAConnect;
-  final void Function(InputPort port)? onAPort;
-
-  final bool bConnected;
-  final void Function(PortRef source)? onBConnect;
-  final void Function(InputPort port)? onBPort;
-
-  final bool cConnected;
-  final void Function(PortRef source)? onCConnect;
-  final void Function(InputPort port)? onCPort;
-
-  final bool dConnected;
-  final void Function(PortRef source)? onDConnect;
-  final void Function(InputPort port)? onDPort;
+  // Dynamic port callbacks — index-based.
+  final void Function(int idx, InputPort port)? onPort;
+  final bool Function(int idx)? connectedAt;
+  final void Function(PortRef source, int idx)? onConnect;
 
   // Output port.
   final void Function(OutputPort port)? onOutputPort;
   final Set<int> connectedOutputs;
 
-  /// Backend client. Injectable for tests; defaults to the shared instance.
-  final D4mApi api;
+  // Adjacent-node spawning.
+  final VoidCallback? onAddLeft;
+  final VoidCallback? onAddRight;
 
-  /// Saved settings (expression text) and persistence callback.
-  final Map<String, String>? initialParams;
-  final void Function(Map<String, String> params)? onParams;
+  // Merge controls.
+  final bool inMergeSet;
+  final VoidCallback? onToggleMerge;
+  final bool canMerge;
+  final VoidCallback? onMerge;
+
+  final D4mApi api;
 
   const D4mNode({
     super.key,
     required this.node,
-    this.aConnected = false,
-    this.onAConnect,
-    this.onAPort,
-    this.bConnected = false,
-    this.onBConnect,
-    this.onBPort,
-    this.cConnected = false,
-    this.onCConnect,
-    this.onCPort,
-    this.dConnected = false,
-    this.onDConnect,
-    this.onDPort,
-    this.onOutputPort,
-    this.connectedOutputs = const {},
-    this.api = const D4mApi(),
     this.initialParams,
     this.onParams,
+    this.onPort,
+    this.connectedAt,
+    this.onConnect,
+    this.onOutputPort,
+    this.connectedOutputs = const {},
+    this.onAddLeft,
+    this.onAddRight,
+    this.inMergeSet = false,
+    this.onToggleMerge,
+    this.canMerge = false,
+    this.onMerge,
+    this.api = const D4mApi(),
   });
 
   @override
@@ -100,154 +96,190 @@ class D4mNode extends StatefulWidget {
 }
 
 class _D4mNodeState extends State<D4mNode> {
-  // --- Input ports (one per slot) ---
-  final InputPort _portA = InputPort('A');
-  final InputPort _portB = InputPort('B');
-  final InputPort _portC = InputPort('C');
-  final InputPort _portD = InputPort('D');
+  late List<_D4mPort> _ports;
+  final Map<int, AaPayload> _portData = {};
 
-  // --- Incoming AAs (null until data arrives on the port) ---
-  AaPayload? _aaA;
-  AaPayload? _aaB;
-  AaPayload? _aaC;
-  AaPayload? _aaD;
-
-  // --- Output ---
   final OutputPort _out = OutputPort('aaOut');
-  AaPayload? _lastOutput;
 
-  // --- UI ---
-  late final TextEditingController _expr;
+  late final TextEditingController _scriptCtrl;
+  late final TextEditingController _outSymCtrl;
+  final Map<int, TextEditingController> _nameCtrl = {};
+
   _D4mStatus _status = _D4mStatus.idle;
   String? _error;
+  D4mExecResult? _lastExec;
+  String? _outputHandleId;
+  bool _cancelled = false;
+  bool _previewOpen = false;
 
-  // --- Auto-execution debounce ---
-  Timer? _autoTimer;
-  String? _lastRunSig;
-
-  bool get _hasAnyInput =>
-      _aaA != null || _aaB != null || _aaC != null || _aaD != null;
-
-  bool get _canEval =>
-      _hasAnyInput &&
-      _expr.text.trim().isNotEmpty &&
-      _status != _D4mStatus.evaluating;
-
-  /// Stable content hash for an [AaPayload] — independent of object identity.
-  /// Uses length + boundary values so the hash changes whenever the data does,
-  /// without hashing every element.
-  static int _aaHash(AaPayload aa) => Object.hash(
-        aa.rows.length,
-        aa.cols.length,
-        aa.vals.length,
-        aa.rows.isEmpty ? null : aa.rows.first,
-        aa.rows.isEmpty ? null : aa.rows.last,
-        aa.cols.isEmpty ? null : aa.cols.first,
-        aa.vals.isEmpty ? null : aa.vals.first,
-      );
-
-  /// Build a run signature for dedup: prevents re-evaluation when input data
-  /// has not changed since the last successful run.
-  String? _runSig() {
-    final e = _expr.text.trim();
-    if (!_hasAnyInput || e.isEmpty) return null;
-    final parts = <String>[];
-    if (_aaA != null) parts.add('A:${_aaHash(_aaA!)}');
-    if (_aaB != null) parts.add('B:${_aaHash(_aaB!)}');
-    if (_aaC != null) parts.add('C:${_aaHash(_aaC!)}');
-    if (_aaD != null) parts.add('D:${_aaHash(_aaD!)}');
-    return '${parts.join('|')}|expr:${e.hashCode}';
-  }
+  // ---------------------------------------------------------------------------
+  // Lifecycle
+  // ---------------------------------------------------------------------------
 
   @override
   void initState() {
     super.initState();
-    _expr = TextEditingController(
-      text: widget.initialParams?['expression'] ?? '',
-    );
-    widget.onAPort?.call(_portA);
-    widget.onBPort?.call(_portB);
-    widget.onCPort?.call(_portC);
-    widget.onDPort?.call(_portD);
+    final p = widget.initialParams ?? {};
+
+    // Restore port names from params (comma-separated); default = 1 port "A".
+    final names = (p['portNames'] ?? 'A')
+        .split(',')
+        .where((s) => s.isNotEmpty)
+        .toList();
+    _ports = names.map((n) => _D4mPort(n)).toList();
+
+    _scriptCtrl = TextEditingController(text: p['script'] ?? '');
+    _outSymCtrl = TextEditingController(text: p['outputSymbol'] ?? 'Out');
+
+    _initPorts();
     widget.onOutputPort?.call(_out);
-    _portA.onDataArrived.listen((p) => _onIncoming('A', p));
-    _portB.onDataArrived.listen((p) => _onIncoming('B', p));
-    _portC.onDataArrived.listen((p) => _onIncoming('C', p));
-    _portD.onDataArrived.listen((p) => _onIncoming('D', p));
+  }
+
+  void _initPorts() {
+    for (var i = 0; i < _ports.length; i++) {
+      _nameCtrl[i] = TextEditingController(text: _ports[i].name);
+      widget.onPort?.call(i, _ports[i].inputPort);
+      final idx = i;
+      _ports[i].inputPort.onDataArrived.listen((payload) {
+        if (!mounted) return;
+        setState(() => _portData[idx] = payload);
+      });
+    }
   }
 
   @override
   void dispose() {
-    _autoTimer?.cancel();
-    _portA.dispose();
-    _portB.dispose();
-    _portC.dispose();
-    _portD.dispose();
+    for (final p in _ports) {
+      p.inputPort.dispose();
+    }
     _out.dispose();
-    _expr.dispose();
+    _scriptCtrl.dispose();
+    _outSymCtrl.dispose();
+    for (final c in _nameCtrl.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  void _onIncoming(String slot, AaPayload payload) {
-    if (!mounted) return;
-    // Identical-reference guard: OutputPort replays _lastPayload to late
-    // subscribers and on parent rebuilds. If we already hold this exact object,
-    // the data hasn't changed — skip setState and don't restart the timer.
-    final current = switch (slot) {
-      'A' => _aaA, 'B' => _aaB, 'C' => _aaC, 'D' => _aaD, _ => null,
-    };
-    if (identical(current, payload)) return;
+  // ---------------------------------------------------------------------------
+  // Port management
+  // ---------------------------------------------------------------------------
+
+  void _addPort() {
     setState(() {
-      switch (slot) {
-        case 'A': _aaA = payload;
-        case 'B': _aaB = payload;
-        case 'C': _aaC = payload;
-        case 'D': _aaD = payload;
+      final idx = _ports.length;
+      final name = String.fromCharCode('A'.codeUnitAt(0) + idx);
+      final port = _D4mPort(name.length == 1 ? name : 'p$idx');
+      _ports.add(port);
+      _nameCtrl[idx] = TextEditingController(text: _ports.last.name);
+      widget.onPort?.call(idx, port.inputPort);
+      port.inputPort.onDataArrived.listen((payload) {
+        if (!mounted) return;
+        setState(() => _portData[idx] = payload);
+      });
+    });
+    _saveParams();
+  }
+
+  void _removePort(int idx) {
+    if (_ports.length <= 1) return;
+    setState(() {
+      _ports[idx].inputPort.dispose();
+      _ports.removeAt(idx);
+      _nameCtrl.remove(idx);
+      _portData.remove(idx);
+      // Re-index controllers above the removed slot.
+      for (var i = idx; i < _ports.length; i++) {
+        _nameCtrl[i] = _nameCtrl.remove(i + 1) ??
+            TextEditingController(text: _ports[i].name);
       }
     });
-    _maybeAutoEval();
+    _saveParams();
   }
 
-  void _maybeAutoEval() {
-    _autoTimer?.cancel();
-    _autoTimer = Timer(const Duration(milliseconds: 400), () {
-      if (!mounted || !_canEval) return;
-      final sig = _runSig();
-      if (sig == null || sig == _lastRunSig) return;
-      _evaluate();
+  void _renamePort(int idx, String name) {
+    final trimmed = name.trim().isEmpty ? 'p$idx' : name.trim();
+    setState(() => _ports[idx].name = trimmed);
+    _saveParams();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Params persistence
+  // ---------------------------------------------------------------------------
+
+  void _saveParams() {
+    widget.onParams?.call({
+      'portNames': _ports.map((p) => p.name).join(','),
+      'script': _scriptCtrl.text,
+      'outputSymbol': _outSymCtrl.text,
     });
   }
 
-  Future<void> _evaluate() async {
-    if (!_canEval) return;
-    final expression = _expr.text.trim();
-    // Collect only the slots that have data.
-    final inputs = <String, AaPayload>{
-      if (_aaA != null) 'A': _aaA!,
-      if (_aaB != null) 'B': _aaB!,
-      if (_aaC != null) 'C': _aaC!,
-      if (_aaD != null) 'D': _aaD!,
-    };
+  // ---------------------------------------------------------------------------
+  // Execute
+  // ---------------------------------------------------------------------------
+
+  bool get _canExec =>
+      _scriptCtrl.text.trim().isNotEmpty &&
+      _status != _D4mStatus.busy &&
+      _portData.isNotEmpty;
+
+  void _cancel() {
+    _cancelled = true;
     setState(() {
-      _status = _D4mStatus.evaluating;
+      _status = _D4mStatus.idle;
+      _error = null;
+    });
+  }
+
+  Future<void> _execute() async {
+    if (!_canExec) return;
+    _cancelled = false;
+    setState(() {
+      _status = _D4mStatus.busy;
       _error = null;
     });
     try {
-      final result = await widget.api.eval(
-        inputs: inputs,
-        expression: expression,
+      // Ingest each port's AA that has data.
+      final inputHandles = <String, String>{};
+      for (var i = 0; i < _ports.length; i++) {
+        if (_cancelled) return;
+        final data = _portData[i];
+        if (data == null) continue;
+        final ingest = await widget.api.ingest(data);
+        if (_cancelled) return;
+        _ports[i].handleId = ingest.handleId;
+        inputHandles[_ports[i].name] = ingest.handleId;
+      }
+
+      if (_cancelled) return;
+      final execResult = await widget.api.exec(
+        inputs: inputHandles,
+        script: _scriptCtrl.text.trim(),
+        outputSymbol: _outSymCtrl.text.trim().isEmpty
+            ? 'Out'
+            : _outSymCtrl.text.trim(),
       );
-      if (!mounted) return;
-      _lastOutput = result;
-      _lastRunSig = _runSig();
-      _out.emit(result);
+
+      if (!mounted || _cancelled) return;
+      _lastExec = execResult;
+      _outputHandleId = execResult.handleId;
+
+      // Emit first 10 000 triples on the port bus.
+      final preview = await widget.api.preview(
+        handleId: execResult.handleId,
+        page: 0,
+        pageSize: 10000,
+      );
+      if (!mounted || _cancelled) return;
+      _out.emit(preview.aa);
       setState(() => _status = _D4mStatus.complete);
-      widget.onParams?.call({'expression': expression});
+      _saveParams();
     } catch (e) {
-      if (!mounted) return;
-      // Extract the backend detail message from HTTP 422 responses.
+      if (!mounted || _cancelled) return;
       final msg = '$e';
-      final friendly = msg.contains(': ') ? msg.split(': ').skip(1).join(': ') : msg;
+      final friendly =
+          msg.contains(': ') ? msg.split(': ').skip(1).join(': ') : msg;
       setState(() {
         _status = _D4mStatus.error;
         _error = friendly;
@@ -255,22 +287,45 @@ class _D4mNodeState extends State<D4mNode> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Preview modal
+  // ---------------------------------------------------------------------------
+
+  void _showPreview() {
+    final hid = _outputHandleId;
+    if (hid == null) return;
+    if (_previewOpen) return; // already on top (modal)
+    setState(() => _previewOpen = true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      builder: (_) => _PreviewDialog(api: widget.api, handleId: hid),
+    ).whenComplete(() {
+      if (mounted) setState(() => _previewOpen = false);
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Build
+  // ---------------------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final hasOutput = _lastOutput != null;
+    final scheme = theme.colorScheme;
+    final hasOutput = _outputHandleId != null;
 
     return DoubleNaughtNodeWrapper(
       title: 'D4M',
       icon: Icons.functions,
       width: D4mNode._width,
       inputPorts: [
-        for (var i = 0; i < _kSlotNames.length; i++)
+        for (var i = 0; i < _ports.length; i++)
           InputConnector(
-            label: _kSlotNames[i],
+            label: _ports[i].name,
             idx: i,
-            active: _slotConnected(i),
-            onConnect: _slotOnConnect(i),
+            active: widget.connectedAt?.call(i) ?? false,
+            onConnect: (src) => widget.onConnect?.call(src, i),
           ),
       ],
       outputPorts: [
@@ -285,150 +340,267 @@ class _D4mNodeState extends State<D4mNode> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Clear the deepest port label (D at idx 3, slot bottom Y=122;
-          // body start Y=46; clearance = 76 px).
-          const SizedBox(height: _kPortLaneInset),
-          _inputsList(theme),
-          const SizedBox(height: 12),
+          // --- Port management ---
+          _portManagementSection(theme),
+          const Divider(height: 12, thickness: 0.5),
+
+          // --- Script editor ---
           TextField(
-            controller: _expr,
-            enabled: _status != _D4mStatus.evaluating,
+            controller: _scriptCtrl,
             minLines: 3,
-            maxLines: 6,
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontFamily: 'monospace',
-            ),
+            maxLines: 8,
+            style: theme.textTheme.bodySmall
+                ?.copyWith(fontFamily: 'monospace'),
             decoration: const InputDecoration(
-              labelText: 'D4M Expression',
-              hintText: "A + B\nA[startswith('chunk:'), ':']",
+              labelText: 'Julia D4M Script',
+              hintText: 'Out = A + B\nOut = Out[sw"chunk:", :]',
               isDense: true,
               border: OutlineInputBorder(),
-              contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             ),
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) {
+              setState(() {});
+              _saveParams();
+            },
           ),
-          const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _canEval ? _evaluate : null,
-              icon: _status == _D4mStatus.evaluating
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.play_arrow_rounded, size: 18),
-              label: const Text('Evaluate'),
-            ),
+          const SizedBox(height: 6),
+
+          // --- Output symbol ---
+          Row(
+            children: [
+              Text('Out: ',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(fontFamily: 'monospace')),
+              Expanded(
+                child: TextField(
+                  controller: _outSymCtrl,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(fontFamily: 'monospace'),
+                  decoration: const InputDecoration(
+                    isDense: true,
+                    border: OutlineInputBorder(),
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    hintText: 'Out',
+                  ),
+                  onChanged: (_) => _saveParams(),
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 8),
-          _statusIndicator(theme),
+
+          // --- Execute + Preview ---
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _status == _D4mStatus.busy
+                      ? _cancel
+                      : (_canExec ? _execute : null),
+                  icon: _status == _D4mStatus.busy
+                      ? const Icon(Icons.stop_rounded, size: 16)
+                      : const Icon(Icons.play_arrow_rounded, size: 16),
+                  label: Text(
+                      _status == _D4mStatus.busy ? 'Cancel' : 'Execute'),
+                  style: OutlinedButton.styleFrom(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              OutlinedButton.icon(
+                onPressed: _outputHandleId != null ? _showPreview : null,
+                icon: Icon(
+                  _previewOpen
+                      ? Icons.table_view
+                      : Icons.table_view_outlined,
+                  size: 16,
+                ),
+                label: const Text('Preview'),
+                style: OutlinedButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  foregroundColor: _previewOpen
+                      ? Theme.of(context).colorScheme.primary
+                      : null,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+
+          // --- Adjacent node buttons ---
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              TextButton.icon(
+                onPressed: widget.onAddLeft,
+                icon: const Icon(Icons.arrow_back, size: 14),
+                label: const Text('+'),
+                style: TextButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  textStyle: theme.textTheme.labelSmall,
+                ),
+              ),
+              if (widget.inMergeSet || widget.canMerge)
+                _mergeButton(theme, scheme),
+              TextButton(
+                onPressed: widget.onAddRight,
+                style: TextButton.styleFrom(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  textStyle: theme.textTheme.labelSmall,
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text('+'),
+                    SizedBox(width: 2),
+                    Icon(Icons.arrow_forward, size: 14),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+
+          // --- Status row ---
+          _statusRow(theme, scheme),
         ],
       ),
     );
   }
 
-  bool _slotConnected(int idx) => switch (idx) {
-    0 => widget.aConnected,
-    1 => widget.bConnected,
-    2 => widget.cConnected,
-    3 => widget.dConnected,
-    _ => false,
-  };
+  // ---------------------------------------------------------------------------
+  // Sub-builders
+  // ---------------------------------------------------------------------------
 
-  void Function(PortRef)? _slotOnConnect(int idx) => switch (idx) {
-    0 => widget.onAConnect,
-    1 => widget.onBConnect,
-    2 => widget.onCConnect,
-    3 => widget.onDConnect,
-    _ => null,
-  };
-
-  /// A read-only list of the slot names that are connected and have data.
-  Widget _inputsList(ThemeData theme) {
-    final connected = [
-      if (widget.aConnected) 'A',
-      if (widget.bConnected) 'B',
-      if (widget.cConnected) 'C',
-      if (widget.dConnected) 'D',
-    ];
-    if (connected.isEmpty) {
-      return Text(
-        'No inputs connected.',
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-      );
-    }
+  Widget _portManagementSection(ThemeData theme) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
-        Text(
-          'Connected inputs',
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-        ),
-        const SizedBox(height: 4),
-        for (final name in connected)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 2),
-            child: Row(
-              children: [
-                Container(
-                  width: 8,
-                  height: 8,
-                  margin: const EdgeInsets.only(right: 6, top: 1),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _slotHasData(name)
-                        ? Colors.green
-                        : theme.colorScheme.outline,
-                  ),
+        for (var i = 0; i < _ports.length; i++) _portRow(i, theme),
+        // Add port button
+        SizedBox(
+          height: kPortSpacing,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: InkWell(
+              onTap: _addPort,
+              borderRadius: BorderRadius.circular(4),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.add, size: 14,
+                        color: theme.colorScheme.primary),
+                    const SizedBox(width: 4),
+                    Text('+',
+                        style: theme.textTheme.labelSmall
+                            ?.copyWith(color: theme.colorScheme.primary)),
+                  ],
                 ),
-                Text(
-                  name,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    fontFamily: 'monospace',
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
+        ),
       ],
     );
   }
 
-  bool _slotHasData(String name) => switch (name) {
-    'A' => _aaA != null,
-    'B' => _aaB != null,
-    'C' => _aaC != null,
-    'D' => _aaD != null,
-    _ => false,
-  };
-
-  Widget _statusIndicator(ThemeData theme) {
+  Widget _portRow(int i, ThemeData theme) {
     final scheme = theme.colorScheme;
+    final hasData = _portData.containsKey(i);
+    return SizedBox(
+      height: kPortSpacing,
+      child: Row(
+        children: [
+          // Editable name
+          Expanded(
+            child: TextField(
+              controller: _nameCtrl[i],
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(fontFamily: 'monospace'),
+              decoration: const InputDecoration(
+                isDense: true,
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.symmetric(vertical: 2),
+              ),
+              onChanged: (v) => _renamePort(i, v),
+            ),
+          ),
+          // Data status dot
+          Container(
+            width: 7,
+            height: 7,
+            margin: const EdgeInsets.symmetric(horizontal: 4),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: hasData ? Colors.green : scheme.outline,
+            ),
+          ),
+          // Remove button (only when >1 port)
+          if (_ports.length > 1)
+            InkWell(
+              onTap: () => _removePort(i),
+              borderRadius: BorderRadius.circular(4),
+              child: Icon(Icons.close, size: 13, color: scheme.outline),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _mergeButton(ThemeData theme, ColorScheme scheme) {
+    return OutlinedButton(
+      onPressed: widget.inMergeSet
+          ? (widget.canMerge ? widget.onMerge : widget.onToggleMerge)
+          : widget.onToggleMerge,
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        textStyle: theme.textTheme.labelSmall,
+        foregroundColor:
+            widget.inMergeSet ? scheme.primary : scheme.onSurface,
+        side: widget.inMergeSet
+            ? BorderSide(color: scheme.primary)
+            : null,
+      ),
+      child: Text(
+        widget.inMergeSet
+            ? (widget.canMerge ? 'Merge' : 'Selected')
+            : 'Select',
+      ),
+    );
+  }
+
+  Widget _statusRow(ThemeData theme, ColorScheme scheme) {
     final (color, label) = switch (_status) {
       _D4mStatus.idle => (scheme.outline, 'idle'),
-      _D4mStatus.evaluating => (scheme.primary, 'evaluating'),
+      _D4mStatus.busy => (scheme.primary, 'executing'),
       _D4mStatus.complete => (Colors.green, 'complete'),
       _D4mStatus.error => (scheme.error, 'error'),
     };
-    final detail =
-        (_status == _D4mStatus.error && _error != null) ? ' · $_error' : '';
+    final meta = _lastExec != null
+        ? '  ${_lastExec!.numRows}×${_lastExec!.numCols}  nnz=${_lastExec!.nnz}'
+        : '';
+    final detail = _status == _D4mStatus.error && _error != null
+        ? ' · $_error'
+        : meta;
 
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
-          margin: const EdgeInsets.only(top: 4),
-          width: 8,
-          height: 8,
+          margin: const EdgeInsets.only(top: 3),
+          width: 7,
+          height: 7,
           decoration: BoxDecoration(color: color, shape: BoxShape.circle),
         ),
-        const SizedBox(width: 8),
+        const SizedBox(width: 6),
         Expanded(
           child: Text(
             '$label$detail',
@@ -438,6 +610,176 @@ class _D4mNodeState extends State<D4mNode> {
           ),
         ),
       ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Preview dialog
+// ---------------------------------------------------------------------------
+
+class _PreviewDialog extends StatefulWidget {
+  final D4mApi api;
+  final String handleId;
+
+  const _PreviewDialog({required this.api, required this.handleId});
+
+  @override
+  State<_PreviewDialog> createState() => _PreviewDialogState();
+}
+
+class _PreviewDialogState extends State<_PreviewDialog> {
+  static const _pageSize = 200;
+
+  int _page = 0;
+  D4mPreviewResult? _result;
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchPage(0);
+  }
+
+  Future<void> _fetchPage(int page) async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final r = await widget.api.preview(
+        handleId: widget.handleId,
+        page: page,
+        pageSize: _pageSize,
+      );
+      if (!mounted) return;
+      setState(() {
+        _result = r;
+        _page = page;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$e';
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final r = _result;
+    final totalPages =
+        r == null ? 1 : ((r.totalNnz + _pageSize - 1) ~/ _pageSize);
+
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 600, maxHeight: 500),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Header
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Preview  ${r != null ? "${r.totalNnz} triples" : ""}',
+                      style: theme.textTheme.titleSmall,
+                    ),
+                  ),
+                  if (r != null)
+                    Text('page ${_page + 1} / $totalPages',
+                        style: theme.textTheme.bodySmall),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, size: 18),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                        minWidth: 28, minHeight: 28),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+
+            // Table
+            Expanded(
+              child: _loading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                      ? Center(
+                          child: Text(_error!,
+                              style: TextStyle(
+                                  color: theme.colorScheme.error)))
+                      : _table(theme, r!.aa),
+            ),
+
+            // Pagination
+            if (!_loading && _error == null && r != null && totalPages > 1)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 6),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed:
+                          _page > 0 ? () => _fetchPage(_page - 1) : null,
+                      child: const Text('‹ Prev'),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(
+                      onPressed: _page < totalPages - 1
+                          ? () => _fetchPage(_page + 1)
+                          : null,
+                      child: const Text('Next ›'),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _table(ThemeData theme, AaPayload aa) {
+    if (aa.rows.isEmpty) {
+      return Center(
+          child: Text('Empty result',
+              style: theme.textTheme.bodySmall));
+    }
+    return SingleChildScrollView(
+      child: DataTable(
+        headingRowHeight: 28,
+        dataRowMinHeight: 22,
+        dataRowMaxHeight: 28,
+        columnSpacing: 12,
+        columns: const [
+          DataColumn(label: Text('row')),
+          DataColumn(label: Text('col')),
+          DataColumn(label: Text('val')),
+        ],
+        rows: [
+          for (var i = 0; i < aa.rows.length; i++)
+            DataRow(cells: [
+              DataCell(Text(aa.rows[i],
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(fontFamily: 'monospace'))),
+              DataCell(Text(aa.cols[i],
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(fontFamily: 'monospace'))),
+              DataCell(Text('${aa.vals[i]}',
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(fontFamily: 'monospace'))),
+            ]),
+        ],
+      ),
     );
   }
 }

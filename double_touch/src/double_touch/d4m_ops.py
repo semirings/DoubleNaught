@@ -1,121 +1,256 @@
-"""D4M expression evaluation for the D4MNode backend route.
+"""D4M expression evaluation backed by D4M.jl via juliacall.
 
-Converts between the DoubleNaught wire format (AssocArray — parallel
-rows/cols/vals lists) and the D4M Assoc object, then evaluates a
-user-supplied expression string in a namespace keyed by the input names.
+Expressions are Julia source strings evaluated in a namespace that contains the
+named input Assoc objects.  Julia D4M syntax applies:
+
+    A + B                         — union/sum
+    A & B                         — intersection
+    A[sw"prefix", :]              — StartsWith selector (rows)
+    A["lo".."hi", :]              — Between selector
+    A[has"substr", :]             — Contains selector
+    A[ew"suffix", :]              — EndsWith selector
+    A[r"regex", :]                — Regex selector
+    A["r1,r2,", :]                — D4M comma-delimited string
+
+MATLAB-style call syntax is translated before evaluation so expressions from
+the DoubleNaught frontend also work:
+
+    A(:)            → A
+    A("r","c")      → A["r","c"]
+
+Thread safety: juliacall is not thread-safe; a module-level lock serializes
+every eval() call.
 """
 
 from __future__ import annotations
 
+import os
 import re
-from typing import TYPE_CHECKING
-
-try:
-    from D4M import Assoc
-    _D4M_AVAILABLE = True
-except ImportError:  # pragma: no cover
-    _D4M_AVAILABLE = False
+import threading
+from typing import Any
 
 from .models import AssocArray
 
-if TYPE_CHECKING:
-    from D4M import Assoc  # type: ignore[assignment]
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+# Absolute path to the D4M.jl source tree.  Override via env var for portability.
+_D4M_JL_PATH = os.environ.get(
+    "D4M_JL_PATH",
+    os.path.expanduser("~/d4m.Wk/D4M.jl"),
+)
+
+# ---------------------------------------------------------------------------
+# Julia / D4M.jl initialisation  (lazy, once per process)
+# ---------------------------------------------------------------------------
+
+_lock = threading.Lock()      # serialises all Julia eval calls (not thread-safe)
+_init_lock = threading.Lock() # protects one-time initialisation of the Julia runtime
+_jl: Any = None               # juliacall.Main once initialised
+_d4m_ready = False
+_AssocType: Any = None        # Julia Assoc type, cached after D4M loads
 
 
-def assoc_from_aa(aa: AssocArray) -> "Assoc":
-    """Convert a wire AssocArray to a D4M Assoc (using the shared rcvs.json contract)."""
-    from D4M import Assoc as _Assoc
-    return _Assoc.from_json({"rows": aa.rows, "cols": aa.cols, "vals": aa.vals})
+def _julia():
+    """Return the juliacall Main module, loading D4M.jl on first call.
+
+    Thread-safe: the init lock ensures only one thread boots the Julia runtime
+    (cold start ~2 min) while _lock serialises every subsequent eval call.
+    """
+    global _jl, _d4m_ready, _AssocType
+    if _d4m_ready:
+        return _jl
+    with _init_lock:
+        # Double-checked locking: re-test inside the lock.
+        if _d4m_ready:
+            return _jl
+        if _jl is None:
+            from juliacall import Main as jl  # noqa: PLC0415  (lazy import)
+            _jl = jl
+        _jl.seval(
+            f'if !in("{_D4M_JL_PATH}", LOAD_PATH)\n'
+            f'    pushfirst!(LOAD_PATH, "{_D4M_JL_PATH}")\n'
+            f'end'
+        )
+        _jl.seval("using D4M")
+        _AssocType = _jl.seval("Assoc")
+        _d4m_ready = True
+    return _jl
 
 
-def aa_from_assoc(result: "Assoc") -> AssocArray:
-    """Convert a D4M Assoc result back to the wire AssocArray format."""
-    data = result.to_json()
-    return AssocArray(rows=data["rows"], cols=data["cols"], vals=data["vals"])
+def warm() -> None:
+    """Block until Julia + D4M.jl are fully loaded. Call once at server start."""
+    _julia()
 
+
+# ---------------------------------------------------------------------------
+# Wire-format ↔ Julia Assoc conversion
+# ---------------------------------------------------------------------------
+
+def _julia_str(s: str) -> str:
+    """Escape *s* for embedding as a Julia double-quoted string literal."""
+    return (s
+        .replace('\\', '\\\\')
+        .replace('"',  '\\"')
+        .replace('\n', '\\n')
+        .replace('\r', '\\r')
+        .replace('\t', '\\t')
+        .replace('$',  '\\$')
+        .replace('\0', '\\0'))
+
+
+def _to_julia_assoc(aa: AssocArray) -> Any:
+    """Convert a wire AssocArray to a D4M.jl Assoc object.
+
+    rows/cols use the D4M comma-delimited string form (they are short IDs with
+    no commas).  vals are passed as a typed Julia array so that string values
+    containing commas are not mis-parsed by D4M's StrUnique splitter.
+    """
+    jl = _julia()
+    rows_str = ",".join(aa.rows) + ","
+    cols_str = ",".join(aa.cols) + ","
+    vals = list(aa.vals)
+    if vals and isinstance(vals[0], (int, float)):
+        # Float64 array avoids PyList dispatch issues.
+        jl_vals = jl.seval(
+            f"Float64[{', '.join(str(float(v)) for v in vals)}]"
+        )
+    else:
+        # Build a Julia Vector{String} directly.  Using a comma-delimited
+        # string would break on values that themselves contain commas (e.g.
+        # full text passages from ChunkNode).
+        escaped = ", ".join(f'"{_julia_str(str(v))}"' for v in vals)
+        jl_vals = jl.seval(f"String[{escaped}]")
+    return jl.Assoc(rows_str, cols_str, jl_vals)
+
+
+def _from_julia_assoc(result: Any) -> AssocArray:
+    """Convert a D4M.jl Assoc back to the wire AssocArray format."""
+    jl = _julia()
+    r, c, v = jl.find(result)
+    rows = [str(x) for x in r]
+    cols = [str(x) for x in c]
+    vals: list = []
+    for x in v:
+        # juliacall wraps Julia Float64/Int as Python float/int
+        if isinstance(x, (int, float)):
+            vals.append(float(x))
+        else:
+            vals.append(str(x))
+    return AssocArray(rows=rows, cols=cols, vals=vals)
+
+
+# ---------------------------------------------------------------------------
+# Expression pre-processing  (MATLAB-style → Julia)
+# ---------------------------------------------------------------------------
 
 def _preprocess(expression: str, input_names: set[str]) -> str:
-    """Translate MATLAB-style D4M call syntax to Python bracket syntax.
+    """Translate MATLAB-style call syntax to Julia bracket syntax.
 
-    Only rewrites tokens that are known Assoc input names so that utility
-    function calls like ``startswith('prefix:')`` are left untouched.
+    Only tokens that are known Assoc input names are rewritten.
 
-    Transforms applied (in order):
-      * ``A(:)``        →  ``A``          (MATLAB all-elements identity)
-      * ``A("r","c")``  →  ``A["r","c"]`` (call → subscript for Assoc lookup)
+    Transforms (in order):
+      * ``A(:)``              →  ``A``
+      * ``A("r",":")``        →  ``A["r",:]``   (string ":" → Julia Colon)
+      * ``A("r","c")``        →  ``A["r","c"]``
     """
+    def _colon_str_to_colon(args: str) -> str:
+        """Replace the string literal ":" or ':' with a bare Julia : (Colon)."""
+        args = re.sub(r'":\s*"', ':', args)
+        args = re.sub(r"':\s*'", ':', args)
+        return args
+
     for name in input_names:
         pat = re.escape(name)
-        # A(:) → A  (MATLAB all-elements)
+        # A(:) → A
         expression = re.sub(rf'\b{pat}\(\s*:\s*\)', name, expression)
-        # A[:]  → A  (Python single-colon slice = all)
-        expression = re.sub(rf'\b{pat}\[\s*:\s*\]', name, expression)
-        # A[:,:]  → A[":", ":"]  (Python double-colon slice = all rows, all cols)
-        expression = re.sub(rf'\b{pat}\[\s*:\s*,\s*:\s*\]', rf'{name}[":", ":"]', expression)
-        # A' * B → A.transpose() @ B  (MATLAB prime-multiply = matrix multiply)
-        expression = re.sub(rf"\b{pat}'\s*\*", f'{name}.transpose() @', expression)
-        # A' (remaining) → A.transpose()
-        expression = re.sub(rf"\b{pat}'", f'{name}.transpose()', expression)
-        # A("row", "col") → A["row", "col"]  (call → subscript)
-        expression = re.sub(rf'\b{pat}\(([^)]+)\)', rf'{name}[\1]', expression)
+        # A("row", ":") → A["row", :]  (convert ":" string args to Julia Colon)
+        def _replace_call(m: re.Match) -> str:
+            return f'{name}[{_colon_str_to_colon(m.group(1))}]'
+        expression = re.sub(rf'\b{pat}\(([^)]+)\)', _replace_call, expression)
     return expression
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def eval_script(
+    inputs: dict[str, AssocArray],
+    script: str,
+    output_symbol: str,
+) -> AssocArray:
+    """Evaluate a multi-line Julia D4M script and return the named result AA.
+
+    *script* is evaluated as a Julia block; the final result is extracted by
+    evaluating *output_symbol* in the same scope.  This allows scripts like::
+
+        C = A + B
+        D = C[sw"chunk:", :]
+
+    where ``output_symbol="D"`` returns the filtered AA.
+
+    Raises:
+        RuntimeError:  Julia or D4M.jl could not be loaded.
+        TypeError:     Named symbol does not hold an Assoc.
+        Any exception the Julia script itself raises.
+    """
+    jl = _julia()
+    # Preprocess MATLAB-style call syntax using all input variable names.
+    processed = _preprocess(script, set(inputs.keys()))
+    with _lock:
+        assigned: list[str] = []
+        try:
+            for name, aa in inputs.items():
+                setattr(jl.Main, name, _to_julia_assoc(aa))
+                assigned.append(name)
+            jl.seval(processed)
+            result = jl.seval(output_symbol)
+        finally:
+            for name in assigned:
+                jl.seval(f"Main.eval(:(global {name} = nothing))")
+    if not jl.isa(result, _AssocType):
+        raise TypeError(
+            f"Output symbol '{output_symbol}' must hold an Assoc, "
+            f"got {type(result).__name__}"
+        )
+    return _from_julia_assoc(result)
+
+
 def eval_expression(inputs: dict[str, AssocArray], expression: str) -> AssocArray:
-    """Evaluate *expression* in a namespace containing the named input AAs.
+    """Evaluate *expression* as Julia D4M code over the named input AAs.
 
     Args:
-        inputs:     Mapping of variable-name → AssocArray, e.g. {"A": ..., "B": ...}.
-        expression: A D4M expression string, e.g.::
+        inputs:     Mapping of variable name → AssocArray.
+        expression: A Julia D4M expression, e.g.::
 
                         A + B
-                        A[startswith('chunk:'), ':'] >= 0.75
-                        A & B
-
-            Uses Python D4M bracket syntax for selection — ``A[rows, cols]`` —
-            not MATLAB/Dart call syntax.  ``startswith`` from ``D4M.util`` is
-            pre-loaded in the namespace.
+                        A[sw"chunk:", :]
+                        A["r1,r2,", :]
 
     Returns:
         The result of the expression as a wire AssocArray.
 
     Raises:
-        RuntimeError:  D4M is not installed in this environment.
+        RuntimeError:  Julia or D4M.jl could not be loaded.
         TypeError:     Expression result was not an Assoc.
-        Any exception the expression itself raises (SyntaxError, etc.).
+        Any exception the Julia expression itself raises.
     """
-    if not _D4M_AVAILABLE:
-        raise RuntimeError(
-            "D4M is not installed. "
-            "Run: pip install /path/to/D4M.py  (see the d4m.Wk/D4M.py repo)"
-        )
-    from D4M import Assoc as _Assoc
-    from D4M.util import startswith
-    from D4M.assoc import (
-        val2col, col_to_type, transpose,
-        hadamard, nnz, sqin, sqout,
-        combine, assoc_min, assoc_max,
-    )
-    namespace: dict = {name: assoc_from_aa(aa) for name, aa in inputs.items()}
-    namespace.update({
-        "startswith": startswith,
-        "Assoc": _Assoc,
-        # D4M module-level functions available without import in expressions.
-        "val2col": val2col,
-        "col_to_type": col_to_type,
-        "transpose": transpose,
-        "hadamard": hadamard,
-        "nnz": nnz,
-        "sqin": sqin,
-        "sqout": sqout,
-        "combine": combine,
-        "assoc_min": assoc_min,
-        "assoc_max": assoc_max,
-    })
+    jl = _julia()
     expression = _preprocess(expression, set(inputs.keys()))
-    result = eval(expression, {"__builtins__": {}}, namespace)
-    if not isinstance(result, _Assoc):
+    with _lock:
+        assigned: list[str] = []
+        try:
+            for name, aa in inputs.items():
+                setattr(jl.Main, name, _to_julia_assoc(aa))
+                assigned.append(name)
+            result = jl.seval(expression)
+        finally:
+            for name in assigned:
+                jl.seval(f"Main.eval(:(global {name} = nothing))")
+    if not jl.isa(result, _AssocType):
         raise TypeError(
             f"Expression must return an Assoc, got {type(result).__name__}"
         )
-    return aa_from_assoc(result)
+    return _from_julia_assoc(result)

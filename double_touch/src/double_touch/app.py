@@ -40,6 +40,12 @@ from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cx
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
 from .models import (
+    D4mExecRequest,
+    D4mExecResponse,
+    D4mIngestRequest,
+    D4mIngestResponse,
+    D4mPreviewRequest,
+    D4mPreviewResponse,
     D4mRequest,
     D4mResponse,
     REVIEW_STATUSES,
@@ -90,7 +96,8 @@ from .text_engine import (
 )
 from .review import ReviewStore
 from .sessions import PromptRecord, Session, SessionStore
-from .d4m_ops import eval_expression
+from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
+from . import d4m_handles
 
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
@@ -100,6 +107,32 @@ app = FastAPI(
     description="Text / box / point segmentation for DoubleNaught. camelCase JSON.",
     version="0.1.0",
 )
+
+
+@app.on_event("startup")
+async def _startup_warm_julia() -> None:
+    """Pre-warm the Julia runtime in a background thread at server start.
+
+    Julia's first load (cold start) takes ~2 minutes to precompile D4M.jl.
+    Running this eagerly means the first /d4m/exec request hits a warm runtime
+    instead of hanging for minutes waiting for JIT compilation.
+    """
+    import threading as _t
+    _t.Thread(target=_warm_julia, daemon=True, name="julia-warmup").start()
+
+
+@app.on_event("shutdown")
+async def _shutdown_force_exit() -> None:
+    """Force-exit the process after uvicorn shuts down.
+
+    juliacall registers Python atexit handlers that finalize the Julia runtime.
+    When the Julia warmup thread is still mid-init (holding _init_lock and
+    running JIT compilation), those atexit handlers deadlock waiting for Julia
+    to become quiescent.  os._exit() bypasses all atexit handlers and exits
+    immediately, which is safe for a development server.
+    """
+    import os as _os
+    _os._exit(0)
 
 # Allow the Flutter dev front-ends (web on :3000, plus any localhost port used
 # by `flutter run`). Tighten for production.
@@ -948,3 +981,83 @@ async def d4m_eval(request: D4mRequest) -> D4mResponse:
         return D4mResponse(aa=result_aa)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# D4M handle-based script execution
+# ---------------------------------------------------------------------------
+
+@app.post("/d4m/ingest", response_model=D4mIngestResponse)
+async def d4m_ingest(request: D4mIngestRequest) -> D4mIngestResponse:
+    """Store an AA in the server-side handle store and return its handle id.
+
+    The handle is an opaque UUID; pass it to ``/d4m/exec`` as an input
+    binding instead of shipping the full AA on every execution.
+    """
+    handle_id = d4m_handles.store(request.aa)
+    count = d4m_handles.nnz(handle_id) or 0
+    return D4mIngestResponse(handle_id=handle_id, nnz=count)
+
+
+@app.post("/d4m/exec", response_model=D4mExecResponse)
+async def d4m_exec(request: D4mExecRequest) -> D4mExecResponse:
+    """Execute a multi-line D4M script over handle-referenced input AAs.
+
+    ``request.inputs`` maps Julia variable names to handle ids returned by
+    prior ``/d4m/ingest`` calls.  The script is evaluated as Julia source;
+    ``output_symbol`` names the variable whose value is stored and returned.
+    Returns HTTP 404 when any handle id is unknown, 422 on script errors.
+    """
+    # Resolve handles → wire AAs.
+    resolved: dict[str, AssocArray] = {}
+    for var_name, handle_id in request.inputs.items():
+        aa = d4m_handles.get(handle_id)
+        if aa is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"unknown handle id for input '{var_name}': {handle_id}",
+            )
+        resolved[var_name] = aa
+
+    try:
+        result_aa = await run_in_threadpool(
+            eval_script, resolved, request.script, request.output_symbol
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    out_handle = d4m_handles.store(result_aa)
+    dims = d4m_handles.shape(out_handle) or (0, 0)
+    count = d4m_handles.nnz(out_handle) or 0
+    return D4mExecResponse(
+        handle_id=out_handle,
+        num_rows=dims[0],
+        num_cols=dims[1],
+        nnz=count,
+    )
+
+
+@app.post("/d4m/preview", response_model=D4mPreviewResponse)
+async def d4m_preview(request: D4mPreviewRequest) -> D4mPreviewResponse:
+    """Return a paginated slice of the AA identified by *handle_id*.
+
+    Slices by triple index (each row/col/val entry = one triple).
+    Returns HTTP 404 when the handle id is unknown.
+    """
+    total = d4m_handles.nnz(request.handle_id)
+    if total is None:
+        raise HTTPException(
+            status_code=404, detail=f"unknown handle id: {request.handle_id}"
+        )
+    page_aa = d4m_handles.get_slice(request.handle_id, request.page, request.page_size)
+    if page_aa is None:
+        raise HTTPException(
+            status_code=404, detail=f"unknown handle id: {request.handle_id}"
+        )
+    return D4mPreviewResponse(
+        handle_id=request.handle_id,
+        page=request.page,
+        page_size=request.page_size,
+        total_nnz=total,
+        aa=page_aa,
+    )

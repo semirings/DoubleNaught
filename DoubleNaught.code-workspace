@@ -14,6 +14,12 @@
 		},
 		{
 			"path": "../../d4m.Wk/D4M.jl"
+		},
+		{
+			"path": "../../fhir.Wk/fhir-genalytics.platform/d4m.acc.access"
+		},
+		{
+			"path": "../../fhir.Wk/fhir-genalytics.platform/d4m.acc.microservice"
 		}
 	]
 }

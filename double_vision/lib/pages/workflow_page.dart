@@ -27,7 +27,8 @@ double _nodeWidthFor(String type) =>
         type == 'model_classifier' ||
         type == 'text_model_loader' ||
         type == 'text_prompt' ||
-        type == 'text_inference')
+        type == 'text_inference' ||
+        type == 'd4m')
     ? _kWideNodeWidth
     : _kNodeWidth;
 
@@ -129,6 +130,12 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   /// Cached listing for the Workflows dropdown; refreshed after save/delete.
   List<WorkflowMeta> _savedWorkflows = const [];
+
+  /// D4M nodes selected for the merge operation. When 2+ nodes are in this set
+  /// the Merge button becomes active; the merge combines their scripts
+  /// left-to-right, rewires all incoming edges to the first node, and deletes
+  /// the rest.
+  final Set<int> _d4mMergeSet = {};
 
   /// Per-node saved settings (dropdown selections, manual fields, …), keyed by
   /// node id. Nodes report changes via their `onParams` callback; the value is
@@ -802,6 +809,126 @@ class _WorkflowPageState extends State<WorkflowPage>
       if (e.from.nodeId == nodeId) e.from.idx,
   };
 
+  // ---------------------------------------------------------------------------
+  // D4M merge / adjacent-node helpers
+  // ---------------------------------------------------------------------------
+
+  /// Toggle [nodeId] in/out of the D4M merge selection set.
+  void _toggleD4mMerge(int nodeId) {
+    setState(() {
+      if (_d4mMergeSet.contains(nodeId)) {
+        _d4mMergeSet.remove(nodeId);
+      } else {
+        _d4mMergeSet.add(nodeId);
+      }
+    });
+  }
+
+  /// Merge all D4M nodes in [_d4mMergeSet]: combine their scripts left-to-right
+  /// into the leftmost node (by canvas x), rewire all incoming edges to it,
+  /// delete the rest, and clear the merge set.
+  void _mergeD4mNodes() {
+    if (_d4mMergeSet.length < 2) return;
+    // Collect the nodes to merge, ordered left-to-right by canvas x position.
+    final toMerge = _nodes
+        .where((n) => _d4mMergeSet.contains(n.id))
+        .toList()
+      ..sort((a, b) => a.x.compareTo(b.x));
+    final primary = toMerge.first;
+
+    // Combine scripts: join with a newline, skipping empty scripts.
+    final primaryParams =
+        Map<String, String>.from(_nodeParams[primary.id] ?? {});
+    final combinedScript = toMerge
+        .map((n) => (_nodeParams[n.id]?['script'] ?? '').trim())
+        .where((s) => s.isNotEmpty)
+        .join('\n');
+    primaryParams['script'] = combinedScript;
+
+    // Combine port names: union of all port name lists (deduped, primary's first).
+    final allPorts = <String>{};
+    allPorts.addAll((primaryParams['portNames'] ?? 'A').split(','));
+    for (final n in toMerge.skip(1)) {
+      allPorts.addAll(
+          (_nodeParams[n.id]?['portNames'] ?? '').split(','));
+    }
+    allPorts.removeWhere((s) => s.isEmpty);
+    primaryParams['portNames'] = allPorts.join(',');
+
+    setState(() {
+      _nodeParams[primary.id] = primaryParams;
+
+      // Rewire incoming edges from secondary nodes to primary.
+      int nextIdx = (primaryParams['portNames'] ?? 'A').split(',').length;
+      for (final n in toMerge.skip(1)) {
+        for (final e in _edges.where((e) => e.to.nodeId == n.id).toList()) {
+          _edges.remove(e);
+          _edges.add(WorkflowEdge(
+            from: e.from,
+            to: PortRef(nodeId: primary.id, idx: nextIdx++),
+          ));
+        }
+        // Redirect any outgoing edges from secondary nodes to primary.
+        for (final e in _edges.where((e) => e.from.nodeId == n.id).toList()) {
+          _edges.remove(e);
+          _edges.add(WorkflowEdge(
+            from: PortRef(nodeId: primary.id, idx: e.from.idx),
+            to: e.to,
+          ));
+        }
+        _aaOutputPorts.remove(n.id);
+        _aaInputPorts.remove(n.id);
+        _nodeParams.remove(n.id);
+        _nodes.removeWhere((node) => node.id == n.id);
+      }
+      _d4mMergeSet.clear();
+    });
+  }
+
+  /// Spawn a new D4M node immediately to the left or right of [node] on the
+  /// canvas, pre-wired so the new node's output feeds into [node]'s next input
+  /// port (onAddLeft) or [node]'s output connects to the new node's first input
+  /// (onAddRight).
+  void _addAdjacentD4mNode(WorkflowNode node, {required bool isLeft}) {
+    const kAdjacentOffset = 360.0;
+    final newNode = WorkflowNode(
+      id: _nextId++,
+      type: 'd4m',
+      x: isLeft ? node.x - kAdjacentOffset : node.x + kAdjacentOffset,
+      y: node.y,
+    );
+    setState(() {
+      _nodes.add(newNode);
+      if (isLeft) {
+        // New node's output (idx 0) → existing node's next free input.
+        final nextIdx = _edges
+            .where((e) => e.to.nodeId == node.id)
+            .map((e) => e.to.idx)
+            .fold<int>(-1, (m, i) => i > m ? i : m) +
+            1;
+        _edges.add(WorkflowEdge(
+          from: PortRef(nodeId: newNode.id, idx: 0),
+          to: PortRef(nodeId: node.id, idx: nextIdx),
+        ));
+      } else {
+        // Existing node's output (idx 0) → new node's first input (idx 0).
+        _edges.add(WorkflowEdge(
+          from: PortRef(nodeId: node.id, idx: 0),
+          to: PortRef(nodeId: newNode.id, idx: 0),
+        ));
+      }
+    });
+    // _addAdjacentD4mNode builds the edge before the new node exists, so
+    // _bindAaPorts (called from _connectAt) never ran.  Defer until after
+    // the frame so the new node's initState has finished registering ports
+    // and wiring its onDataArrived listener.
+    if (!isLeft) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _bindAaPorts(PortRef(nodeId: node.id, idx: 0), newNode.id, 0);
+      });
+    }
+  }
+
   /// Resolve the graph into evaluation order: sources first (nodes with no
   /// incoming edge, e.g. Inventory / URL Source), then downstream consumers.
   /// Returns null when the graph contains a cycle, which cannot be evaluated.
@@ -1425,6 +1552,8 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'file_source': // backward-compat alias
         return LoadFileNode(
           node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
           onConnect: (stream) => _outputs[node.id] = stream,
           onFileName: (name) => setState(() => _sourceNames[node.id] = name),
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
@@ -1496,25 +1625,17 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // Slot A — AA input idx 0.
-          aConnected: _hasIncomingEdgeAt(node.id, 0),
-          onAConnect: (source) => _connectAt(source, node.id, 0),
-          onAPort: (port) => _registerAaInput(node.id, 0, port),
-          // Slot B — AA input idx 1.
-          bConnected: _hasIncomingEdgeAt(node.id, 1),
-          onBConnect: (source) => _connectAt(source, node.id, 1),
-          onBPort: (port) => _registerAaInput(node.id, 1, port),
-          // Slot C — AA input idx 2.
-          cConnected: _hasIncomingEdgeAt(node.id, 2),
-          onCConnect: (source) => _connectAt(source, node.id, 2),
-          onCPort: (port) => _registerAaInput(node.id, 2, port),
-          // Slot D — AA input idx 3.
-          dConnected: _hasIncomingEdgeAt(node.id, 3),
-          onDConnect: (source) => _connectAt(source, node.id, 3),
-          onDPort: (port) => _registerAaInput(node.id, 3, port),
-          // `aaOut` AA egress on the port bus.
+          onPort: (idx, port) => _registerAaInput(node.id, idx, port),
+          connectedAt: (idx) => _hasIncomingEdgeAt(node.id, idx),
+          onConnect: (source, idx) => _connectAt(source, node.id, idx),
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
+          onAddLeft: () => _addAdjacentD4mNode(node, isLeft: true),
+          onAddRight: () => _addAdjacentD4mNode(node, isLeft: false),
+          inMergeSet: _d4mMergeSet.contains(node.id),
+          onToggleMerge: () => _toggleD4mMerge(node.id),
+          canMerge: _d4mMergeSet.length >= 2,
+          onMerge: _d4mMergeSet.length >= 2 ? _mergeD4mNodes : null,
         );
       case 'review':
         return ReviewNode(

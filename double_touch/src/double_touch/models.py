@@ -470,3 +470,51 @@ class D4mRequest(CamelModel):
 class D4mResponse(CamelModel):
     # The result AA emitted on the node's single output port.
     aa: AssocArray
+
+
+# --- D4M handle-based script execution (new multi-line pipeline) -------------
+
+class D4mIngestRequest(CamelModel):
+    # The AA payload to ingest.
+    aa: AssocArray
+
+
+class D4mIngestResponse(CamelModel):
+    # Opaque UUID that identifies the stored AA.
+    handle_id: str
+    # Number of triples stored.
+    nnz: int
+
+
+class D4mExecRequest(CamelModel):
+    # Map of Julia variable name → handle id (from prior /d4m/ingest calls).
+    inputs: dict[str, str]
+    # Multi-line Julia D4M script.
+    script: str
+    # The Julia variable name whose value is returned as the output AA.
+    output_symbol: str = "Out"
+
+
+class D4mExecResponse(CamelModel):
+    # Handle id of the output AA (stored server-side).
+    handle_id: str
+    # Number of unique rows in the result.
+    num_rows: int
+    # Number of unique columns in the result.
+    num_cols: int
+    # Number of non-zero triples.
+    nnz: int
+
+
+class D4mPreviewRequest(CamelModel):
+    handle_id: str
+    page: int = 0
+    page_size: int = 200
+
+
+class D4mPreviewResponse(CamelModel):
+    handle_id: str
+    page: int
+    page_size: int
+    total_nnz: int
+    aa: AssocArray

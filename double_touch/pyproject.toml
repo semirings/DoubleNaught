@@ -12,6 +12,8 @@ dependencies = [
     "httpx>=0.27",
     # Phi-4-aligned token counting for ChunkNode (o200k_base encoding).
     "tiktoken>=0.7",
+    # Julia bridge: evaluates D4M.jl expressions via the Julia runtime.
+    "juliacall>=0.9",
 ]
 
 [project.optional-dependencies]

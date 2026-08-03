@@ -25,6 +25,8 @@ import '../base/output_connector.dart';
 /// is handled as a backward-compat alias in the workflow page's `_buildNode`.
 class LoadFileNode extends StatefulWidget {
   final WorkflowNode node;
+  final Map<String, String>? initialParams;
+  final void Function(Map<String, String>)? onParams;
 
   final void Function(Stream<Uint8List> contents)? onConnect;
   final void Function(String fileName)? onFileName;
@@ -34,6 +36,8 @@ class LoadFileNode extends StatefulWidget {
   const LoadFileNode({
     super.key,
     required this.node,
+    this.initialParams,
+    this.onParams,
     this.onConnect,
     this.onFileName,
     this.onOutputPort,
@@ -78,6 +82,12 @@ class _LoadFileNodeState extends State<LoadFileNode> {
     _output = StreamController<Uint8List>.broadcast(onListen: _replayBuffer);
     widget.onConnect?.call(_output.stream);
     widget.onOutputPort?.call(_aaOut);
+    final savedPath = widget.initialParams?['filePath'];
+    if (savedPath != null && savedPath.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _streamFile(XFile(savedPath));
+      });
+    }
   }
 
   void _replayBuffer() {
@@ -101,8 +111,12 @@ class _LoadFileNodeState extends State<LoadFileNode> {
   Future<void> _pickAndStream() async {
     final XFile? picked = await openFile();
     if (picked == null) return;
-
+    widget.onParams?.call({'filePath': picked.path});
     widget.onFileName?.call(picked.name);
+    await _streamFile(picked);
+  }
+
+  Future<void> _streamFile(XFile picked) async {
     setState(() {
       _selectedFile = picked;
       _bytesStreamed = 0;
