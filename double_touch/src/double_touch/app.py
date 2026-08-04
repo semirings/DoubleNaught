@@ -88,6 +88,8 @@ from .models import (
     UrlPayloadResponse,
     UrlValidateRequest,
     UrlValidateResponse,
+    TokenizeRequest,
+    TokenizeResponse,
 )
 from .text_engine import (
     default_text_engine,
@@ -1060,4 +1062,52 @@ async def d4m_preview(request: D4mPreviewRequest) -> D4mPreviewResponse:
         page_size=request.page_size,
         total_nnz=total,
         aa=page_aa,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tokenizer
+# ---------------------------------------------------------------------------
+
+@app.post("/tokenize", response_model=TokenizeResponse)
+async def tokenize(request: TokenizeRequest) -> TokenizeResponse:
+    """Tokenize text values in an AA using tiktoken (GPT-2 / cl100k / etc.).
+
+    Reads every triple whose column equals *text_col*, encodes the value with
+    tiktoken, and returns a new AA:
+      row  = original chunk id
+      col  = "tok:NNNNNN"  (zero-padded 6-digit position)
+      val  = float(token_id)
+
+    Raises 400 when *encoding* is not a known tiktoken encoding.
+    """
+    try:
+        import tiktoken  # lazy — only needed by this route
+        enc = tiktoken.get_encoding(request.encoding)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Unknown encoding '{request.encoding}': {exc}")
+
+    # Gather text per chunk id in order.
+    chunk_texts: dict[str, str] = {}
+    for row, col, val in zip(request.aa.rows, request.aa.cols, request.aa.vals):
+        if col == request.text_col:
+            chunk_texts[row] = str(val)
+
+    rows: list[str] = []
+    cols: list[str] = []
+    vals: list = []
+
+    for chunk_id, text in chunk_texts.items():
+        token_ids = enc.encode(text)
+        for pos, token_id in enumerate(token_ids):
+            rows.append(chunk_id)
+            cols.append(f"tok:{pos:06d}")
+            vals.append(float(token_id))
+
+    return TokenizeResponse(
+        aa=AssocArray(rows=rows, cols=cols, vals=vals),
+        encoding=request.encoding,
+        vocab_size=enc.n_vocab,
+        total_tokens=len(vals),
+        chunk_count=len(chunk_texts),
     )

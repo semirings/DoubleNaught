@@ -1648,3 +1648,6 @@ For each proposed macro/construct, please provide:
 - **Macro Name & Signature**
 - **What Low-Level Code It Replaces** (Before vs. After example)
 - **Proposed Julia Implementation Sketch** (How the macro expands into standard Julia / D4M range bounds)
+
+## Tokenizing
+

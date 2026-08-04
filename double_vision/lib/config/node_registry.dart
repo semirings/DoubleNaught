@@ -38,6 +38,7 @@ const List<NodeType> nodeTypes = [
   NodeType(name: 'Text Inference', type: 'text_inference'),
   NodeType(name: 'Text Preview', type: 'text_preview'),
   NodeType(name: 'SAM3 Control', type: 'sam3'),
+  NodeType(name: 'Tokenizer', type: 'tokenizer'),
 ];
 
 /// Fallback card for a registered-but-not-yet-implemented node type. Extends

@@ -33,4 +33,5 @@ export 'implementations/text_prompt_node.dart';
 export 'implementations/sam3_control_panel.dart';
 export 'implementations/sam3_interaction_model.dart';
 export 'implementations/sam3_node.dart';
+export 'implementations/tokenizer_node.dart';
 export 'implementations/url_source_node.dart';

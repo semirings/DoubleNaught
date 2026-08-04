@@ -518,3 +518,17 @@ class D4mPreviewResponse(CamelModel):
     page_size: int
     total_nnz: int
     aa: AssocArray
+
+
+class TokenizeRequest(CamelModel):
+    aa: AssocArray
+    encoding: str = "gpt2"
+    text_col: str = "text"
+
+
+class TokenizeResponse(CamelModel):
+    aa: AssocArray
+    encoding: str
+    vocab_size: int
+    total_tokens: int
+    chunk_count: int

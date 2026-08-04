@@ -1620,6 +1620,17 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
+      case 'tokenizer':
+        return TokenizerNode(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          onInputConnect: (source) => _connect(source, node.id),
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
       case 'd4m':
         return D4mNode(
           node: node,
