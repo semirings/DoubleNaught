@@ -139,12 +139,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Journal.md",
+                "file": "Clippings/Eviction and Unemployment.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Journal"
+              "title": "Eviction and Unemployment"
             }
           }
         ],
@@ -312,12 +312,14 @@
   },
   "active": "33e973e93365837a",
   "lastOpenFiles": [
+    "Clippings/D4M in DN.md",
+    "Clippings/Eviction and Unemployment.md",
+    "Journal.md",
     "d4m.acc.access findings.md",
     "Treatment 2.md",
     "Treatment.md",
     "Script.md",
     "D4M.jl Macro Surface Design.md",
-    "Journal.md",
     "D4M.jl Performance & Optimization Report.md",
     "Clippings/D4M Eval.md",
     "Clippings/Claude Distillation Data.md",
@@ -337,8 +339,6 @@
     "OutputPort.dart.md",
     "Clippings/Input port trigger.md",
     "Clippings/InputPort.md",
-    "Log Line.md",
-    "The Storm.md",
     "Clippings",
     "Untitled.canvas",
     "Untitled.base",

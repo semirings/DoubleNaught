@@ -90,6 +90,10 @@ from .models import (
     UrlValidateResponse,
     TokenizeRequest,
     TokenizeResponse,
+    ModelBuildRequest,
+    ModelBuildResponse,
+    SplitRequest,
+    SplitResponse,
 )
 from .text_engine import (
     default_text_engine,
@@ -1071,43 +1075,90 @@ async def d4m_preview(request: D4mPreviewRequest) -> D4mPreviewResponse:
 
 @app.post("/tokenize", response_model=TokenizeResponse)
 async def tokenize(request: TokenizeRequest) -> TokenizeResponse:
-    """Tokenize text values in an AA using tiktoken (GPT-2 / cl100k / etc.).
-
-    Reads every triple whose column equals *text_col*, encodes the value with
-    tiktoken, and returns a new AA:
-      row  = original chunk id
-      col  = "tok:NNNNNN"  (zero-padded 6-digit position)
-      val  = float(token_id)
-
-    Raises 400 when *encoding* is not a known tiktoken encoding.
-    """
+    from .tokenizer import tokenize_aa, UnknownEncodingError
     try:
-        import tiktoken  # lazy — only needed by this route
-        enc = tiktoken.get_encoding(request.encoding)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Unknown encoding '{request.encoding}': {exc}")
-
-    # Gather text per chunk id in order.
-    chunk_texts: dict[str, str] = {}
-    for row, col, val in zip(request.aa.rows, request.aa.cols, request.aa.vals):
-        if col == request.text_col:
-            chunk_texts[row] = str(val)
-
-    rows: list[str] = []
-    cols: list[str] = []
-    vals: list = []
-
-    for chunk_id, text in chunk_texts.items():
-        token_ids = enc.encode(text)
-        for pos, token_id in enumerate(token_ids):
-            rows.append(chunk_id)
-            cols.append(f"tok:{pos:06d}")
-            vals.append(float(token_id))
-
+        aa, vocab_size, total_tokens, chunk_count = tokenize_aa(
+            request.aa, request.encoding, request.text_col
+        )
+    except UnknownEncodingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return TokenizeResponse(
-        aa=AssocArray(rows=rows, cols=cols, vals=vals),
+        aa=aa,
         encoding=request.encoding,
-        vocab_size=enc.n_vocab,
-        total_tokens=len(vals),
-        chunk_count=len(chunk_texts),
+        vocab_size=vocab_size,
+        total_tokens=total_tokens,
+        chunk_count=chunk_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Model builder
+# ---------------------------------------------------------------------------
+
+@app.post("/model/build", response_model=ModelBuildResponse)
+async def model_build(request: ModelBuildRequest) -> ModelBuildResponse:
+    """Instantiate a GPT-style transformer and return a handle + introspection.
+
+    The model is built on CPU in fp32 (no GPU required for phase-1 inspection).
+    Mixed-precision and gradient-checkpointing flags are stored in the config
+    so the training phase can honour them without re-specifying.
+
+    Raises 400 when the config is geometrically invalid (e.g. d_model not
+    divisible by n_heads).
+    """
+    from .gpt_model import GPTConfig, GPTModel
+    from . import model_handles
+
+    try:
+        cfg = GPTConfig(
+            vocab_size=request.vocab_size,
+            n_layers=request.n_layers,
+            d_model=request.d_model,
+            n_heads=request.n_heads,
+            d_ff=request.d_ff,
+            dropout=request.dropout,
+            max_seq_len=request.max_seq_len,
+            use_gradient_checkpointing=request.use_gradient_checkpointing,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    def _build() -> ModelBuildResponse:
+        model = GPTModel(cfg)
+        handle_id = model_handles.store(model)
+        summary = model.architecture_summary()
+        return ModelBuildResponse(
+            handle_id=handle_id,
+            param_count=summary["param_count"],
+            param_count_m=summary["param_count_m"],
+            estimated_vram_fp16_mb=summary["estimated_vram_fp16_mb"],
+            estimated_vram_fp32_mb=summary["estimated_vram_fp32_mb"],
+            architecture=summary,
+        )
+
+    try:
+        return await run_in_threadpool(_build)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Train / val split
+# ---------------------------------------------------------------------------
+
+@app.post("/split", response_model=SplitResponse)
+async def split(request: SplitRequest) -> SplitResponse:
+    from .splitter import split_aa, EmptyAaError, InvalidRatioError
+    try:
+        train_aa, val_aa, train_count, val_count, total_count = split_aa(
+            request.aa, request.ratio, request.strategy, request.seed
+        )
+    except (EmptyAaError, InvalidRatioError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return SplitResponse(
+        train_aa=train_aa,
+        val_aa=val_aa,
+        train_count=train_count,
+        val_count=val_count,
+        total_count=total_count,
     )
