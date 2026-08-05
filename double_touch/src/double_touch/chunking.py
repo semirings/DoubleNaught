@@ -235,9 +235,154 @@ def normalize_units(
     return cleaned
 
 
+# --- Generic (non-author) chunking strategies -----------------------------------
+
+_EOT = "<|endoftext|>"
+
+
+def chunk_paragraph_sentence(
+    text: str,
+    max_tokens: int = MAX_TOKENS,
+    stride: int = 0,
+    inject_eot: bool = False,
+) -> list[str]:
+    """Chunk text at paragraph/sentence boundaries without mid-sentence splits.
+
+    Pipeline:
+    1. Split on ``\\n\\n`` paragraph breaks.
+    2. If a paragraph exceeds *max_tokens*, split it further at sentence
+       boundaries using :func:`split_sentences`.
+    3. Greedily pack whole sentences into a chunk up to *max_tokens*.
+       A single sentence longer than *max_tokens* is kept intact — never
+       truncated mid-sentence.
+    4. When *stride* > 0, the last *stride*-token tail of the completed chunk
+       is prepended to the next chunk as overlap context.
+    5. When *inject_eot* is True, the ``<|endoftext|>`` token is appended to
+       every chunk.
+    """
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+
+    # Break oversized paragraphs into sentence-level units.
+    units: list[str] = []
+    for para in paragraphs:
+        if count_tokens(para) <= max_tokens:
+            units.append(para)
+        else:
+            units.extend(split_sentences(para))
+
+    chunks: list[str] = []
+    buf: list[str] = []
+    buf_tokens = 0
+
+    def _flush() -> None:
+        nonlocal buf, buf_tokens
+        chunk_text = " ".join(buf)
+        if inject_eot:
+            chunk_text = chunk_text + " " + _EOT
+        chunks.append(chunk_text)
+        # Stride: retain the last *stride*-token tail for context overlap.
+        if stride > 0:
+            tail: list[str] = []
+            tail_tokens = 0
+            for s in reversed(buf):
+                s_tok = count_tokens(s)
+                if tail_tokens + s_tok <= stride:
+                    tail.insert(0, s)
+                    tail_tokens += s_tok
+                else:
+                    break
+            buf = tail
+            buf_tokens = tail_tokens
+        else:
+            buf = []
+            buf_tokens = 0
+
+    for unit in units:
+        unit_tokens = count_tokens(unit)
+        if buf and buf_tokens + unit_tokens > max_tokens:
+            _flush()
+        buf.append(unit)
+        buf_tokens += unit_tokens
+
+    if buf:
+        _flush()
+
+    return chunks
+
+
+def chunk_character_count(
+    text: str,
+    max_chars: int = 1000,
+    stride: int = 0,
+) -> list[str]:
+    """Character-count chunking — the original fixed-window fallback.
+
+    Splits *text* into windows of at most *max_chars* characters, advancing
+    by ``max_chars - stride`` characters per step. Windows are NOT
+    sentence-aligned; any character boundary is accepted.
+
+    Raises :exc:`ValueError` when *max_chars* ≤ 0.
+    """
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
+    step = max(1, max_chars - stride)
+    return [
+        text[i : i + max_chars]
+        for i in range(0, len(text), step)
+        if text[i : i + max_chars].strip()
+    ]
+
+
 # --- Chunking pipeline (AA-compatible) ------------------------------------------
 
 _CHUNK_COLUMNS = ["text", "author", "work_title", "position", "token_count", "chunk_strategy"]
+
+
+def chunk_generic_to_aa(
+    text: str,
+    chunk_strategy: str,
+    run_id: str = "chunk",
+    author: str = "",
+    work_title: str = "",
+    max_tokens: int = MAX_TOKENS,
+    max_chars: int = 1000,
+    stride: int = 0,
+    inject_eot: bool = False,
+) -> tuple[list[str], list[str], list]:
+    """AA pipeline for the generic *paragraph_sentence* and *character_count*
+    strategies.
+
+    Returns ``(rows, cols, vals)`` in the same format as :func:`chunk_to_aa` so
+    the route layer can handle both paths identically.
+
+    Raises :exc:`ValueError` for an unrecognised *chunk_strategy*.
+    """
+    if chunk_strategy == "paragraph_sentence":
+        passages = chunk_paragraph_sentence(
+            text, max_tokens=max_tokens, stride=stride, inject_eot=inject_eot
+        )
+    elif chunk_strategy == "character_count":
+        passages = chunk_character_count(text, max_chars=max_chars, stride=stride)
+    else:
+        raise ValueError(
+            f"Unknown chunk_strategy {chunk_strategy!r}; "
+            "expected 'paragraph_sentence' or 'character_count'"
+        )
+
+    rows: list[str] = []
+    cols: list[str] = []
+    vals: list = []
+
+    for position, passage in enumerate(passages):
+        chunk_id = f"{run_id}:{position:05d}"
+        tokens = count_tokens(passage)
+        row_values = [passage, author, work_title, position, tokens, chunk_strategy]
+        for col, value in zip(_CHUNK_COLUMNS, row_values):
+            rows.append(chunk_id)
+            cols.append(col)
+            vals.append(value)
+
+    return rows, cols, vals
 
 
 def chunk_to_aa(

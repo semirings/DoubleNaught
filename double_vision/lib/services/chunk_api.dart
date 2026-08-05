@@ -4,30 +4,117 @@ import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
 
-/// Thin client for the ChunkNode route on the DoubleTouch backend
-/// (`double_touch/`), targeting the camelCase contract:
-///
-///  * `POST /chunk` — `{aa: {rows, cols, vals}}` (the upstream FetchNode AA)
-///    → `{aa: {...}, stats: {chunkCount, totalTokens, minTokens, maxTokens,
-///      meanTokens}}`
-///
-/// Like the other clients it only performs the call and decodes the body — it
-/// holds no UI state.
+/// Chunking strategy passed to `POST /chunk`.
+enum ChunkStrategy {
+  /// Author-registry path (default). The `author` column in the AA selects a
+  /// registered backend strategy (gilbert / chesterton / churchill).
+  author,
+
+  /// Paragraph-then-sentence boundary-aware chunking. Splits on `\n\n` first,
+  /// then on sentence endings if a paragraph exceeds [ChunkConfig.maxTokens].
+  /// Never truncates mid-sentence. Supports stride and EOT injection.
+  paragraphSentence,
+
+  /// Fixed character-window chunking (legacy fallback). Splits every
+  /// [ChunkConfig.maxChars] characters, advancing by
+  /// `maxChars - stride` per step.
+  characterCount;
+
+  String get wireValue => switch (this) {
+        ChunkStrategy.author => 'author',
+        ChunkStrategy.paragraphSentence => 'paragraph_sentence',
+        ChunkStrategy.characterCount => 'character_count',
+      };
+}
+
+/// Configuration for a chunking request.
+class ChunkConfig {
+  final ChunkStrategy strategy;
+
+  /// Max tokens per chunk (paragraph_sentence only).
+  final int maxTokens;
+
+  /// Max characters per window (character_count only).
+  final int maxChars;
+
+  /// Overlap carried into the next chunk (tokens or chars depending on strategy).
+  final int stride;
+
+  /// Append `<|endoftext|>` to each chunk (paragraph_sentence only).
+  final bool injectEot;
+
+  const ChunkConfig({
+    this.strategy = ChunkStrategy.author,
+    this.maxTokens = 300,
+    this.maxChars = 1000,
+    this.stride = 0,
+    this.injectEot = false,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'chunkStrategy': strategy.wireValue,
+        'maxTokens': maxTokens,
+        'maxChars': maxChars,
+        'stride': stride,
+        'injectEot': injectEot,
+      };
+
+  ChunkConfig copyWith({
+    ChunkStrategy? strategy,
+    int? maxTokens,
+    int? maxChars,
+    int? stride,
+    bool? injectEot,
+  }) =>
+      ChunkConfig(
+        strategy: strategy ?? this.strategy,
+        maxTokens: maxTokens ?? this.maxTokens,
+        maxChars: maxChars ?? this.maxChars,
+        stride: stride ?? this.stride,
+        injectEot: injectEot ?? this.injectEot,
+      );
+
+  factory ChunkConfig.fromParams(Map<String, String> p) {
+    final strategyStr = p['chunkStrategy'] ?? 'author';
+    final strategy = ChunkStrategy.values.firstWhere(
+      (s) => s.wireValue == strategyStr,
+      orElse: () => ChunkStrategy.author,
+    );
+    return ChunkConfig(
+      strategy: strategy,
+      maxTokens: int.tryParse(p['maxTokens'] ?? '') ?? 300,
+      maxChars: int.tryParse(p['maxChars'] ?? '') ?? 1000,
+      stride: int.tryParse(p['stride'] ?? '') ?? 0,
+      injectEot: p['injectEot'] == 'true',
+    );
+  }
+
+  Map<String, String> toParams() => {
+        'chunkStrategy': strategy.wireValue,
+        'maxTokens': '$maxTokens',
+        'maxChars': '$maxChars',
+        'stride': '$stride',
+        'injectEot': '$injectEot',
+      };
+}
+
+/// Thin client for `POST /chunk` on the DoubleTouch backend.
 class ChunkApi {
-  /// Base URL of the backend (the same DoubleTouch service hosts every route).
   final String baseUrl;
 
   const ChunkApi({this.baseUrl = 'http://localhost:8000'});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 
-  /// Chunk the cleaned text carried by [input] (a FetchNode AA payload),
-  /// returning the passage AA plus summary [ChunkStats].
-  Future<ChunkResult> chunk(AaPayload input) async {
+  /// Chunk the cleaned text carried by [input] using [config].
+  Future<ChunkResult> chunk(
+    AaPayload input, {
+    ChunkConfig config = const ChunkConfig(),
+  }) async {
     final response = await http.post(
       Uri.parse('$baseUrl/chunk'),
       headers: _jsonHeaders,
-      body: jsonEncode({'aa': input.toJson()}),
+      body: jsonEncode({'aa': input.toJson(), ...config.toJson()}),
     );
     if (response.statusCode == 200) {
       final body = jsonDecode(response.body) as Map<String, dynamic>;

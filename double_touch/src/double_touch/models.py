@@ -241,6 +241,18 @@ class FetchResponse(CamelModel):
 class ChunkRequest(CamelModel):
     # The upstream FetchNode AA (carries raw_text/author/work_title).
     aa: AssocArray
+    # "author" (default — existing author-registry path),
+    # "paragraph_sentence", or "character_count".
+    chunk_strategy: str = "author"
+    # paragraph_sentence: max tokens per chunk before flushing (default 300).
+    max_tokens: int = 300
+    # character_count: max characters per window.
+    max_chars: int = 1000
+    # Overlap carried into the next chunk (tokens for paragraph_sentence,
+    # chars for character_count).
+    stride: int = 0
+    # Append <|endoftext|> to each chunk (paragraph_sentence only).
+    inject_eot: bool = False
 
 
 class ChunkStats(CamelModel):

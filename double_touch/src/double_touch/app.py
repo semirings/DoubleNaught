@@ -24,6 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .aa_utils import aa_rows, pick_text_column
 from .chunking import (
     available_strategies,
+    chunk_generic_to_aa,
     chunk_to_aa,
     count_tokens,
     extract_work,
@@ -597,40 +598,60 @@ async def fetch_text(request: FetchRequest) -> FetchResponse:
 
 @app.post("/chunk", response_model=ChunkResponse)
 async def chunk_text(request: ChunkRequest) -> ChunkResponse:
-    """Apply author-aware chunking to the upstream cleaned text, emitting an AA
-    of discrete passages.
+    """Chunk the upstream cleaned-text AA into discrete passages.
 
-    AA-in (FetchNode) -> AA-out (downstream). The author tag selects a chunking
-    strategy from the registry (:mod:`double_touch.chunking`); the shared
-    token-range contract (50-300) is enforced uniformly. Row keys are sequential
-    and globally unique (a per-run id prefix + zero-padded index).
+    Three strategies are supported via the ``chunk_strategy`` field:
+
+    * ``"author"`` (default) — author-registry path; the ``author`` column in
+      the incoming AA selects a registered :class:`~chunking.ChunkStrategy`.
+      The shared 50–300 token range contract is enforced by
+      :func:`~chunking.normalize_units`.
+    * ``"paragraph_sentence"`` — generic boundary-aware chunking: paragraphs
+      first, sentences within oversized paragraphs, greedy packing to
+      ``max_tokens`` without mid-sentence splits, optional stride and EOT.
+    * ``"character_count"`` — fixed character-window fallback, ``max_chars``
+      wide, advancing by ``max_chars - stride`` per step.
+
+    Row keys are globally unique (per-run UUID prefix + zero-padded index).
     """
     raw_text = _aa_value(request.aa, "raw_text")
     if not raw_text:
         raise HTTPException(status_code=422, detail="AA payload missing a 'raw_text' column")
+
     author = (_aa_value(request.aa, "author") or "").strip().lower()
     work_title = _aa_value(request.aa, "work_title") or ""
-    # Optional: locate & extract the target work from a multi-work file before
-    # chunking. Empty selector or single-work file -> the whole text is used.
     work_selector = _aa_value(request.aa, "work_selector") or ""
+    run_id = f"chunk:{uuid4().hex[:8]}"
 
-    try:
-        run_id = uuid4().hex[:8]
-        rows, cols, vals = chunk_to_aa(
-            raw_text,
-            author,
-            work_title,
-            work_selector=work_selector,
-            run_id=f"chunk:{run_id}",
-        )
-    except KeyError:
-        raise HTTPException(
-            status_code=422,
-            detail=f"no chunking strategy for author {author!r}; "
-            f"known strategies: {available_strategies()}",
-        )
+    if request.chunk_strategy == "author":
+        try:
+            rows, cols, vals = chunk_to_aa(
+                raw_text, author, work_title,
+                work_selector=work_selector,
+                run_id=run_id,
+            )
+        except KeyError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"no chunking strategy for author {author!r}; "
+                f"known strategies: {available_strategies()}",
+            )
+    else:
+        try:
+            rows, cols, vals = chunk_generic_to_aa(
+                text=raw_text,
+                chunk_strategy=request.chunk_strategy,
+                run_id=run_id,
+                author=author,
+                work_title=work_title,
+                max_tokens=request.max_tokens,
+                max_chars=request.max_chars,
+                stride=request.stride,
+                inject_eot=request.inject_eot,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
 
-    # Extract token_count values for stats (they're at indices where col == "token_count")
     token_counts = [vals[i] for i, col in enumerate(cols) if col == "token_count"]
     total_tokens = sum(token_counts)
     stats = ChunkStats(

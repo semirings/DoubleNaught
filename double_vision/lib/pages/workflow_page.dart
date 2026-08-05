@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -98,8 +100,9 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// The currently selected completed edge, if any.
   WorkflowEdge? _selectedEdge;
 
-  /// The currently selected node, if any (distinct outline; Delete removes it).
-  int? _selectedNodeId;
+  /// The set of selected node IDs (distinct outline; Delete removes them all).
+  /// Shift-click adds/toggles; plain click replaces.
+  final Set<int> _selectedNodeIds = {};
 
   /// The edge under the pointer, for hover feedback.
   WorkflowEdge? _hoveredEdge;
@@ -391,7 +394,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     // selection.
     setState(() {
       _selectedEdge = _edgeAt(d.localPosition);
-      _selectedNodeId = null;
+      _selectedNodeIds.clear();
     });
   }
 
@@ -407,13 +410,23 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   /// Select a node: distinct outline, brought to the front, keyboard focus for
-  /// Delete. Clears any edge selection.
-  void _selectNode(int id) {
+  /// Delete. When [extend] is true (Shift-click) the node is toggled into/out of
+  /// the selection; otherwise the set is replaced with just this node.
+  void _selectNode(int id, {bool extend = false}) {
     _canvasFocus.requestFocus();
     _bringToFront(id);
-    if (_selectedNodeId == id && _selectedEdge == null) return;
     setState(() {
-      _selectedNodeId = id;
+      if (extend) {
+        if (_selectedNodeIds.contains(id)) {
+          _selectedNodeIds.remove(id);
+        } else {
+          _selectedNodeIds.add(id);
+        }
+      } else {
+        _selectedNodeIds
+          ..clear()
+          ..add(id);
+      }
       _selectedEdge = null;
     });
   }
@@ -451,8 +464,65 @@ class _WorkflowPageState extends State<WorkflowPage>
         0,
         _focusOrder.isEmpty ? 0 : _focusOrder.length - 1,
       );
-      if (_selectedNodeId == id) _selectedNodeId = null;
+      _selectedNodeIds.remove(id);
     });
+  }
+
+  void _deleteSelectedNodes() {
+    final ids = Set<int>.from(_selectedNodeIds);
+    if (ids.isEmpty) return;
+    // Unbind all downstream inputs before the single setState to avoid repeated
+    // rebuilds (calling _deleteNode in a loop triggers one setState each).
+    for (final id in ids) {
+      for (final e in _edges.where((e) => e.from.nodeId == id)) {
+        _unbindAaInput(e.to.nodeId, e.to.idx);
+      }
+      _unbindAaInput(id);
+    }
+    setState(() {
+      for (final id in ids) {
+        _nodes.removeWhere((n) => n.id == id);
+        _edges.removeWhere((e) => e.from.nodeId == id || e.to.nodeId == id);
+        _outputs.remove(id);
+        _aaOutputPorts.remove(id);
+        _aaMultiOutputPorts.remove(id);
+        _aaInputPorts.remove(id);
+        _locationOutputs.remove(id);
+        _contentOutputs.remove(id);
+        _sourceNames.remove(id);
+        _nodeParams.remove(id);
+        _focusContent.remove(id);
+        _focusOrder.remove(id);
+      }
+      _focusSelected = _focusSelected.clamp(
+        0,
+        _focusOrder.isEmpty ? 0 : _focusOrder.length - 1,
+      );
+      _selectedNodeIds.clear();
+    });
+  }
+
+  void _copySelectedNodes() {
+    final ids = _selectedNodeIds;
+    if (ids.isEmpty) return;
+    final selected = _nodes.where((n) => ids.contains(n.id)).toList();
+    final payload = jsonEncode({
+      'nodes': [
+        for (final n in selected)
+          {'id': n.id, 'type': n.type, 'x': n.x, 'y': n.y},
+      ],
+      'edges': [
+        for (final e in _edges)
+          if (ids.contains(e.from.nodeId) && ids.contains(e.to.nodeId))
+            {
+              'fromNodeId': e.from.nodeId,
+              'fromIdx': e.from.idx,
+              'toNodeId': e.to.nodeId,
+              'toIdx': e.to.idx,
+            },
+      ],
+    });
+    Clipboard.setData(ClipboardData(text: payload)).ignore();
   }
 
   void _duplicateNode(int id) {
@@ -474,10 +544,14 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
+
     final isDelete =
         event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace;
-    if (!isDelete) return KeyEventResult.ignored;
+    final isCopy = event.logicalKey == LogicalKeyboardKey.keyC &&
+        HardwareKeyboard.instance.isMetaPressed; // Cmd+C on macOS
+
+    if (!isDelete && !isCopy) return KeyEventResult.ignored;
 
     // If a text field (not the canvas) is focused, let it handle the key.
     final focus = FocusManager.instance.primaryFocus;
@@ -485,8 +559,15 @@ class _WorkflowPageState extends State<WorkflowPage>
       return KeyEventResult.ignored;
     }
 
-    if (_selectedNodeId != null) {
-      _deleteNode(_selectedNodeId!);
+    if (isCopy) {
+      _copySelectedNodes();
+      return _selectedNodeIds.isNotEmpty
+          ? KeyEventResult.handled
+          : KeyEventResult.ignored;
+    }
+
+    if (_selectedNodeIds.isNotEmpty) {
+      _deleteSelectedNodes();
       return KeyEventResult.handled;
     }
     if (_selectedEdge != null) {
@@ -497,7 +578,12 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   Future<void> _showNodeMenu(Offset globalPos, int id) async {
-    setState(() => _selectedNodeId = id);
+    setState(() {
+      _selectedNodeIds
+        ..clear()
+        ..add(id);
+      _selectedEdge = null;
+    });
     final result = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
@@ -1244,7 +1330,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     _focusContent.clear();
     _focusOrder.clear();
     _focusSelected = 0;
-    _selectedNodeId = null;
+    _selectedNodeIds.clear();
     _selectedEdge = null;
   }
 
@@ -1277,6 +1363,12 @@ class _WorkflowPageState extends State<WorkflowPage>
             onOpenWorkflow: _openWorkflow,
             onDeleteWorkflow: _deleteWorkflow,
           ),
+          if (_selectedNodeIds.isNotEmpty)
+            _SelectionBar(
+              count: _selectedNodeIds.length,
+              onDelete: _deleteSelectedNodes,
+              onCopy: _copySelectedNodes,
+            ),
           Expanded(
             child: Row(
               children: [
@@ -1449,7 +1541,11 @@ class _WorkflowPageState extends State<WorkflowPage>
   Widget _nodeShell(WorkflowNode node, ColorScheme scheme) {
     return Listener(
       // Any press on the node selects it and raises it to the front.
-      onPointerDown: (_) => _selectNode(node.id),
+      // Shift-click extends the selection (toggle); plain click replaces it.
+      onPointerDown: (_) => _selectNode(
+        node.id,
+        extend: HardwareKeyboard.instance.isShiftPressed,
+      ),
       child: GestureDetector(
         // Right-click anywhere on the node → its context menu.
         behavior: HitTestBehavior.translucent,
@@ -1482,7 +1578,7 @@ class _WorkflowPageState extends State<WorkflowPage>
 
             // Selected outline: a 2px accent border only — the node's card fill
             // is left untouched (no background tint, no glow).
-            if (_selectedNodeId == node.id)
+            if (_selectedNodeIds.contains(node.id))
               Positioned.fill(
                 child: IgnorePointer(
                   child: DecoratedBox(
@@ -1628,6 +1724,8 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'chunk':
         return ChunkNode(
           node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
           inputConnected: _hasIncomingEdge(node.id),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
           onInputConnect: (source) => _connect(source, node.id),
@@ -1984,6 +2082,75 @@ String _humanSize(int bytes) {
     i++;
   }
   return '${size.toStringAsFixed(1)} ${units[i]}';
+}
+
+/// A thin bar that appears below the main header when one or more nodes are
+/// selected. Shows the count and offers Copy/Delete batch actions without
+/// competing for space with the always-visible header buttons.
+class _SelectionBar extends StatelessWidget {
+  final int count;
+  final VoidCallback onDelete;
+  final VoidCallback onCopy;
+
+  const _SelectionBar({
+    required this.count,
+    required this.onDelete,
+    required this.onCopy,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    const deleteColor = Color(0xFFE5534B);
+    const copyColor = Color(0xFF5B8DEF);
+
+    ButtonStyle compact(Color c) => OutlinedButton.styleFrom(
+          foregroundColor: c,
+          iconColor: c,
+          side: BorderSide(color: c, width: 1.5),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        );
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: scheme.primaryContainer.withValues(alpha: 0.15),
+        border: Border(
+          bottom: BorderSide(color: scheme.outlineVariant),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.check_box_outlined, size: 16, color: scheme.primary),
+          const SizedBox(width: 6),
+          Text(
+            '$count node${count == 1 ? '' : 's'} selected',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: scheme.onSurface, fontWeight: FontWeight.w500),
+          ),
+          const SizedBox(width: 12),
+          OutlinedButton.icon(
+            onPressed: onCopy,
+            style: compact(copyColor),
+            icon: const Icon(Icons.copy_outlined, size: 16),
+            label: const Text('Copy'),
+          ),
+          const SizedBox(width: 6),
+          OutlinedButton.icon(
+            onPressed: onDelete,
+            style: compact(deleteColor),
+            icon: const Icon(Icons.delete_outline, size: 16),
+            label: const Text('Delete'),
+          ),
+          const Spacer(),
+        ],
+      ),
+    );
+  }
 }
 
 /// The thin top header: the **Node Catalog** dropdown (node primitives to add),

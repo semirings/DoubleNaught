@@ -1651,3 +1651,18 @@ For each proposed macro/construct, please provide:
 
 ## Tokenizing
 
+## Chunking revisited
+
+In our DoubleNaught codebase, update the chunking module/node to support sentence and paragraph boundary-aware chunking alongside the existing character-count chunking.
+
+Requirements:
+1. Update the configuration/interface to accept a chunking strategy parameter: `paragraph_sentence` (new) vs `character_count` (existing fallback/legacy).
+2. Implement paragraph/sentence boundary chunking:
+   - Split source text on paragraph breaks first (`\n\n`), then on sentence boundaries (`. `, `? `, `! `) if a paragraph exceeds the target size.
+   - Assemble full sentences into a single chunk up to a user-configured `max_tokens` or `max_chars` threshold. Do NOT truncate mid-sentence.
+   - Include optional parameters for `stride` (overlap) and `inject_eot` (appending the <|endoftext|> token to each chunk).
+3. Preserve the original character-count chunking behavior as an explicit execution strategy or fallback mode so existing tests/pipelines do not break.
+4. Add unit tests verifying:
+   - Paragraph/sentence boundaries are preserved without splitting mid-sentence.
+   - Character-count chunking continues to yield expected outputs when explicitly selected.
+   - Output data contracts remain compatible with our downstream ingestion pipeline.
