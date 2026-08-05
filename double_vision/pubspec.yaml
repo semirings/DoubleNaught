@@ -18,6 +18,10 @@ dependencies:
   # HTTP client for node→backend calls (e.g. the SAM3 segmentation API).
   http: ^1.6.0
 
+  # Resolves an absolute, always-writable app directory. Required on sandboxed
+  # macOS builds, where a CWD-relative path escapes the app container.
+  path_provider: ^2.1.6
+
   # State management used by Vyuh
   mobx: ^2.3.0+1
   flutter_mobx: ^2.2.0+2

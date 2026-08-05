@@ -8,12 +8,42 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pydantic>=2.6",
     "python-multipart>=0.0.9",
+    # Async HTTP client used by the URLNode HEAD-probe route (/url/validate).
+    "httpx>=0.27",
+    # Phi-4-aligned token counting for ChunkNode (o200k_base encoding).
+    "tiktoken>=0.7",
+    # Julia bridge: evaluates D4M.jl expressions via the Julia runtime.
+    "juliacall>=0.9",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "httpx>=0.27",
+]
+# Real, offline zero-shot classification for the ModelClassifier route. Kept
+# optional (heavy: torch + model downloads) — without it, /classify falls back
+# to the deterministic stub. Install with:  pip install -e '.[local]'
+local = [
+    "torch>=2.2",
+    "transformers>=4.44",
+]
+# Real generative text inference via mlx-lm on Apple Silicon. Without it,
+# /text/infer falls back to the deterministic stub. Install with:
+#   pip install -e '.[text]'
+text = [
+    "mlx>=0.14",
+    "mlx-lm>=0.14",
+]
+# Fine-tuning and training tools (LoRA, instruction tuning, etc). Install with:
+#   pip install -e '.[finetune]'
+finetune = [
+    "transformers>=5.14",
+    "peft>=0.20",
+    "trl>=1.9",
+    "bitsandbytes>=0.50",
+    "datasets>=5.0",
+    "accelerate>=1.14",
 ]
 
 [build-system]

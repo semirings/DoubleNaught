@@ -36,8 +36,10 @@ shift
 case "$cmd" in
   DV)
     cd "$ROOT/double_vision"
-    # Always target macOS so Flutter doesn't prompt for a device.
-    exec flutter run -d macos "$@"
+    # Always target macOS so Flutter doesn't prompt for a device, and point
+    # local JSON persistence (Inventory) at the repo's storage/ directory.
+    exec flutter run -d macos \
+      --dart-define=DN_STORAGE_DIR="$ROOT/storage" "$@"
     ;;
   DT)
     cd "$ROOT/double_touch"
