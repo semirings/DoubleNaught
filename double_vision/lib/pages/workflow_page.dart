@@ -60,6 +60,11 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// `inputPort.connect(outputPort)` (and `disconnect()` on delete).
   final Map<int, OutputPort> _aaOutputPorts = {};
 
+  /// Multi-output AA nodes (e.g. SplitNode with train+val) register each port
+  /// here: nodeId → portIdx → OutputPort. [_bindAaPorts] checks this first and
+  /// uses [PortRef.idx] to select the correct port.
+  final Map<int, Map<int, OutputPort>> _aaMultiOutputPorts = {};
+
   /// AA ingress ports keyed by node id, then by input-port index — a node may
   /// expose more than one AA input (e.g. Model Classifier's `aaIn` at idx 0 and
   /// `categoryIn` at idx 2; Preview's `aa` at idx 1).
@@ -434,6 +439,7 @@ class _WorkflowPageState extends State<WorkflowPage>
       _edges.removeWhere((e) => e.from.nodeId == id || e.to.nodeId == id);
       _outputs.remove(id);
       _aaOutputPorts.remove(id);
+      _aaMultiOutputPorts.remove(id);
       _aaInputPorts.remove(id);
       _locationOutputs.remove(id);
       _contentOutputs.remove(id);
@@ -760,7 +766,12 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// source's OutputPort. No-op unless the target exposes an AA input at exactly
   /// [targetIdx] and the source carries an AA output.
   void _bindAaPorts(PortRef source, int targetId, int targetIdx) {
-    final out = _aaOutputPorts[source.nodeId];
+    // Multi-output nodes (e.g. SplitNode) register per-port index; single-
+    // output nodes fall back to the flat _aaOutputPorts map (always idx 0).
+    final multiPorts = _aaMultiOutputPorts[source.nodeId];
+    final out = multiPorts != null
+        ? multiPorts[source.idx]
+        : _aaOutputPorts[source.nodeId];
     final input = _aaInputPorts[targetId]?[targetIdx];
     if (out != null && input != null) input.connect(out);
   }
@@ -877,6 +888,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           ));
         }
         _aaOutputPorts.remove(n.id);
+        _aaMultiOutputPorts.remove(n.id);
         _aaInputPorts.remove(n.id);
         _nodeParams.remove(n.id);
         _nodes.removeWhere((node) => node.id == n.id);
@@ -1223,6 +1235,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     _edges.clear();
     _outputs.clear();
     _aaOutputPorts.clear();
+    _aaMultiOutputPorts.clear();
     _aaInputPorts.clear();
     _locationOutputs.clear();
     _contentOutputs.clear();
@@ -1620,6 +1633,12 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
+      case 'model_builder':
+        return ModelBuilderNode(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+        );
       case 'tokenizer':
         return TokenizerNode(
           node: node,
@@ -1771,6 +1790,22 @@ class _WorkflowPageState extends State<WorkflowPage>
               ].join(' · '),
             ),
           ),
+        );
+      case 'split':
+        return SplitNode(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          onInputConnect: (source) => _connect(source, node.id),
+          // Two output ports — stored in _aaMultiOutputPorts so _bindAaPorts
+          // can select the right one by PortRef.idx.
+          onTrainOutputPort: (port) =>
+              (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
+          onValOutputPort: (port) =>
+              (_aaMultiOutputPorts[node.id] ??= {})[1] = port,
+          connectedOutputs: _connectedOutputs(node.id),
         );
       default:
         return PlaceholderNode(node: node);

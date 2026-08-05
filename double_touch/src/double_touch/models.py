@@ -520,6 +520,26 @@ class D4mPreviewResponse(CamelModel):
     aa: AssocArray
 
 
+class ModelBuildRequest(CamelModel):
+    vocab_size: int = 50257
+    n_layers: int = 12
+    d_model: int = 768
+    n_heads: int = 12
+    d_ff: int = 3072
+    dropout: float = 0.1
+    max_seq_len: int = 1024
+    use_gradient_checkpointing: bool = False
+
+
+class ModelBuildResponse(CamelModel):
+    handle_id: str
+    param_count: int
+    param_count_m: float
+    estimated_vram_fp16_mb: float
+    estimated_vram_fp32_mb: float
+    architecture: dict
+
+
 class TokenizeRequest(CamelModel):
     aa: AssocArray
     encoding: str = "gpt2"
@@ -532,3 +552,18 @@ class TokenizeResponse(CamelModel):
     vocab_size: int
     total_tokens: int
     chunk_count: int
+
+
+class SplitRequest(CamelModel):
+    aa: AssocArray
+    ratio: float = 0.8
+    strategy: str = "random"  # "sequential" | "random"
+    seed: int = 42
+
+
+class SplitResponse(CamelModel):
+    train_aa: AssocArray
+    val_aa: AssocArray
+    train_count: int
+    val_count: int
+    total_count: int
