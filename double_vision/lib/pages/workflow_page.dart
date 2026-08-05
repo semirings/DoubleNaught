@@ -1263,6 +1263,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     return Scaffold(
       body: Column(
         children: [
+          const _LogoBanner(),
           _Header(
             onAdd: _addNode,
             onRun: _nodes.isEmpty ? null : _runWorkflow,
@@ -1988,6 +1989,64 @@ String _humanSize(int bytes) {
 /// The thin top header: the **Node Catalog** dropdown (node primitives to add),
 /// the **Workflows** dropdown (saved graphs to open / delete / Save As), the
 /// primary "Go" run trigger, and Save / Clear.
+class _LogoBanner extends StatelessWidget {
+  const _LogoBanner();
+
+  void _showAbout(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => Dialog(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Image.asset(
+            'assets/png/GreatSealofDN.png',
+            fit: BoxFit.contain,
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    const white = Colors.white;
+    final aboutStyle = OutlinedButton.styleFrom(
+      foregroundColor: white,
+      iconColor: white,
+      side: const BorderSide(color: white, width: 1.5),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+    );
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerLowest,
+        border: Border(
+          bottom: BorderSide(color: theme.colorScheme.outlineVariant),
+        ),
+      ),
+      child: Row(
+        children: [
+          Image.asset(
+            'assets/png/logo-title-wb-crop.png',
+            height: 36,
+            fit: BoxFit.contain,
+          ),
+          const Spacer(),
+          OutlinedButton(
+            style: aboutStyle,
+            onPressed: () => _showAbout(context),
+            child: const Text('About'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Header extends StatelessWidget {
   final ValueChanged<NodeType> onAdd;
 
