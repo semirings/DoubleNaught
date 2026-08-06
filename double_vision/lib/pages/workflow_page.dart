@@ -1925,6 +1925,17 @@ class _WorkflowPageState extends State<WorkflowPage>
               (_aaMultiOutputPorts[node.id] ??= {})[1] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
+      case 'aa_binary_normalizer':
+        return AaBinaryNormalizerNode(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputConnect: (source) => _connect(source, node.id),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
       default:
         return PlaceholderNode(node: node);
     }

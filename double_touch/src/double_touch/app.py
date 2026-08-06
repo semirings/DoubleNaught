@@ -41,6 +41,8 @@ from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cx
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
 from .models import (
+    AaBinaryNormalizeRequest,
+    AaBinaryNormalizeResponse,
     D4mExecRequest,
     D4mExecResponse,
     D4mIngestRequest,
@@ -1182,4 +1184,53 @@ async def split(request: SplitRequest) -> SplitResponse:
         train_count=train_count,
         val_count=val_count,
         total_count=total_count,
+    )
+
+
+# --- AA Binary Normalizer node (AaBinaryNormalizerNode) ----------------------
+
+@app.post("/normalize", response_model=AaBinaryNormalizeResponse)
+async def aaBinaryNormalize(
+    request: AaBinaryNormalizeRequest,
+) -> AaBinaryNormalizeResponse:
+    from .aa_binary_normalizer import AABinaryNormalizer
+    try:
+        aaOut = await run_in_threadpool(
+            AABinaryNormalizer().normalize,
+            {
+                "filePath":        request.file_path,
+                "outputDirectory": request.output_directory,
+                "splitName":       request.split_name,
+                "keepInMemory":    request.keep_in_memory,
+            },
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    import os as _os
+    bookId = _os.path.splitext(_os.path.basename(aaOut["arrowFilePath"]))[0]
+    rows: list[str] = []
+    cols: list[str] = []
+    vals: list = []
+
+    def _add(col: str, val) -> None:
+        rows.append(bookId)
+        cols.append(col)
+        vals.append(val)
+
+    _add("arrowFilePath",  aaOut["arrowFilePath"])
+    _add("rowCount",       aaOut["rowCount"])
+    _add("splitName",      request.split_name)
+    _add("isMemoryMapped", str(aaOut["isMemoryMapped"]))
+    for fieldName, arrowType in aaOut["columnSchema"].items():
+        _add(f"schema:{fieldName}", arrowType)
+
+    return AaBinaryNormalizeResponse(
+        aa=AssocArray(rows=rows, cols=cols, vals=vals),
+        arrow_file_path=aaOut["arrowFilePath"],
+        row_count=aaOut["rowCount"],
+        column_schema=aaOut["columnSchema"],
+        is_memory_mapped=aaOut["isMemoryMapped"],
     )

@@ -579,3 +579,33 @@ class SplitResponse(CamelModel):
     train_count: int
     val_count: int
     total_count: int
+
+
+# --- AA Binary Normalizer node (AaBinaryNormalizerNode) ----------------------
+# A processing node: ingests raw files (.txt, .jsonl, .csv, .parquet, .arrow),
+# normalises them to the canonical AA Arrow schema, writes a persistent binary
+# cache, and emits an AA of normalization metadata for downstream nodes.
+
+
+class AaBinaryNormalizeRequest(CamelModel):
+    # Absolute path to the source file.
+    file_path: str
+    # Directory where the normalised .arrow cache will be written.
+    output_directory: str
+    # Dataset split key written into the output filename (default "train").
+    split_name: str = "train"
+    # When True, load into Python heap instead of memory-mapping.
+    keep_in_memory: bool = False
+
+
+class AaBinaryNormalizeResponse(CamelModel):
+    # Metadata AA: row = bookId, cols = arrowFilePath/rowCount/… (see below).
+    aa: AssocArray
+    # Absolute path of the generated .arrow binary cache.
+    arrow_file_path: str
+    # Total record count.
+    row_count: int
+    # Map of canonical field name → Arrow type string.
+    column_schema: dict[str, str]
+    # True when the backing Dataset was memory-mapped (keep_in_memory=False).
+    is_memory_mapped: bool

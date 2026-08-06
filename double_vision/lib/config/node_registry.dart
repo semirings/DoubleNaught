@@ -17,7 +17,8 @@ class NodeType {
 /// Registry of available node kinds. Add new entries here (and a case in
 /// `_WorkflowPageState._buildNode`) as the `double_*` service nodes land.
 const List<NodeType> nodeTypes = [
-  NodeType(name: 'AA → JSONL', type: 'aa2jsonl'),
+  NodeType(name: 'AA → JSONL',          type: 'aa2jsonl'),
+  NodeType(name: 'AA Binary Normalizer', type: 'aa_binary_normalizer'),
   NodeType(name: 'Categories', type: 'categories'),
   NodeType(name: 'Chunk', type: 'chunk'),
   NodeType(name: 'D4M', type: 'd4m'),
