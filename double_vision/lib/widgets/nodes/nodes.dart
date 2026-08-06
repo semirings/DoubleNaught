@@ -5,6 +5,7 @@
 
 // Foundational node UI (container, ports, header, drag scope, shared tokens).
 export 'base/base_node.dart';
+export 'base/base_node_widget.dart';
 export 'base/connection_drag_scope.dart';
 export 'base/double_naught_node_wrapper.dart';
 export 'base/input_connector.dart';

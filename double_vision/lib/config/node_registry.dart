@@ -43,19 +43,23 @@ const List<NodeType> nodeTypes = [
   NodeType(name: 'URL Source', type: 'url_source'),
 ];
 
-/// Fallback card for a registered-but-not-yet-implemented node type. Extends
-/// [BaseNode] so it inherits the Base Node Blueprint chrome for free.
-class PlaceholderNode extends BaseNode {
-  final WorkflowNode node;
-  const PlaceholderNode({super.key, required this.node});
+/// Fallback card shown when a workflow file references a node type that has no
+/// registered implementation in this build.
+class PlaceholderNode extends BaseNodeWidget {
+  const PlaceholderNode({super.key, required super.node});
 
   @override
-  String get title => node.type;
+  State<PlaceholderNode> createState() => _PlaceholderNodeState();
+}
+
+class _PlaceholderNodeState extends BaseNodeState<PlaceholderNode> {
+  @override
+  String get nodeTitle => widget.node.type;
 
   @override
-  IconData get icon => Icons.help_outline;
+  IconData get nodeIcon => Icons.help_outline;
 
   @override
-  Widget buildBody(BuildContext context) =>
+  Widget buildNodeBody(BuildContext context) =>
       Text('(not implemented)', style: Theme.of(context).textTheme.bodySmall);
 }
