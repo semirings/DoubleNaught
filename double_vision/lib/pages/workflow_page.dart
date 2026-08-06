@@ -21,18 +21,21 @@ const double _kNodeWidth = 240;
 /// leaves the source end of a noodle floating inside the node.
 const double _kWideNodeWidth = 320;
 
+// D4M is wider than the standard wide group (340 vs 320).
+const double _kD4mNodeWidth = 340;
+
 /// Rendered width of a node by type, for anchoring its right-edge output ports.
-double _nodeWidthFor(String type) =>
-    (type == 'inventory' ||
-        type == 'review' ||
-        type == 'load_model' ||
-        type == 'model_classifier' ||
-        type == 'text_model_loader' ||
-        type == 'text_prompt' ||
-        type == 'text_inference' ||
-        type == 'd4m')
-    ? _kWideNodeWidth
-    : _kNodeWidth;
+double _nodeWidthFor(String type) {
+  if (type == 'd4m') { return _kD4mNodeWidth; }
+  if (type == 'inventory' ||
+      type == 'review' ||
+      type == 'load_model' ||
+      type == 'model_classifier' ||
+      type == 'text_model_loader' ||
+      type == 'text_prompt' ||
+      type == 'text_inference') { return _kWideNodeWidth; }
+  return _kNodeWidth;
+}
 
 /// Vertical offset (from a node's top) at which edges attach. Approximate; the
 /// real connectors sit at different heights per node type.
@@ -283,6 +286,9 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'text_preview':
         // One input: `resultIn` (AA, idx 0).
         return const [0];
+      case 'd4m':
+        // Dynamic: snap to whichever input indices are actually registered.
+        return _aaInputPorts[n.id]?.keys ?? const [0];
       case 'sam3':
       case 'fetch':
       case 'chunk':
@@ -389,6 +395,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _onCanvasTapUp(TapUpDetails d) {
+    debugPrint('[D4M-diag] _onCanvasTapUp fired');
     _canvasFocus.requestFocus(); // so Delete/Backspace target this canvas
     // Clicking empty canvas selects the edge there (if any) and clears node
     // selection.
@@ -413,9 +420,19 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// Delete. When [extend] is true (Shift-click) the node is toggled into/out of
   /// the selection; otherwise the set is replaced with just this node.
   void _selectNode(int id, {bool extend = false}) {
-    _canvasFocus.requestFocus();
-    _bringToFront(id);
+    // Do NOT call _canvasFocus.requestFocus() here.  Stealing keyboard focus on
+    // every node click would freeze any TextField the user is editing inside a
+    // node.  Canvas focus is established by autofocus:true at startup and by
+    // _onCanvasTapUp when the user clicks the empty canvas.  _onKey already
+    // ignores Delete/Backspace when focus is on anything other than _canvasFocus,
+    // so node-deletion shortcuts still work correctly when the canvas is focused.
     setState(() {
+      // Bring to front (inlined to avoid a second setState / canvas rebuild).
+      final i = _nodes.indexWhere((n) => n.id == id);
+      if (i >= 0 && i != _nodes.length - 1) {
+        final n = _nodes.removeAt(i);
+        _nodes.add(n);
+      }
       if (extend) {
         if (_selectedNodeIds.contains(id)) {
           _selectedNodeIds.remove(id);
@@ -1542,15 +1559,18 @@ class _WorkflowPageState extends State<WorkflowPage>
     return Listener(
       // Any press on the node selects it and raises it to the front.
       // Shift-click extends the selection (toggle); plain click replaces it.
-      onPointerDown: (_) => _selectNode(
-        node.id,
-        extend: HardwareKeyboard.instance.isShiftPressed,
-      ),
-      child: GestureDetector(
-        // Right-click anywhere on the node → its context menu.
-        behavior: HitTestBehavior.translucent,
-        onSecondaryTapUp: (d) => _showNodeMenu(d.globalPosition, node.id),
-        child: Stack(
+      // Secondary (right) button shows the node context menu immediately on
+      // press — Listener never participates in the gesture arena, so it cannot
+      // compete with or delay the TextFields' TapGestureRecognizers inside the
+      // node body (unlike the former GestureDetector wrapper).
+      onPointerDown: (event) {
+        _selectNode(node.id,
+            extend: HardwareKeyboard.instance.isShiftPressed);
+        if (event.buttons & kSecondaryMouseButton != 0) {
+          _showNodeMenu(event.position, node.id);
+        }
+      },
+      child: Stack(
           clipBehavior: Clip.none,
           children: [
             KeyedSubtree(
@@ -1591,7 +1611,6 @@ class _WorkflowPageState extends State<WorkflowPage>
               ),
           ],
         ),
-      ),
     );
   }
 

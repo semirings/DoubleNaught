@@ -95,7 +95,7 @@ class D4mNode extends StatefulWidget {
   State<D4mNode> createState() => _D4mNodeState();
 }
 
-class _D4mNodeState extends State<D4mNode> {
+class _D4mNodeState extends State<D4mNode> with WidgetsBindingObserver {
   late List<_D4mPort> _ports;
   final Map<int, AaPayload> _portData = {};
 
@@ -104,6 +104,13 @@ class _D4mNodeState extends State<D4mNode> {
   late final TextEditingController _scriptCtrl;
   late final TextEditingController _outSymCtrl;
   final Map<int, TextEditingController> _nameCtrl = {};
+
+  late final FocusNode _scriptFocusNode;
+  // macOS Desktop: activating text input sends inactive→resumed, which causes
+  // FocusManager._appLifecycleChange to clear focus.  When focus lands on the
+  // root scope (not a real widget), we know it was lifecycle-driven and we
+  // restore focus on the next resumed event.
+  bool _restoreFocusOnResume = false;
 
   _D4mStatus _status = _D4mStatus.idle;
   String? _error;
@@ -131,6 +138,23 @@ class _D4mNodeState extends State<D4mNode> {
     _scriptCtrl = TextEditingController(text: p['script'] ?? '');
     _outSymCtrl = TextEditingController(text: p['outputSymbol'] ?? 'Out');
 
+    WidgetsBinding.instance.addObserver(this);
+
+    _scriptFocusNode = FocusNode(debugLabel: 'D4M-script');
+    _scriptFocusNode.addListener(() {
+      if (_scriptFocusNode.hasFocus) {
+        _restoreFocusOnResume = false;
+      } else {
+        // Focus going to the root scope means no real widget claimed it —
+        // this is the macOS lifecycle bounce, not intentional user navigation.
+        final pf = FocusManager.instance.primaryFocus;
+        _restoreFocusOnResume =
+            pf == null || pf == FocusManager.instance.rootScope;
+        debugPrint('[D4M-diag] focus lost → restoreOnResume=$_restoreFocusOnResume  '
+            'primaryFocus=${pf?.debugLabel}');
+      }
+    });
+
     _initPorts();
     widget.onOutputPort?.call(_out);
   }
@@ -155,10 +179,29 @@ class _D4mNodeState extends State<D4mNode> {
     _out.dispose();
     _scriptCtrl.dispose();
     _outSymCtrl.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    _scriptFocusNode.dispose();
     for (final c in _nameCtrl.values) {
       c.dispose();
     }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    debugPrint('[D4M-diag] lifecycle → $state  restoreOnResume=$_restoreFocusOnResume');
+    // macOS Desktop sends inactive→hidden (not inactive→resumed) when the
+    // text input system activates.  Restore on hidden so Flutter queues the
+    // focus request; when the window becomes key again the text input fires.
+    if ((state == AppLifecycleState.resumed ||
+            state == AppLifecycleState.hidden) &&
+        _restoreFocusOnResume) {
+      _restoreFocusOnResume = false;
+      if (mounted) _scriptFocusNode.requestFocus();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      _restoreFocusOnResume = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -347,8 +390,9 @@ class _D4mNodeState extends State<D4mNode> {
           // --- Script editor ---
           TextField(
             controller: _scriptCtrl,
-            minLines: 3,
-            maxLines: 8,
+            focusNode: _scriptFocusNode,
+            minLines: 6,
+            maxLines: 16,
             style: theme.textTheme.bodySmall
                 ?.copyWith(fontFamily: 'monospace'),
             decoration: const InputDecoration(
@@ -358,7 +402,7 @@ class _D4mNodeState extends State<D4mNode> {
               border: OutlineInputBorder(),
               contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
             ),
-            onChanged: (_) {
+            onChanged: (v) {
               setState(() {});
               _saveParams();
             },

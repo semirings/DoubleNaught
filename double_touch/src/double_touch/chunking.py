@@ -409,7 +409,7 @@ def chunk_to_aa(
     for position, passage in enumerate(passages):
         chunk_id = f"{run_id}:{position:05d}"
         tokens = count_tokens(passage)
-        row_values = [passage, author, work_title, position, tokens, strategy.name]
+        row_values = [passage, author, work_title, position, tokens, "author"]
         for col, value in zip(_CHUNK_COLUMNS, row_values):
             rows.append(chunk_id)
             cols.append(col)

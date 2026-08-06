@@ -236,11 +236,11 @@ def test_unknown_strategy_rejected():
 
 def test_default_author_mode_unchanged():
     """Omitting chunkStrategy (default='author') routes through the existing
-    author-registry path and records the author as chunk_strategy."""
+    author-registry path and records 'author' as the chunk_strategy wire value."""
     doc = "\n\n".join([_SENT * 8] * 3)
     res = client.post("/chunk", json={"aa": _fetch_aa(doc, author="chesterton")})
     assert res.status_code == 200
-    assert set(_column(res.json()["aa"], "chunk_strategy")) == {"chesterton"}
+    assert set(_column(res.json()["aa"], "chunk_strategy")) == {"author"}
 
 
 def test_explicit_author_mode_identical_to_default():
@@ -249,7 +249,7 @@ def test_explicit_author_mode_identical_to_default():
     payload = {"aa": _fetch_aa(doc, author="churchill"), "chunkStrategy": "author"}
     res = client.post("/chunk", json=payload)
     assert res.status_code == 200
-    assert set(_column(res.json()["aa"], "chunk_strategy")) == {"churchill"}
+    assert set(_column(res.json()["aa"], "chunk_strategy")) == {"author"}
 
 
 def test_inject_eot_via_route():
