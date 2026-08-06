@@ -4,23 +4,21 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../../../models/workflow.dart';
-import '../base/double_naught_node_wrapper.dart';
+import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
 import 'sam3_control_panel.dart';
 
 /// A workflow node that hosts a [Sam3ControlPanel] inside the universal
-/// [DoubleNaughtNodeWrapper] — the canonical demonstration of the compositional
-/// pattern: the wrapper owns chrome + edge-anchored ports, the injected panel
-/// owns behaviour.
+/// node shell — the canonical demonstration of the compositional pattern:
+/// the wrapper owns chrome + edge-anchored ports, the injected panel owns
+/// behaviour.
 ///
 /// Ports (per the DESIGN.md contract): a `preview` **input** on the left and
 /// two **outputs** on the right (`segmentStream`, `imageArray`). When an image
 /// is wired into `preview`, the node accumulates the bytes and reports them via
 /// [onPreviewImage] for the canvas's image sidebar.
-class Sam3Node extends StatefulWidget {
-  final WorkflowNode node;
-
+class Sam3Node extends BaseNodeWidget {
   /// Backend session id for the loaded image; null until one is wired in.
   final String? sessionId;
 
@@ -29,9 +27,6 @@ class Sam3Node extends StatefulWidget {
 
   /// Publishes the segmentation image-array stream — the `imageArray` output.
   final void Function(Stream<List<Uint8List>> images)? onImageArrayConnect;
-
-  /// Records an edge dropped on the `preview` input port.
-  final void Function(PortRef source)? onPreviewConnect;
 
   /// Incoming bytes wired into `preview`, or null when nothing is connected.
   final Stream<Uint8List>? previewInput;
@@ -42,35 +37,29 @@ class Sam3Node extends StatefulWidget {
   /// Reports the image accumulated on `preview` (for the canvas sidebar).
   final void Function(Uint8List bytes, String? fileName)? onPreviewImage;
 
-  /// Output port indices with an outgoing edge — drives the connected
-  /// highlight, matching how input ports highlight when wired.
-  final Set<int> connectedOutputs;
-
   const Sam3Node({
     super.key,
-    required this.node,
+    required super.node,
     this.sessionId,
     this.onConnect,
     this.onImageArrayConnect,
-    this.onPreviewConnect,
+    void Function(PortRef source)? onPreviewConnect,
     this.previewInput,
     this.previewFileName,
     this.onPreviewImage,
-    this.connectedOutputs = const {},
-  });
+    super.connectedOutputs,
+  }) : super(onInputConnect: onPreviewConnect);
 
   @override
   State<Sam3Node> createState() => _Sam3NodeState();
 }
 
-class _Sam3NodeState extends State<Sam3Node> {
-  final StreamController<Sam3Payload> _segments =
-      StreamController<Sam3Payload>.broadcast();
+class _Sam3NodeState extends BaseNodeState<Sam3Node> {
+  @override String   get nodeTitle => 'Segmentation';
+  @override IconData get nodeIcon  => Icons.auto_awesome_mosaic_outlined;
 
-  /// Carries segmentation result images downstream. Fed once the backend
-  /// returns real image arrays (the stub emits only mask metadata today).
-  final StreamController<List<Uint8List>> _imageArray =
-      StreamController<List<Uint8List>>.broadcast();
+  final StreamController<Sam3Payload>      _segments   = StreamController.broadcast();
+  final StreamController<List<Uint8List>>  _imageArray = StreamController.broadcast();
 
   StreamSubscription<Uint8List>? _previewSub;
   BytesBuilder _previewBuilder = BytesBuilder();
@@ -106,8 +95,7 @@ class _Sam3NodeState extends State<Sam3Node> {
     _previewSub = widget.previewInput?.listen((chunk) {
       if (!mounted) return;
       _previewBuilder.add(chunk);
-      widget.onPreviewImage
-          ?.call(_previewBuilder.toBytes(), widget.previewFileName);
+      widget.onPreviewImage?.call(_previewBuilder.toBytes(), widget.previewFileName);
     });
   }
 
@@ -116,21 +104,20 @@ class _Sam3NodeState extends State<Sam3Node> {
     if (!_hasSegments) setState(() => _hasSegments = true);
   }
 
+  // ── Build overrides ──────────────────────────────────────────────────────
+
   @override
-  Widget build(BuildContext context) {
-    final previewConnected = widget.previewInput != null;
-    return DoubleNaughtNodeWrapper(
-      title: 'Segmentation',
-      icon: Icons.auto_awesome_mosaic_outlined,
-      inputPorts: [
+  List<Widget> buildInputConnectors(BuildContext context) => [
         InputConnector(
           label: 'preview',
           idx: 0,
-          active: previewConnected, // highlight when wired, like Preview's input
-          onConnect: widget.onPreviewConnect,
+          active: widget.previewInput != null,
+          onConnect: widget.onInputConnect,
         ),
-      ],
-      outputPorts: [
+      ];
+
+  @override
+  List<Widget> buildOutputConnectors(BuildContext context) => [
         OutputConnector(
           label: 'segmentStream',
           idx: 0,
@@ -143,11 +130,11 @@ class _Sam3NodeState extends State<Sam3Node> {
           active: widget.connectedOutputs.contains(1),
           dragData: PortRef(nodeId: widget.node.id, idx: 1),
         ),
-      ],
-      child: Sam3ControlPanel(
+      ];
+
+  @override
+  Widget buildNodeBody(BuildContext context) => Sam3ControlPanel(
         sessionId: widget.sessionId,
         onResult: _onResult,
-      ),
-    );
-  }
+      );
 }

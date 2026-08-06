@@ -5,9 +5,8 @@ import 'package:flutter/material.dart';
 import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
-import '../base/double_naught_node_wrapper.dart';
 import '../../focus_panel.dart' show resolveImageProvider;
-import '../base/input_connector.dart';
+import '../base/base_node_widget.dart';
 import '../base/output_connector.dart';
 
 /// The emit sinks for an [ImageDisplayNode]'s three interactive outputs, handed
@@ -44,19 +43,7 @@ class ImageDisplayOutputs {
 ///
 ///  * Input:  `urlInput`
 ///  * Outputs: `promptOutput`, `boxSelectOutput`, `pointClickOutput`
-class ImageDisplayNode extends StatefulWidget {
-  /// Graph metadata for this node (id/type/position).
-  final WorkflowNode node;
-
-  /// True when an edge feeds `urlInput` (drives the port highlight).
-  final bool inputConnected;
-
-  /// Registers this node's `urlInput` InputPort with the canvas bridge.
-  final void Function(InputPort port)? onInputPort;
-
-  /// Called with the source endpoint when an edge is dropped on `urlInput`.
-  final void Function(PortRef source)? onInputConnect;
-
+class ImageDisplayNode extends BaseNodeWidget {
   /// Opens the Focus Panel for this node instance with the loaded location.
   final void Function(int nodeId, String targetUrl)? onViewImageAssets;
 
@@ -67,67 +54,54 @@ class ImageDisplayNode extends StatefulWidget {
   final void Function(Stream<List<double>> boxSelectOutput)? onBoxSelectConnect;
 
   /// Publishes the `pointClickOutput` stream to the canvas.
-  final void Function(Stream<List<double>> pointClickOutput)?
-      onPointClickConnect;
+  final void Function(Stream<List<double>> pointClickOutput)? onPointClickConnect;
 
   /// Hands this node's emit sinks to the host, keyed by node id.
   final void Function(int nodeId, ImageDisplayOutputs outputs)? onOutputsReady;
 
-  /// Output port indices with an outgoing edge — drives the connected-port
-  /// highlight, matching every other node.
-  final Set<int> connectedOutputs;
-
   const ImageDisplayNode({
     super.key,
-    required this.node,
-    this.inputConnected = false,
-    this.onInputPort,
-    this.onInputConnect,
+    required super.node,
+    super.inputConnected,
+    super.onInputPort,
+    super.onInputConnect,
     this.onViewImageAssets,
     this.onPromptConnect,
     this.onBoxSelectConnect,
     this.onPointClickConnect,
     this.onOutputsReady,
-    this.connectedOutputs = const {},
+    super.connectedOutputs,
   });
 
   @override
   State<ImageDisplayNode> createState() => _ImageDisplayNodeState();
 }
 
-class _ImageDisplayNodeState extends State<ImageDisplayNode> {
-  /// `urlInput` ingress port. Listened to from birth, so the upstream's
-  /// retained AA is delivered when the canvas calls connect().
+class _ImageDisplayNodeState extends BaseNodeState<ImageDisplayNode> {
+  @override String   get nodeTitle => 'Image Display';
+  @override IconData get nodeIcon  => Icons.image_outlined;
+
   final InputPort _in = InputPort('urlInput');
 
-  final StreamController<String> _promptOutput =
-      StreamController<String>.broadcast();
-  final StreamController<List<double>> _boxSelectOutput =
-      StreamController<List<double>>.broadcast();
-  final StreamController<List<double>> _pointClickOutput =
-      StreamController<List<double>>.broadcast();
+  final StreamController<String>       _promptOutput     = StreamController.broadcast();
+  final StreamController<List<double>> _boxSelectOutput  = StreamController.broadcast();
+  final StreamController<List<double>> _pointClickOutput = StreamController.broadcast();
 
-  /// Location received from upstream; empty until `urlInput` delivers one.
-  String targetUrl = '';
-
-  /// True only once the asset is fully decoded into memory — this is what
-  /// reveals the lower-right indicator.
-  bool isImageLoaded = false;
+  String targetUrl  = '';
+  bool   isImageLoaded = false;
   String? loadError;
   int? imageWidth;
   int? imageHeight;
 
-  ImageStream? _imageStream;
+  ImageStream?         _imageStream;
   ImageStreamListener? _imageListener;
-
-  bool get _wired => widget.inputConnected;
 
   @override
   void initState() {
     super.initState();
 
-    // Publish the three output connectors up front so downstream nodes can
-    // attach before any interaction has happened.
+    // Publish the three output streams up front so downstream nodes can attach
+    // before any interaction has happened.
     widget.onPromptConnect?.call(_promptOutput.stream);
     widget.onBoxSelectConnect?.call(_boxSelectOutput.stream);
     widget.onPointClickConnect?.call(_pointClickOutput.stream);
@@ -147,8 +121,7 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
       ),
     );
 
-    widget.onInputPort?.call(_in);
-    _in.onDataArrived.listen(_onIncoming);
+    initInputPort(_in, _onIncoming);
   }
 
   @override
@@ -161,17 +134,16 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
     super.dispose();
   }
 
-  /// Take the location off the upstream payload and begin loading it.
   void _onIncoming(AaPayload payload) {
     if (!mounted) return;
     final url = payload.value('url') ?? '';
     if (url.isEmpty) return;
     setState(() {
-      targetUrl = url;
+      targetUrl    = url;
       isImageLoaded = false;
-      loadError = null;
-      imageWidth = null;
-      imageHeight = null;
+      loadError     = null;
+      imageWidth    = null;
+      imageHeight   = null;
     });
     _loadImage(url);
   }
@@ -180,56 +152,48 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
     if (_imageStream != null && _imageListener != null) {
       _imageStream!.removeListener(_imageListener!);
     }
-    _imageStream = null;
+    _imageStream   = null;
     _imageListener = null;
   }
 
-  /// Resolve and decode the asset into memory *without* rendering it here. Only
-  /// when the first frame arrives is the node considered loaded, which is what
-  /// reveals the lower-right indicator.
+  /// Resolve and decode the asset into memory without rendering it here. Only
+  /// when the first frame arrives is the node considered loaded, which reveals
+  /// the lower-right indicator.
   void _loadImage(String url) {
     _detachImageStream();
     final provider = resolveImageProvider(url);
     if (provider == null) return;
 
-    _imageStream = provider.resolve(ImageConfiguration.empty);
+    _imageStream   = provider.resolve(ImageConfiguration.empty);
     _imageListener = ImageStreamListener(
       (info, _) {
         if (!mounted) return;
         setState(() {
           isImageLoaded = true;
-          loadError = null;
-          imageWidth = info.image.width;
-          imageHeight = info.image.height;
+          loadError     = null;
+          imageWidth    = info.image.width;
+          imageHeight   = info.image.height;
         });
       },
       onError: (error, _) {
         if (!mounted) return;
         setState(() {
           isImageLoaded = false;
-          loadError = 'That image could not be loaded.';
+          loadError     = 'That image could not be loaded.';
         });
       },
     );
     _imageStream!.addListener(_imageListener!);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+  // ── Build overrides ──────────────────────────────────────────────────────
 
-    return DoubleNaughtNodeWrapper(
-      title: 'Image Display',
-      icon: Icons.image_outlined,
-      inputPorts: [
-        InputConnector(
-          label: 'urlInput',
-          idx: 0,
-          active: _wired,
-          onConnect: widget.onInputConnect,
-        ),
-      ],
-      outputPorts: [
+  @override
+  List<Widget> buildInputConnectors(BuildContext context) =>
+      [singleInputConnector(label: 'urlInput')];
+
+  @override
+  List<Widget> buildOutputConnectors(BuildContext context) => [
         OutputConnector(
           label: 'promptOutput',
           idx: 0,
@@ -248,24 +212,25 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
           active: widget.connectedOutputs.contains(2),
           dragData: PortRef(nodeId: widget.node.id, idx: 2),
         ),
+      ];
+
+  @override
+  Widget buildNodeBody(BuildContext context) {
+    final theme = Theme.of(context);
+    return Stack(
+      children: [
+        _status(theme),
+        if (isImageLoaded)
+          Positioned(right: 0, bottom: 0, child: _assetsIndicator(theme)),
       ],
-      // Stack so the availability indicator can sit in the node's lower-right.
-      child: Stack(
-        children: [
-          _status(theme),
-          if (isImageLoaded)
-            Positioned(right: 0, bottom: 0, child: _assetsIndicator(theme)),
-        ],
-      ),
     );
   }
 
-  /// Compact status text — no manual entry fields live on this node.
   Widget _status(ThemeData theme) {
     final muted = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
 
-    if (!_wired) {
+    if (!widget.inputConnected) {
       return SizedBox(
         width: double.infinity,
         child: Text('Connect a URL Source node', style: muted),
@@ -298,8 +263,7 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
             Row(
               children: [
                 const SizedBox(
-                  width: 12,
-                  height: 12,
+                  width: 12, height: 12,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 ),
                 const SizedBox(width: 8),
@@ -313,21 +277,18 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
                   : 'Image ready',
               style: muted,
             ),
-          // Leave room so the indicator never sits on top of the status text.
           if (isImageLoaded) const SizedBox(height: 18),
         ],
       ),
     );
   }
 
-  /// Hidden until the asset is in memory; clicking slides open the Focus Panel.
   Widget _assetsIndicator(ThemeData theme) {
     final scheme = theme.colorScheme;
     return Tooltip(
       message: 'Show image assets',
       child: InkWell(
-        onTap: () =>
-            widget.onViewImageAssets?.call(widget.node.id, targetUrl),
+        onTap: () => widget.onViewImageAssets?.call(widget.node.id, targetUrl),
         borderRadius: BorderRadius.circular(4),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
@@ -338,8 +299,7 @@ class _ImageDisplayNodeState extends State<ImageDisplayNode> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.photo_library_outlined,
-                  size: 12, color: scheme.onPrimary),
+              Icon(Icons.photo_library_outlined, size: 12, color: scheme.onPrimary),
               const SizedBox(width: 4),
               Icon(Icons.chevron_right, size: 12, color: scheme.onPrimary),
             ],

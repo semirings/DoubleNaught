@@ -2,9 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../../models/workflow.dart';
-import '../base/double_naught_node_wrapper.dart';
-import '../base/output_connector.dart';
+import '../base/base_node_widget.dart';
 
 /// The manual entry point of the pipeline.
 ///
@@ -12,29 +10,25 @@ import '../base/output_connector.dart';
 /// it downstream as a raw string on `locationOutput`. It performs no lookup and
 /// holds no catalog of its own; cataloguing is the Inventory node's job, which
 /// persists whatever arrives here into `inventory.json`.
-class UrlSourceNode extends StatefulWidget {
-  /// Graph metadata for this node (id/type/position).
-  final WorkflowNode node;
-
+class UrlSourceNode extends BaseNodeWidget {
   /// Called once with the node's output stream — the `locationOutput` port.
   final void Function(Stream<String> locationOutput)? onConnect;
 
-  /// Output port indices with an outgoing edge — drives the connected-port
-  /// highlight, matching every other node.
-  final Set<int> connectedOutputs;
-
   const UrlSourceNode({
     super.key,
-    required this.node,
+    required super.node,
     this.onConnect,
-    this.connectedOutputs = const {},
+    super.connectedOutputs,
   });
 
   @override
   State<UrlSourceNode> createState() => _UrlSourceNodeState();
 }
 
-class _UrlSourceNodeState extends State<UrlSourceNode> {
+class _UrlSourceNodeState extends BaseNodeState<UrlSourceNode> {
+  @override String   get nodeTitle => 'URL Source';
+  @override IconData get nodeIcon  => Icons.link;
+
   final TextEditingController locationController = TextEditingController();
 
   /// Broadcast output, published in [initState] so a downstream node can attach
@@ -74,58 +68,54 @@ class _UrlSourceNodeState extends State<UrlSourceNode> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return DoubleNaughtNodeWrapper(
-      title: 'URL Source',
-      icon: Icons.link,
-      outputPorts: [
-        OutputConnector(
+  List<Widget> buildOutputConnectors(BuildContext context) => [
+        singleOutputConnector(
           label: 'locationOutput',
           idx: 0,
-          active: _lastSent != null || widget.connectedOutputs.contains(0),
-          dragData: PortRef(nodeId: widget.node.id, idx: 0),
+          hasData: _lastSent != null,
         ),
-      ],
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: locationController,
-            onChanged: (_) => setState(() {}),
-            onSubmitted: (_) => _send(),
-            style: theme.textTheme.bodySmall,
-            decoration: const InputDecoration(
-              hintText: 'Web address or local file path',
-              isDense: true,
-              border: OutlineInputBorder(),
-              contentPadding:
-                  EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-            ),
+      ];
+
+  @override
+  Widget buildNodeBody(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        TextField(
+          controller: locationController,
+          onChanged: (_) => setState(() {}),
+          onSubmitted: (_) => _send(),
+          style: theme.textTheme.bodySmall,
+          decoration: const InputDecoration(
+            hintText: 'Web address or local file path',
+            isDense: true,
+            border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
           ),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _canSend ? _send : null,
+            icon: const Icon(Icons.send, size: 16),
+            label: const Text('Send to Inventory'),
+          ),
+        ),
+        if (_lastSent != null) ...[
           const SizedBox(height: 8),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _canSend ? _send : null,
-              icon: const Icon(Icons.send, size: 16),
-              label: const Text('Send to Inventory'),
-            ),
+          Text(
+            'Sent $_lastSent',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
           ),
-          if (_lastSent != null) ...[
-            const SizedBox(height: 8),
-            Text(
-              'Sent $_lastSent',
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.labelSmall
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-            ),
-          ],
         ],
-      ),
+      ],
     );
   }
 }

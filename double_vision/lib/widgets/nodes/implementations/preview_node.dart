@@ -9,7 +9,7 @@ import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../focus_panel.dart' show FocusContent;
-import '../base/double_naught_node_wrapper.dart';
+import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
 
 /// Detected kind of the incoming bytes.
@@ -20,20 +20,12 @@ enum _Media { png, jpeg, gif, webp, other }
 /// arrives in the right-hand **Focus Panel** (as a tab), *not* inside the node.
 /// The node itself stays a compact routing box showing a one-line summary and a
 /// "View in panel" button.
-class PreviewNode extends StatefulWidget {
-  final WorkflowNode node;
-
+class PreviewNode extends BaseNodeWidget {
   /// Upstream byte stream (image/text), or null when nothing is wired.
   final Stream<Uint8List>? input;
 
-  /// True when the `bytes` port has an incoming edge (drives its highlight).
-  final bool inputConnected;
-
   /// True when the `aa` port has an incoming edge (drives its highlight).
   final bool aaConnected;
-
-  /// Called when an edge is dropped on the `bytes` input.
-  final void Function(PortRef source)? onConnect;
 
   /// Called when an edge is dropped on the `aa` input.
   final void Function(PortRef source)? onAaConnect;
@@ -52,38 +44,39 @@ class PreviewNode extends StatefulWidget {
 
   const PreviewNode({
     super.key,
-    required this.node,
+    required super.node,
     this.input,
-    this.inputConnected = false,
+    super.inputConnected,
+    void Function(PortRef source)? onConnect,
     this.aaConnected = false,
-    this.onConnect,
     this.onAaConnect,
     this.onAaInputPort,
     this.fileName,
     this.onContent,
     this.onView,
-  });
+  }) : super(onInputConnect: onConnect);
 
   @override
   State<PreviewNode> createState() => _PreviewNodeState();
 }
 
-class _PreviewNodeState extends State<PreviewNode> {
-  // --- byte input ---
+class _PreviewNodeState extends BaseNodeState<PreviewNode> {
+  @override String   get nodeTitle => 'Preview';
+  @override IconData get nodeIcon  => Icons.preview_outlined;
+
   StreamSubscription<Uint8List>? _sub;
-  BytesBuilder _builder = BytesBuilder();
-  Uint8List? _data;
-  int _bytes = 0;
-  _Media _media = _Media.other;
-  int? _imageWidth;
-  int? _imageHeight;
-  bool _decoding = false;
+  BytesBuilder _builder  = BytesBuilder();
+  Uint8List?   _data;
+  int          _bytes    = 0;
+  _Media       _media    = _Media.other;
+  int?         _imageWidth;
+  int?         _imageHeight;
+  bool         _decoding = false;
 
-  // --- AA input (owned port, wired by the canvas bridge) ---
   final InputPort _aaIn = InputPort('aa');
-  AaPayload? _aa;
+  AaPayload?      _aa;
 
-  bool get _isImage => _media != _Media.other;
+  bool get _isImage    => _media != _Media.other;
   bool get _hasContent => _aa != null || (_data != null && _bytes > 0);
 
   @override
@@ -109,11 +102,11 @@ class _PreviewNodeState extends State<PreviewNode> {
 
   void _subscribeBytes() {
     _sub?.cancel();
-    _builder = BytesBuilder();
-    _data = null;
-    _bytes = 0;
-    _media = _Media.other;
-    _imageWidth = null;
+    _builder     = BytesBuilder();
+    _data        = null;
+    _bytes       = 0;
+    _media       = _Media.other;
+    _imageWidth  = null;
     _imageHeight = null;
     _sub = widget.input?.listen(_onChunk);
   }
@@ -124,8 +117,8 @@ class _PreviewNodeState extends State<PreviewNode> {
     final data = _builder.toBytes();
     setState(() {
       _bytes += chunk.length;
-      _data = data;
-      _media = _detectMedia(data);
+      _data   = data;
+      _media  = _detectMedia(data);
     });
     if (_isImage && _imageWidth == null) {
       _decodeDimensions(data);
@@ -140,7 +133,6 @@ class _PreviewNodeState extends State<PreviewNode> {
     _report();
   }
 
-  /// Push the current content to the Focus Panel tab for this node.
   void _report() {
     final content = _buildContent();
     if (content != null) widget.onContent?.call(widget.node.id, content);
@@ -172,9 +164,7 @@ class _PreviewNodeState extends State<PreviewNode> {
 
   int _distinctColCount(AaPayload aa) {
     final seen = <String>{};
-    for (final c in aa.cols) {
-      seen.add(c);
-    }
+    for (final c in aa.cols) { seen.add(c); }
     return seen.length;
   }
 
@@ -190,7 +180,7 @@ class _PreviewNodeState extends State<PreviewNode> {
       codec.dispose();
       if (mounted) {
         setState(() {
-          _imageWidth = w;
+          _imageWidth  = w;
           _imageHeight = h;
         });
       }
@@ -223,10 +213,10 @@ class _PreviewNodeState extends State<PreviewNode> {
   }
 
   String get _mediaLabel => switch (_media) {
-        _Media.png => 'PNG',
-        _Media.jpeg => 'JPEG',
-        _Media.gif => 'GIF',
-        _Media.webp => 'WebP',
+        _Media.png   => 'PNG',
+        _Media.jpeg  => 'JPEG',
+        _Media.gif   => 'GIF',
+        _Media.webp  => 'WebP',
         _Media.other => 'Binary',
       };
 
@@ -242,19 +232,15 @@ class _PreviewNodeState extends State<PreviewNode> {
     return '${size.toStringAsFixed(1)} ${units[i]}';
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+  // ── Build overrides ──────────────────────────────────────────────────────
 
-    return DoubleNaughtNodeWrapper(
-      title: 'Preview',
-      icon: Icons.preview_outlined,
-      inputPorts: [
+  @override
+  List<Widget> buildInputConnectors(BuildContext context) => [
         InputConnector(
           label: 'bytes',
           idx: 0,
           active: widget.inputConnected,
-          onConnect: widget.onConnect,
+          onConnect: widget.onInputConnect,
         ),
         InputConnector(
           label: 'aa',
@@ -262,27 +248,29 @@ class _PreviewNodeState extends State<PreviewNode> {
           active: widget.aaConnected,
           onConnect: widget.onAaConnect,
         ),
-      ],
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Clear the deepest port label (aa at idx 1, slot bottom Y=74;
-          // body start Y=46; clearance = 28 px).
-          const SizedBox(height: 28),
-          _summary(theme),
-          const SizedBox(height: 10),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed:
-                  _hasContent ? () => widget.onView?.call(widget.node.id) : null,
-              icon: const Icon(Icons.open_in_new, size: 16),
-              label: const Text('View in panel'),
-            ),
+      ];
+
+  @override
+  Widget buildNodeBody(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 28),
+        _summary(theme),
+        const SizedBox(height: 10),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed:
+                _hasContent ? () => widget.onView?.call(widget.node.id) : null,
+            icon: const Icon(Icons.open_in_new, size: 16),
+            label: const Text('View in panel'),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -316,8 +304,8 @@ class _PreviewNodeState extends State<PreviewNode> {
           widget.fileName ?? 'Received content',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style:
-              theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+          style: theme.textTheme.bodySmall
+              ?.copyWith(fontWeight: FontWeight.w600),
         ),
         Text(kind,
             maxLines: 1, overflow: TextOverflow.ellipsis, style: muted),

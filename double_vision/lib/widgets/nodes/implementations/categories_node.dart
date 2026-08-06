@@ -4,7 +4,7 @@ import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
 import '../../../services/category_store.dart';
 import '../../../services/infobus/output_port.dart';
-import '../base/double_naught_node_wrapper.dart';
+import '../base/base_node_widget.dart';
 import '../base/output_connector.dart';
 
 /// A **source node** that loads the category set from
@@ -15,17 +15,8 @@ import '../base/output_connector.dart';
 /// It emits once on load, and the [OutputPort] retains that payload so a
 /// classifier wired up later replays it immediately. **Reload** re-reads the
 /// file and re-emits, propagating edits without recreating the node.
-class CategoriesNode extends StatefulWidget {
+class CategoriesNode extends BaseNodeWidget {
   static const double _width = 300;
-
-  final WorkflowNode node;
-
-  /// Registers this node's egress OutputPort with the canvas bridge.
-  final void Function(OutputPort port)? onOutputPort;
-
-  /// Output port indices with an outgoing edge — drives the connected-port
-  /// highlight, matching every other node.
-  final Set<int> connectedOutputs;
 
   /// AA-native category store. Injectable for tests; defaults to
   /// `storage/categories/categories.json`.
@@ -33,9 +24,9 @@ class CategoriesNode extends StatefulWidget {
 
   const CategoriesNode({
     super.key,
-    required this.node,
-    this.onOutputPort,
-    this.connectedOutputs = const {},
+    required super.node,
+    super.onOutputPort,
+    super.connectedOutputs,
     this.store,
   });
 
@@ -43,13 +34,17 @@ class CategoriesNode extends StatefulWidget {
   State<CategoriesNode> createState() => _CategoriesNodeState();
 }
 
-class _CategoriesNodeState extends State<CategoriesNode> {
+class _CategoriesNodeState extends BaseNodeState<CategoriesNode> {
+  @override String   get nodeTitle => 'Categories';
+  @override IconData get nodeIcon  => Icons.label_outline;
+  @override double   get nodeWidth => CategoriesNode._width;
+
   late final CategoryStore _store = widget.store ?? CategoryStore();
 
   final OutputPort _out = OutputPort('categoriesOut');
 
-  bool _loading = true;
-  String? _error;
+  bool       _loading    = true;
+  String?    _error;
   AaPayload? _categories;
 
   List<String> get _labels =>
@@ -58,7 +53,7 @@ class _CategoriesNodeState extends State<CategoriesNode> {
   @override
   void initState() {
     super.initState();
-    widget.onOutputPort?.call(_out);
+    initOutputPort(_out);
     _load();
   }
 
@@ -71,13 +66,12 @@ class _CategoriesNodeState extends State<CategoriesNode> {
   Future<void> _load() async {
     setState(() {
       _loading = true;
-      _error = null;
+      _error   = null;
     });
     try {
       final aa = await _store.load();
       if (!mounted) return;
       setState(() => _categories = aa);
-      // Emit so a downstream categoryIn (wired now or later) receives the set.
       if (aa.cols.isNotEmpty) _out.emit(aa);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
@@ -87,70 +81,56 @@ class _CategoriesNodeState extends State<CategoriesNode> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final muted = theme.textTheme.bodySmall?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
-    );
-    final hasOutput = _categories != null && _categories!.cols.isNotEmpty;
-
-    return DoubleNaughtNodeWrapper(
-      title: 'Categories',
-      icon: Icons.label_outline,
-      width: CategoriesNode._width,
-      outputPorts: [
+  List<Widget> buildOutputConnectors(BuildContext context) => [
         OutputConnector(
           label: 'categoriesOut',
           idx: 0,
-          active: hasOutput || widget.connectedOutputs.contains(0),
+          active: (_categories?.cols.isNotEmpty ?? false) ||
+              widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),
         ),
-      ],
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _summary(theme, muted),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _loading ? null : _load,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh, size: 18),
-              label: const Text('Reload'),
-            ),
+      ];
+
+  @override
+  Widget buildNodeBody(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _summary(theme, muted),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _loading ? null : _load,
+            icon: _loading ? busyIcon() : const Icon(Icons.refresh, size: 18),
+            label: const Text('Reload'),
           ),
-          if (_error != null) ...[
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(
-                  Icons.error_outline,
-                  size: 14,
-                  color: theme.colorScheme.error,
+        ),
+        if (_error != null) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(Icons.error_outline, size: 14,
+                  color: theme.colorScheme.error),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  _error!.replaceAll('\n', ' '),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall
+                      ?.copyWith(color: theme.colorScheme.error),
                 ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    _error!.replaceAll('\n', ' '),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
+              ),
+            ],
+          ),
         ],
-      ),
+      ],
     );
   }
 
@@ -170,17 +150,11 @@ class _CategoriesNodeState extends State<CategoriesNode> {
       children: [
         Text(
           '${labels.length} categor${labels.length == 1 ? 'y' : 'ies'}',
-          style: theme.textTheme.bodySmall?.copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+          style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
         ),
         const SizedBox(height: 2),
-        Text(
-          labels.join(', '),
-          maxLines: 3,
-          overflow: TextOverflow.ellipsis,
-          style: muted,
-        ),
+        Text(labels.join(', '), maxLines: 3, overflow: TextOverflow.ellipsis,
+            style: muted),
       ],
     );
   }

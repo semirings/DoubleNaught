@@ -6,11 +6,9 @@ import '../../../models/workflow.dart';
 import '../../../services/chunk_api.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
-import '../base/double_naught_node_wrapper.dart';
+import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
-
-enum ChunkStatus { idle, chunking, complete, error }
 
 /// A workflow processing node (AA-in → AA-out) that applies author-aware or
 /// generic boundary-aware chunking on the backend.
@@ -21,28 +19,19 @@ enum ChunkStatus { idle, chunking, complete, error }
 ///   stride, and EOT injection.
 /// - **Character Count** — fixed-window fallback; configurable max chars
 ///   and stride.
-class ChunkNode extends StatefulWidget {
-  final WorkflowNode node;
-  final Map<String, String>? initialParams;
-  final void Function(Map<String, String>)? onParams;
-
-  final bool inputConnected;
-  final void Function(PortRef source)? onInputConnect;
-  final void Function(InputPort port)? onInputPort;
-  final void Function(OutputPort port)? onOutputPort;
-  final Set<int> connectedOutputs;
+class ChunkNode extends BaseNodeWidget {
   final ChunkApi api;
 
   const ChunkNode({
     super.key,
-    required this.node,
-    this.initialParams,
-    this.onParams,
-    this.inputConnected = false,
-    this.onInputConnect,
-    this.onInputPort,
-    this.onOutputPort,
-    this.connectedOutputs = const {},
+    required super.node,
+    super.initialParams,
+    super.onParams,
+    super.inputConnected,
+    super.onInputConnect,
+    super.onInputPort,
+    super.onOutputPort,
+    super.connectedOutputs,
     this.api = const ChunkApi(),
   });
 
@@ -50,15 +39,17 @@ class ChunkNode extends StatefulWidget {
   State<ChunkNode> createState() => _ChunkNodeState();
 }
 
-class _ChunkNodeState extends State<ChunkNode> {
-  final InputPort _in = InputPort('text');
+class _ChunkNodeState extends BaseNodeState<ChunkNode> {
+  @override String   get nodeTitle    => 'Chunk';
+  @override IconData get nodeIcon     => Icons.segment;
+  @override String   get workingLabel => 'chunking';
+
+  final InputPort _in  = InputPort('text');
   final OutputPort _out = OutputPort('chunks');
 
   AaPayload? _incoming;
   AaPayload? _lastOutput;
   ChunkStats? _stats;
-  ChunkStatus _status = ChunkStatus.idle;
-  String? _error;
 
   late ChunkConfig _config;
 
@@ -66,7 +57,7 @@ class _ChunkNodeState extends State<ChunkNode> {
   late final TextEditingController _maxCharsCtrl;
   late final TextEditingController _strideCtrl;
 
-  bool get _canChunk => _incoming != null && _status != ChunkStatus.chunking;
+  bool get _canChunk => _incoming != null && status != NodeStatus.working;
 
   @override
   void initState() {
@@ -75,12 +66,10 @@ class _ChunkNodeState extends State<ChunkNode> {
         ? ChunkConfig.fromParams(widget.initialParams!)
         : const ChunkConfig();
     _maxTokensCtrl = TextEditingController(text: '${_config.maxTokens}');
-    _maxCharsCtrl = TextEditingController(text: '${_config.maxChars}');
-    _strideCtrl = TextEditingController(text: '${_config.stride}');
-
-    widget.onInputPort?.call(_in);
-    widget.onOutputPort?.call(_out);
-    _in.onDataArrived.listen(_onIncoming);
+    _maxCharsCtrl  = TextEditingController(text: '${_config.maxChars}');
+    _strideCtrl    = TextEditingController(text: '${_config.stride}');
+    initInputPort(_in, _onIncoming);
+    initOutputPort(_out);
   }
 
   @override
@@ -97,139 +86,114 @@ class _ChunkNodeState extends State<ChunkNode> {
     if (!mounted) return;
     setState(() {
       _incoming = payload;
-      _status = ChunkStatus.idle;
       _stats = null;
-      _error = null;
     });
+    setIdle();
     _chunk();
   }
 
   ChunkConfig _configFromFields() => _config.copyWith(
         maxTokens: int.tryParse(_maxTokensCtrl.text) ?? _config.maxTokens,
-        maxChars: int.tryParse(_maxCharsCtrl.text) ?? _config.maxChars,
-        stride: int.tryParse(_strideCtrl.text) ?? _config.stride,
+        maxChars:  int.tryParse(_maxCharsCtrl.text)  ?? _config.maxChars,
+        stride:    int.tryParse(_strideCtrl.text)    ?? _config.stride,
       );
 
-  void _saveParams() => widget.onParams?.call(_configFromFields().toParams());
+  void _saveParams() => saveParams(_configFromFields().toParams());
 
   Future<void> _chunk() async {
     final incoming = _incoming;
-    if (incoming == null || _status == ChunkStatus.chunking) return;
+    if (incoming == null || status == NodeStatus.working) return;
     final config = _configFromFields();
-    setState(() {
-      _config = config;
-      _status = ChunkStatus.chunking;
-      _error = null;
-    });
+    setState(() => _config = config);
+    setWorking();
     _saveParams();
     try {
       final result = await widget.api.chunk(incoming, config: config);
       if (!mounted) return;
       _lastOutput = result.aa;
       _out.emit(result.aa);
-      setState(() {
-        _stats = result.stats;
-        _status = ChunkStatus.complete;
-      });
+      setState(() => _stats = result.stats);
+      setComplete();
     } catch (e) {
       if (!mounted) return;
-      final msg = '$e';
-      setState(() {
-        _status = ChunkStatus.error;
-        _error = msg.contains(': ') ? msg.split(': ').skip(1).join(': ') : msg;
-      });
+      setError(e);
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final busy = _status == ChunkStatus.chunking;
-    final hasOutput = _lastOutput != null;
+  // ── Build overrides ──────────────────────────────────────────────────────
 
-    return DoubleNaughtNodeWrapper(
-      title: 'Chunk',
-      icon: Icons.segment,
-      inputPorts: [
+  @override
+  List<Widget> buildInputConnectors(BuildContext context) => [
         InputConnector(
           label: 'text',
           idx: 0,
           active: widget.inputConnected,
           onConnect: widget.onInputConnect,
         ),
-      ],
-      outputPorts: [
+      ];
+
+  @override
+  List<Widget> buildOutputConnectors(BuildContext context) => [
         OutputConnector(
           label: 'aaOut',
           idx: 0,
-          active: hasOutput || widget.connectedOutputs.contains(0),
+          active: _lastOutput != null || widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),
         ),
-      ],
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+      ];
+
+  @override
+  Widget buildNodeBody(BuildContext context) {
+    final theme = Theme.of(context);
+    final busy = status == NodeStatus.working;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 4),
+        _upstreamInfo(theme),
+        const SizedBox(height: 10),
+
+        _strategyRow(theme, busy),
+        const SizedBox(height: 6),
+
+        if (_config.strategy == ChunkStrategy.paragraphSentence) ...[
+          _intField('Max tokens', _maxTokensCtrl, busy),
+          _intField('Stride (tokens)', _strideCtrl, busy),
+          _eotToggle(theme, busy),
           const SizedBox(height: 4),
-          _upstreamInfo(theme),
-          const SizedBox(height: 10),
-
-          // Strategy selector
-          _strategyRow(theme, busy),
-          const SizedBox(height: 6),
-
-          // Strategy-specific config fields
-          if (_config.strategy == ChunkStrategy.paragraphSentence) ...[
-            _intField('Max tokens', _maxTokensCtrl, busy),
-            _intField('Stride (tokens)', _strideCtrl, busy),
-            _eotToggle(theme, busy),
-            const SizedBox(height: 4),
-          ] else if (_config.strategy == ChunkStrategy.characterCount) ...[
-            _intField('Max chars', _maxCharsCtrl, busy),
-            _intField('Stride (chars)', _strideCtrl, busy),
-            const SizedBox(height: 4),
-          ],
-
-          // Chunk button
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _canChunk ? _chunk : null,
-              icon: busy
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.segment, size: 18),
-              label: const Text('Chunk'),
-            ),
-          ),
-          if (_stats != null) ...[
-            const SizedBox(height: 10),
-            _statsPanel(theme, _stats!),
-          ],
-          const SizedBox(height: 8),
-          _statusIndicator(theme),
+        ] else if (_config.strategy == ChunkStrategy.characterCount) ...[
+          _intField('Max chars', _maxCharsCtrl, busy),
+          _intField('Stride (chars)', _strideCtrl, busy),
+          const SizedBox(height: 4),
         ],
-      ),
+
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _canChunk ? _chunk : null,
+            icon: busy ? busyIcon() : const Icon(Icons.segment, size: 18),
+            label: const Text('Chunk'),
+          ),
+        ),
+        if (_stats != null) ...[
+          const SizedBox(height: 10),
+          _statsPanel(theme, _stats!),
+        ],
+        const SizedBox(height: 8),
+        statusRow(),
+      ],
     );
   }
 
+  // ── Sub-builders ─────────────────────────────────────────────────────────
+
   Widget _strategyRow(ThemeData theme, bool busy) {
     const items = [
-      DropdownMenuItem(
-        value: ChunkStrategy.author,
-        child: Text('Author'),
-      ),
-      DropdownMenuItem(
-        value: ChunkStrategy.paragraphSentence,
-        child: Text('Para / Sentence'),
-      ),
-      DropdownMenuItem(
-        value: ChunkStrategy.characterCount,
-        child: Text('Char Count'),
-      ),
+      DropdownMenuItem(value: ChunkStrategy.author,           child: Text('Author')),
+      DropdownMenuItem(value: ChunkStrategy.paragraphSentence, child: Text('Para / Sentence')),
+      DropdownMenuItem(value: ChunkStrategy.characterCount,   child: Text('Char Count')),
     ];
     return Row(
       children: [
@@ -271,13 +235,11 @@ class _ChunkNodeState extends State<ChunkNode> {
               enabled: !busy,
               keyboardType: TextInputType.number,
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(fontFamily: 'monospace'),
+              style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
               decoration: const InputDecoration(
                 isDense: true,
                 border: OutlineInputBorder(),
-                contentPadding:
-                    EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+                contentPadding: EdgeInsets.symmetric(horizontal: 6, vertical: 4),
               ),
               onChanged: (_) => _saveParams(),
             ),
@@ -315,7 +277,7 @@ class _ChunkNodeState extends State<ChunkNode> {
             ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
       );
     }
-    final author = incoming.value('author');
+    final author    = incoming.value('author');
     final workTitle = incoming.value('work_title');
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -324,8 +286,7 @@ class _ChunkNodeState extends State<ChunkNode> {
           (workTitle != null && workTitle.isNotEmpty) ? workTitle : '(untitled)',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style:
-              theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+          style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
         ),
         if (author != null && author.isNotEmpty)
           Text(
@@ -353,8 +314,7 @@ class _ChunkNodeState extends State<ChunkNode> {
         children: [
           Text(
             '${stats.chunkCount} chunks',
-            style:
-                theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
+            style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600),
           ),
           const SizedBox(height: 2),
           Text(
@@ -366,36 +326,6 @@ class _ChunkNodeState extends State<ChunkNode> {
           ),
         ],
       ),
-    );
-  }
-
-  Widget _statusIndicator(ThemeData theme) {
-    final scheme = theme.colorScheme;
-    final (color, label) = switch (_status) {
-      ChunkStatus.idle => (scheme.outline, 'idle'),
-      ChunkStatus.chunking => (scheme.primary, 'chunking'),
-      ChunkStatus.complete => (Colors.green, 'complete'),
-      ChunkStatus.error => (scheme.error, 'error'),
-    };
-    final detail =
-        (_status == ChunkStatus.error && _error != null) ? ' · $_error' : '';
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          margin: const EdgeInsets.only(top: 4),
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: Text(
-            '$label$detail',
-            style: theme.textTheme.bodySmall?.copyWith(color: color),
-          ),
-        ),
-      ],
     );
   }
 }

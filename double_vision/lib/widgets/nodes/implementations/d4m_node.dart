@@ -8,7 +8,7 @@ import '../../../services/d4m_api.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../base/base_node.dart' show kPortSpacing;
-import '../base/double_naught_node_wrapper.dart';
+import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
 
@@ -25,12 +25,6 @@ class _D4mPort {
 }
 
 // ---------------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------------
-
-enum _D4mStatus { idle, busy, complete, error }
-
-// ---------------------------------------------------------------------------
 // Widget
 // ---------------------------------------------------------------------------
 
@@ -44,21 +38,13 @@ enum _D4mStatus { idle, busy, complete, error }
 /// * Preview: paginated AA table modal.
 /// * Left/Right: spawn adjacent D4M nodes.
 /// * Merge: combine selected D4M nodes' scripts.
-class D4mNode extends StatefulWidget {
+class D4mNode extends BaseNodeWidget {
   static const double _width = 340;
-
-  final WorkflowNode node;
-  final Map<String, String>? initialParams;
-  final void Function(Map<String, String> params)? onParams;
 
   // Dynamic port callbacks — index-based.
   final void Function(int idx, InputPort port)? onPort;
   final bool Function(int idx)? connectedAt;
   final void Function(PortRef source, int idx)? onConnect;
-
-  // Output port.
-  final void Function(OutputPort port)? onOutputPort;
-  final Set<int> connectedOutputs;
 
   // Adjacent-node spawning.
   final VoidCallback? onAddLeft;
@@ -74,14 +60,14 @@ class D4mNode extends StatefulWidget {
 
   const D4mNode({
     super.key,
-    required this.node,
-    this.initialParams,
-    this.onParams,
+    required super.node,
+    super.initialParams,
+    super.onParams,
+    super.onOutputPort,
+    super.connectedOutputs,
     this.onPort,
     this.connectedAt,
     this.onConnect,
-    this.onOutputPort,
-    this.connectedOutputs = const {},
     this.onAddLeft,
     this.onAddRight,
     this.inMergeSet = false,
@@ -95,7 +81,13 @@ class D4mNode extends StatefulWidget {
   State<D4mNode> createState() => _D4mNodeState();
 }
 
-class _D4mNodeState extends State<D4mNode> with WidgetsBindingObserver {
+class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
+  // ── Required base overrides ────────────────────────────────────────────────
+  @override String   get nodeTitle    => 'D4M';
+  @override IconData get nodeIcon     => Icons.functions;
+  @override String   get workingLabel => 'executing';
+  @override double   get nodeWidth    => D4mNode._width;
+
   late List<_D4mPort> _ports;
   final Map<int, AaPayload> _portData = {};
 
@@ -112,7 +104,6 @@ class _D4mNodeState extends State<D4mNode> with WidgetsBindingObserver {
   // restore focus on the next resumed event.
   bool _restoreFocusOnResume = false;
 
-  _D4mStatus _status = _D4mStatus.idle;
   String? _error;
   D4mExecResult? _lastExec;
   String? _outputHandleId;
@@ -251,7 +242,7 @@ class _D4mNodeState extends State<D4mNode> with WidgetsBindingObserver {
   // ---------------------------------------------------------------------------
 
   void _saveParams() {
-    widget.onParams?.call({
+    saveParams({
       'portNames': _ports.map((p) => p.name).join(','),
       'script': _scriptCtrl.text,
       'outputSymbol': _outSymCtrl.text,
@@ -264,24 +255,20 @@ class _D4mNodeState extends State<D4mNode> with WidgetsBindingObserver {
 
   bool get _canExec =>
       _scriptCtrl.text.trim().isNotEmpty &&
-      _status != _D4mStatus.busy &&
+      status != NodeStatus.working &&
       _portData.isNotEmpty;
 
   void _cancel() {
     _cancelled = true;
-    setState(() {
-      _status = _D4mStatus.idle;
-      _error = null;
-    });
+    setState(() => _error = null);
+    setIdle();
   }
 
   Future<void> _execute() async {
     if (!_canExec) return;
     _cancelled = false;
-    setState(() {
-      _status = _D4mStatus.busy;
-      _error = null;
-    });
+    setState(() => _error = null);
+    setWorking();
     try {
       // Ingest each port's AA that has data.
       final inputHandles = <String, String>{};
@@ -316,17 +303,12 @@ class _D4mNodeState extends State<D4mNode> with WidgetsBindingObserver {
       );
       if (!mounted || _cancelled) return;
       _out.emit(preview.aa);
-      setState(() => _status = _D4mStatus.complete);
+      setComplete();
       _saveParams();
     } catch (e) {
       if (!mounted || _cancelled) return;
-      final msg = '$e';
-      final friendly =
-          msg.contains(': ') ? msg.split(': ').skip(1).join(': ') : msg;
-      setState(() {
-        _status = _D4mStatus.error;
-        _error = friendly;
-      });
+      setState(() => _error = cleanError(e));
+      setError(e);
     }
   }
 
@@ -349,20 +331,11 @@ class _D4mNodeState extends State<D4mNode> with WidgetsBindingObserver {
   }
 
   // ---------------------------------------------------------------------------
-  // Build
+  // Build overrides
   // ---------------------------------------------------------------------------
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
-    final hasOutput = _outputHandleId != null;
-
-    return DoubleNaughtNodeWrapper(
-      title: 'D4M',
-      icon: Icons.functions,
-      width: D4mNode._width,
-      inputPorts: [
+  List<Widget> buildInputConnectors(BuildContext context) => [
         for (var i = 0; i < _ports.length; i++)
           InputConnector(
             label: _ports[i].name,
@@ -370,151 +343,152 @@ class _D4mNodeState extends State<D4mNode> with WidgetsBindingObserver {
             active: widget.connectedAt?.call(i) ?? false,
             onConnect: (src) => widget.onConnect?.call(src, i),
           ),
-      ],
-      outputPorts: [
+      ];
+
+  @override
+  List<Widget> buildOutputConnectors(BuildContext context) => [
         OutputConnector(
           label: 'aaOut',
           idx: 0,
-          active: hasOutput || widget.connectedOutputs.contains(0),
+          active: _outputHandleId != null || widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),
         ),
-      ],
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // --- Port management ---
-          _portManagementSection(theme),
-          const Divider(height: 12, thickness: 0.5),
+      ];
 
-          // --- Script editor ---
-          TextField(
-            controller: _scriptCtrl,
-            focusNode: _scriptFocusNode,
-            minLines: 6,
-            maxLines: 16,
-            style: theme.textTheme.bodySmall
-                ?.copyWith(fontFamily: 'monospace'),
-            decoration: const InputDecoration(
-              labelText: 'Julia D4M Script',
-              hintText: 'Out = A + B\nOut = Out[sw"chunk:", :]',
-              isDense: true,
-              border: OutlineInputBorder(),
-              contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+  @override
+  Widget buildNodeBody(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final busy = status == NodeStatus.working;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // --- Port management ---
+        _portManagementSection(theme),
+        const Divider(height: 12, thickness: 0.5),
+
+        // --- Script editor ---
+        TextField(
+          controller: _scriptCtrl,
+          focusNode: _scriptFocusNode,
+          minLines: 6,
+          maxLines: 16,
+          style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+          decoration: const InputDecoration(
+            labelText: 'Julia D4M Script',
+            hintText: 'Out = A + B\nOut = Out[sw"chunk:", :]',
+            isDense: true,
+            border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          ),
+          onChanged: (v) {
+            setState(() {});
+            _saveParams();
+          },
+        ),
+        const SizedBox(height: 6),
+
+        // --- Output symbol ---
+        Row(
+          children: [
+            Text('Out: ',
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(fontFamily: 'monospace')),
+            Expanded(
+              child: TextField(
+                controller: _outSymCtrl,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(fontFamily: 'monospace'),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  hintText: 'Out',
+                ),
+                onChanged: (_) => _saveParams(),
+              ),
             ),
-            onChanged: (v) {
-              setState(() {});
-              _saveParams();
-            },
-          ),
-          const SizedBox(height: 6),
+          ],
+        ),
+        const SizedBox(height: 8),
 
-          // --- Output symbol ---
-          Row(
-            children: [
-              Text('Out: ',
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(fontFamily: 'monospace')),
-              Expanded(
-                child: TextField(
-                  controller: _outSymCtrl,
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(fontFamily: 'monospace'),
-                  decoration: const InputDecoration(
-                    isDense: true,
-                    border: OutlineInputBorder(),
-                    contentPadding:
-                        EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    hintText: 'Out',
-                  ),
-                  onChanged: (_) => _saveParams(),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-
-          // --- Execute + Preview ---
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: _status == _D4mStatus.busy
-                      ? _cancel
-                      : (_canExec ? _execute : null),
-                  icon: _status == _D4mStatus.busy
-                      ? const Icon(Icons.stop_rounded, size: 16)
-                      : const Icon(Icons.play_arrow_rounded, size: 16),
-                  label: Text(
-                      _status == _D4mStatus.busy ? 'Cancel' : 'Execute'),
-                  style: OutlinedButton.styleFrom(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 6),
-              OutlinedButton.icon(
-                onPressed: _outputHandleId != null ? _showPreview : null,
-                icon: Icon(
-                  _previewOpen
-                      ? Icons.table_view
-                      : Icons.table_view_outlined,
-                  size: 16,
-                ),
-                label: const Text('Preview'),
+        // --- Execute + Preview ---
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: busy ? _cancel : (_canExec ? _execute : null),
+                icon: busy
+                    ? const Icon(Icons.stop_rounded, size: 16)
+                    : const Icon(Icons.play_arrow_rounded, size: 16),
+                label: Text(busy ? 'Cancel' : 'Execute'),
                 style: OutlinedButton.styleFrom(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  foregroundColor: _previewOpen
-                      ? Theme.of(context).colorScheme.primary
-                      : null,
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 4),
+            ),
+            const SizedBox(width: 6),
+            OutlinedButton.icon(
+              onPressed: _outputHandleId != null ? _showPreview : null,
+              icon: Icon(
+                _previewOpen ? Icons.table_view : Icons.table_view_outlined,
+                size: 16,
+              ),
+              label: const Text('Preview'),
+              style: OutlinedButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                foregroundColor:
+                    _previewOpen ? scheme.primary : null,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
 
-          // --- Adjacent node buttons ---
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              TextButton.icon(
-                onPressed: widget.onAddLeft,
-                icon: const Icon(Icons.arrow_back, size: 14),
-                label: const Text('+'),
-                style: TextButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  textStyle: theme.textTheme.labelSmall,
-                ),
+        // --- Adjacent node buttons ---
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            TextButton.icon(
+              onPressed: widget.onAddLeft,
+              icon: const Icon(Icons.arrow_back, size: 14),
+              label: const Text('+'),
+              style: TextButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                textStyle: theme.textTheme.labelSmall,
               ),
-              if (widget.inMergeSet || widget.canMerge)
-                _mergeButton(theme, scheme),
-              TextButton(
-                onPressed: widget.onAddRight,
-                style: TextButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  textStyle: theme.textTheme.labelSmall,
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('+'),
-                    SizedBox(width: 2),
-                    Icon(Icons.arrow_forward, size: 14),
-                  ],
-                ),
+            ),
+            if (widget.inMergeSet || widget.canMerge)
+              _mergeButton(theme, scheme),
+            TextButton(
+              onPressed: widget.onAddRight,
+              style: TextButton.styleFrom(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                textStyle: theme.textTheme.labelSmall,
               ),
-            ],
-          ),
-          const SizedBox(height: 4),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('+'),
+                  SizedBox(width: 2),
+                  Icon(Icons.arrow_forward, size: 14),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
 
-          // --- Status row ---
-          _statusRow(theme, scheme),
-        ],
-      ),
+        // --- Status row ---
+        _statusRow(theme, scheme),
+      ],
     );
   }
 
@@ -622,16 +596,16 @@ class _D4mNodeState extends State<D4mNode> with WidgetsBindingObserver {
   }
 
   Widget _statusRow(ThemeData theme, ColorScheme scheme) {
-    final (color, label) = switch (_status) {
-      _D4mStatus.idle => (scheme.outline, 'idle'),
-      _D4mStatus.busy => (scheme.primary, 'executing'),
-      _D4mStatus.complete => (Colors.green, 'complete'),
-      _D4mStatus.error => (scheme.error, 'error'),
+    final (color, label) = switch (status) {
+      NodeStatus.idle     => (scheme.outline, 'idle'),
+      NodeStatus.working  => (scheme.primary, 'executing'),
+      NodeStatus.complete => (Colors.green,   'complete'),
+      NodeStatus.error    => (scheme.error,   'error'),
     };
     final meta = _lastExec != null
         ? '  ${_lastExec!.numRows}×${_lastExec!.numCols}  nnz=${_lastExec!.nnz}'
         : '';
-    final detail = _status == _D4mStatus.error && _error != null
+    final detail = status == NodeStatus.error && _error != null
         ? ' · $_error'
         : meta;
 

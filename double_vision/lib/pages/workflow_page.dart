@@ -1827,7 +1827,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           // `aaIn` input (idx 0) — associative array over the port bus.
           aaConnected: _hasIncomingEdgeAt(node.id, 0),
           onAaConnect: (source) => _connectAt(source, node.id, 0),
-          onAaInputPort: (port) => _registerAaInput(node.id, 0, port),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
           // `textIn` input (idx 1) — text stream from upstream.
           textConnected: _hasIncomingEdgeAt(node.id, 1),
           onTextConnect: (source) => _connectAt(source, node.id, 1),

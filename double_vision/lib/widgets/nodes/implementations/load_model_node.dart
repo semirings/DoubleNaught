@@ -7,14 +7,8 @@ import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/model_catalog_store.dart';
-import '../base/double_naught_node_wrapper.dart';
+import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
-import '../base/output_connector.dart';
-
-/// Vertical space reserved so the two edge-anchored input labels (`trigger` at
-/// idx 0, `urlIn` at idx 1) clear the body controls.
-/// Clearance = 4 + max_port_idx × 24 = 4 + 1 × 24 = 28 px.
-const double _kPortLaneInset = 28;
 
 /// A **functional node** that resolves a model definition and emits it as a
 /// standard [AaPayload] (row `model:<id>`, attribute columns) for downstream
@@ -29,71 +23,57 @@ const double _kPortLaneInset = 28;
 /// The `modelSelect` dropdown is populated from the `displayName` attributes of
 /// rows in `storage/models_aa.json`. A remote model resolved from `urlIn` can be
 /// saved back into the catalog as a new AA row.
-class LoadModelNode extends StatefulWidget {
+class LoadModelNode extends BaseNodeWidget {
   static const double _width = 320;
-
-  final WorkflowNode node;
-
-  // trigger (AA) — idx 0
-  final bool triggerConnected;
-  final void Function(PortRef source)? onTriggerConnect;
-  final void Function(InputPort port)? onInputPort;
 
   // urlIn (String) — idx 1
   final bool urlConnected;
   final void Function(PortRef source)? onUrlConnect;
   final Stream<String>? locationInput;
 
-  // model (AA) — output idx 0
-  final void Function(OutputPort port)? onOutputPort;
-  final Set<int> connectedOutputs;
-
-  /// AA-native catalog store. Injectable for tests; defaults to
-  /// `storage/models_rcvs.json`.
   final ModelCatalogStore? store;
-
-  /// Saved settings to restore (the selected model id), and a callback to report
-  /// them back to the canvas for persistence.
-  final Map<String, String>? initialParams;
-  final void Function(Map<String, String> params)? onParams;
 
   const LoadModelNode({
     super.key,
-    required this.node,
-    this.triggerConnected = false,
-    this.onTriggerConnect,
-    this.onInputPort,
+    required super.node,
+    bool triggerConnected = false,
+    void Function(PortRef source)? onTriggerConnect,
+    super.onInputPort,
     this.urlConnected = false,
     this.onUrlConnect,
     this.locationInput,
-    this.onOutputPort,
-    this.connectedOutputs = const {},
+    super.onOutputPort,
+    super.connectedOutputs,
     this.store,
-    this.initialParams,
-    this.onParams,
-  });
+    super.initialParams,
+    super.onParams,
+  }) : super(inputConnected: triggerConnected, onInputConnect: onTriggerConnect);
 
   @override
   State<LoadModelNode> createState() => _LoadModelNodeState();
 }
 
-class _LoadModelNodeState extends State<LoadModelNode> {
+class _LoadModelNodeState extends BaseNodeState<LoadModelNode> {
+  @override String   get nodeTitle => 'Load Model';
+  @override IconData get nodeIcon  => Icons.memory_outlined;
+  @override double   get nodeWidth => LoadModelNode._width;
+
   late final ModelCatalogStore _catalog = widget.store ?? ModelCatalogStore();
 
-  final InputPort _trigger = InputPort('trigger');
-  final OutputPort _out = OutputPort('model');
+  final InputPort  _trigger = InputPort('trigger');
+  final OutputPort _out     = OutputPort('model');
 
-  List<ModelEntry> _models = [];
-  String? _selectedId; // modelId of the dropdown selection
-  String? _urlOverride; // latest value from urlIn (overrides the dropdown)
-  ModelEntry? _resolvedRemote; // last url-resolved model, for save-to-catalog
+  List<ModelEntry> _models        = [];
+  String?          _selectedId;
+  String?          _urlOverride;
+  ModelEntry?      _resolvedRemote;
 
   StreamSubscription<String>? _urlSub;
-  bool _loading = true;
-  bool _busy = false;
-  String? _error;
-  AaPayload? _lastOutput;
-  String? _resolvedLabel;
+  bool         _loading  = true;
+  bool         _busy     = false;
+  String?      _error;
+  AaPayload?   _lastOutput;
+  String?      _resolvedLabel;
 
   bool get _hasOverride =>
       _urlOverride != null && _urlOverride!.trim().isNotEmpty;
@@ -108,18 +88,16 @@ class _LoadModelNodeState extends State<LoadModelNode> {
   @override
   void initState() {
     super.initState();
-    // Restore a saved selection so it survives save/reload.
     final saved = widget.initialParams?['selectedId'];
     if (saved != null && saved.isNotEmpty) _selectedId = saved;
-    widget.onInputPort?.call(_trigger);
-    widget.onOutputPort?.call(_out);
-    _trigger.onDataArrived.listen(_onTrigger);
+    initInputPort(_trigger, _onTrigger);
+    initOutputPort(_out);
     _subscribeUrl();
     _load();
   }
 
   void _reportParams() =>
-      widget.onParams?.call({'selectedId': _selectedId ?? ''});
+      saveParams({'selectedId': _selectedId ?? ''});
 
   @override
   void didUpdateWidget(LoadModelNode oldWidget) {
@@ -138,13 +116,13 @@ class _LoadModelNodeState extends State<LoadModelNode> {
   Future<void> _load() async {
     setState(() {
       _loading = true;
-      _error = null;
+      _error   = null;
     });
     try {
       final models = await _catalog.models();
       if (!mounted) return;
       setState(() {
-        _models = models;
+        _models    = models;
         _selectedId ??= models.isNotEmpty ? models.first.modelId : null;
       });
     } catch (e) {
@@ -158,31 +136,27 @@ class _LoadModelNodeState extends State<LoadModelNode> {
     _urlSub?.cancel();
     _urlSub = widget.locationInput?.listen((location) {
       if (!mounted) return;
-      // A URL arriving on urlIn overrides the dropdown and loads from it.
       setState(() => _urlOverride = location.trim());
       _resolveAndEmit();
     });
   }
 
-  /// A trigger payload (e.g. from Start) resolves and emits the current model.
   void _onTrigger(AaPayload _) {
     if (!mounted) return;
     _resolveAndEmit();
   }
 
-  /// Build the model AA from the active source: the url override wins; otherwise
-  /// the catalog selection. Returns null when neither is available.
   AaPayload? _buildAa() {
     if (_hasOverride) {
-      final src = _urlOverride!.trim();
+      final src  = _urlOverride!.trim();
       final isHf = _looksLikeHfId(src);
       final entry = ModelEntry(
-        modelId: _modelIdFrom(src),
+        modelId:     _modelIdFrom(src),
         displayName: src,
-        sourceType: isHf ? 'huggingface' : 'remote_url',
-        pathOrUrl: src,
-        format: '',
-        task: '',
+        sourceType:  isHf ? 'huggingface' : 'remote_url',
+        pathOrUrl:   src,
+        format:      '',
+        task:        '',
       );
       _resolvedRemote = entry;
       return ModelCatalogStore.sliceModel(entry);
@@ -203,7 +177,7 @@ class _LoadModelNodeState extends State<LoadModelNode> {
     _out.emit(aa);
     setState(() {
       _resolvedLabel = aa.value('displayName');
-      _error = null;
+      _error         = null;
     });
   }
 
@@ -211,16 +185,16 @@ class _LoadModelNodeState extends State<LoadModelNode> {
     final entry = _resolvedRemote;
     if (entry == null) return;
     setState(() {
-      _busy = true;
+      _busy  = true;
       _error = null;
     });
     try {
       final models = await _catalog.upsert(entry);
       if (!mounted) return;
       setState(() {
-        _models = models;
-        _selectedId = entry.modelId;
-        _urlOverride = null; // now a catalog row; the dropdown owns it
+        _models         = models;
+        _selectedId     = entry.modelId;
+        _urlOverride    = null;
         _resolvedRemote = null;
       });
       _reportParams();
@@ -236,21 +210,20 @@ class _LoadModelNodeState extends State<LoadModelNode> {
     return u != null && (u.scheme == 'http' || u.scheme == 'https');
   }
 
-  /// e.g. `microsoft/phi-4` — an org/name pair, no scheme, no spaces.
   static bool _looksLikeHfId(String s) =>
       !_looksLikeUrl(s) && s.contains('/') && !s.contains(' ');
 
-  /// A stable model id from a URL (last path segment) or HF id, slugified.
   static String _modelIdFrom(String s) {
     String base = s.trim();
     final u = Uri.tryParse(base);
     if (u != null && (u.scheme == 'http' || u.scheme == 'https')) {
       base = u.pathSegments.isNotEmpty ? u.pathSegments.last : u.host;
     }
-    final b = StringBuffer();
-    var dash = false;
+    final b    = StringBuffer();
+    var   dash = false;
     for (final ch in base.toLowerCase().codeUnits) {
-      final alnum = (ch >= 0x30 && ch <= 0x39) || (ch >= 0x61 && ch <= 0x7a);
+      final alnum =
+          (ch >= 0x30 && ch <= 0x39) || (ch >= 0x61 && ch <= 0x7a);
       if (alnum) {
         if (dash && b.isNotEmpty) b.write('-');
         dash = false;
@@ -263,24 +236,15 @@ class _LoadModelNodeState extends State<LoadModelNode> {
     return out.isEmpty ? 'model' : out;
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final muted = theme.textTheme.bodySmall?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
-    );
-    final hasOutput = _lastOutput != null;
+  // ── Build overrides ──────────────────────────────────────────────────────
 
-    return DoubleNaughtNodeWrapper(
-      title: 'Load Model',
-      icon: Icons.memory_outlined,
-      width: LoadModelNode._width,
-      inputPorts: [
+  @override
+  List<Widget> buildInputConnectors(BuildContext context) => [
         InputConnector(
           label: 'trigger',
           idx: 0,
-          active: widget.triggerConnected,
-          onConnect: widget.onTriggerConnect,
+          active: widget.inputConnected,
+          onConnect: widget.onInputConnect,
         ),
         InputConnector(
           label: 'urlIn',
@@ -288,76 +252,79 @@ class _LoadModelNodeState extends State<LoadModelNode> {
           active: widget.urlConnected || widget.locationInput != null,
           onConnect: widget.onUrlConnect,
         ),
-      ],
-      outputPorts: [
-        OutputConnector(
+      ];
+
+  @override
+  List<Widget> buildOutputConnectors(BuildContext context) => [
+        singleOutputConnector(
           label: 'model',
           idx: 0,
-          active: hasOutput || widget.connectedOutputs.contains(0),
-          dragData: PortRef(nodeId: widget.node.id, idx: 0),
+          hasData: _lastOutput != null,
         ),
-      ],
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(height: _kPortLaneInset),
-          _dropdown(theme),
-          if (_hasOverride) ...[
-            const SizedBox(height: 8),
-            _overrideBanner(theme),
+      ];
+
+  @override
+  Widget buildNodeBody(BuildContext context) {
+    final theme  = Theme.of(context);
+    final muted  = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+    const kPortLaneInset = 28.0;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: kPortLaneInset),
+        _dropdown(theme),
+        if (_hasOverride) ...[
+          const SizedBox(height: 8),
+          _overrideBanner(theme),
+        ],
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed:
+                    (_busy || (_selectedModel == null && !_hasOverride))
+                        ? null
+                        : _resolveAndEmit,
+                icon: const Icon(Icons.download_outlined, size: 18),
+                label: const Text('Load'),
+              ),
+            ),
+            if (_resolvedRemote != null) ...[
+              const SizedBox(width: 8),
+              IconButton(
+                tooltip: 'Save this model to the catalog',
+                onPressed: _busy ? null : _saveToCatalog,
+                icon: const Icon(Icons.save_alt, size: 18),
+                visualDensity: VisualDensity.compact,
+              ),
+            ],
           ],
-          const SizedBox(height: 10),
+        ),
+        const SizedBox(height: 8),
+        _status(theme, muted),
+        if (_error != null) ...[
+          const SizedBox(height: 8),
           Row(
             children: [
+              Icon(Icons.error_outline, size: 14, color: theme.colorScheme.error),
+              const SizedBox(width: 6),
               Expanded(
-                child: OutlinedButton.icon(
-                  onPressed:
-                      (_busy || (_selectedModel == null && !_hasOverride))
-                      ? null
-                      : _resolveAndEmit,
-                  icon: const Icon(Icons.download_outlined, size: 18),
-                  label: const Text('Load'),
+                child: Text(
+                  _error!.replaceAll('\n', ' '),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall
+                      ?.copyWith(color: theme.colorScheme.error),
                 ),
               ),
-              if (_resolvedRemote != null) ...[
-                const SizedBox(width: 8),
-                IconButton(
-                  tooltip: 'Save this model to the catalog',
-                  onPressed: _busy ? null : _saveToCatalog,
-                  icon: const Icon(Icons.save_alt, size: 18),
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
             ],
           ),
-          const SizedBox(height: 8),
-          _status(theme, muted),
-          if (_error != null) ...[
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(
-                  Icons.error_outline,
-                  size: 14,
-                  color: theme.colorScheme.error,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    _error!.replaceAll('\n', ' '),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
         ],
-      ),
+      ],
     );
   }
 
@@ -369,9 +336,8 @@ class _LoadModelNodeState extends State<LoadModelNode> {
       return Text(
         'No models in the catalog. Feed a URL on urlIn, or add rows to '
         'models_aa.json.',
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
+        style: theme.textTheme.bodySmall
+            ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
       );
     }
     return DropdownButtonFormField<String>(
@@ -396,13 +362,12 @@ class _LoadModelNodeState extends State<LoadModelNode> {
             ),
           ),
       ],
-      // Choosing from the dropdown clears any urlIn override and auto-emits.
       onChanged: _busy
           ? null
           : (id) {
               setState(() {
-                _selectedId = id;
-                _urlOverride = null;
+                _selectedId     = id;
+                _urlOverride    = null;
                 _resolvedRemote = null;
               });
               _reportParams();
@@ -412,55 +377,49 @@ class _LoadModelNodeState extends State<LoadModelNode> {
   }
 
   Widget _overrideBanner(ThemeData theme) => Row(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Icon(Icons.link, size: 14, color: theme.colorScheme.primary),
-      const SizedBox(width: 6),
-      Expanded(
-        child: Text(
-          'urlIn override: ${_urlOverride!.trim()}',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: theme.colorScheme.primary,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.link, size: 14, color: theme.colorScheme.primary),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              'urlIn override: ${_urlOverride!.trim()}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: theme.colorScheme.primary),
+            ),
           ),
-        ),
-      ),
-    ],
-  );
+        ],
+      );
 
   Widget _status(ThemeData theme, TextStyle? muted) {
     final aa = _lastOutput;
-    if (aa == null) {
-      return Text('Not loaded', style: muted);
-    }
+    if (aa == null) return Text('Not loaded', style: muted);
+
     final source = aa.value('sourceType');
     final format = aa.value('format');
-    final task = aa.value('task');
-    final facts = <String>[
+    final task   = aa.value('task');
+    final facts  = <String>[
       if (source != null && source.isNotEmpty) source,
       if (format != null && format.isNotEmpty) format,
-      if (task != null && task.isNotEmpty) task,
+      if (task   != null && task.isNotEmpty)   task,
     ];
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
-            const Icon(
-              Icons.check_circle_outline,
-              size: 14,
-              color: Colors.green,
-            ),
+            const Icon(Icons.check_circle_outline, size: 14, color: Colors.green),
             const SizedBox(width: 6),
             Expanded(
               child: Text(
                 'Emitted ${_resolvedLabel ?? aa.value('displayName') ?? 'model'}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: Colors.green,
-                ),
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: Colors.green),
               ),
             ),
           ],

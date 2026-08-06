@@ -9,9 +9,8 @@ import '../../../services/classify_api.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/model_catalog_store.dart';
-import '../base/double_naught_node_wrapper.dart';
+import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
-import '../base/output_connector.dart';
 
 /// Vertical space reserved so the three edge-anchored input labels (`aaIn` at
 /// idx 0, `modelIn` at idx 1, `categoryIn` at idx 2) clear the body controls.
@@ -31,15 +30,12 @@ const double _kPortLaneInset = 60;
 ///    — replacing what used to be a comma-separated text field — and its
 ///    templates/thresholds drive the backend classification.
 ///
-/// Model resolution order: `modelIn` → manual field → dropdown selection. A
-/// Hugging Face repo id is passed to the runner verbatim; a web/local path is
-/// passed as resolved.
+/// Model resolution order: `modelIn` → manual field → dropdown selection.
 ///
 /// Output `classifiedAaOut` (AA, idx 0): all original chunk triples from
-/// `aaIn` plus one `score:<label>` column per category per chunk row (spaces
-/// replaced with underscores), and an optional `passed` column per row when
-/// the categories carry thresholds.
-class ModelClassifierNode extends StatefulWidget {
+/// `aaIn` plus one `score:<label>` column per category per chunk row, and an
+/// optional `passed` column per row when the categories carry thresholds.
+class ModelClassifierNode extends BaseNodeWidget {
   static const double _width = 320;
 
   /// Extracts human-readable category names from AA column names by stripping
@@ -50,9 +46,7 @@ class ModelClassifierNode extends StatefulWidget {
           .map((col) => col.substring('score:'.length))
           .toList();
 
-  /// Extracts score values from a pre-grouped row map (col → val). Returns
-  /// bare label → score (0..1); non-score columns are ignored. Useful in
-  /// Preview renderers that receive the classified AA row-by-row.
+  /// Extracts score values from a pre-grouped row map (col → val).
   static Map<String, double> scoresFromRow(Map<String, dynamic> rowMap) {
     final result = <String, double>{};
     rowMap.forEach((key, value) {
@@ -66,92 +60,73 @@ class ModelClassifierNode extends StatefulWidget {
     return result;
   }
 
-  final WorkflowNode node;
-
-  // aaIn (AA payload) — idx 0
-  final bool inputConnected;
-  final void Function(PortRef source)? onTextConnect;
-  final void Function(InputPort port)? onInputPort;
-
   // modelIn (String) — idx 1
   final bool modelConnected;
   final void Function(PortRef source)? onModelConnect;
   final Stream<String>? modelInput;
 
-  // categoryIn (AA payload) — idx 2
+  // categoryIn (AA) — idx 2
   final bool categoryConnected;
   final void Function(PortRef source)? onCategoryConnect;
   final void Function(InputPort port)? onCategoryPort;
 
-  // classifiedAaOut (AA) — output idx 0
-  final void Function(OutputPort port)? onOutputPort;
-  final Set<int> connectedOutputs;
-
-  /// AA-native model catalog (`storage/models_rcvs.json`). Injectable for tests.
   final ModelCatalogStore? store;
-
-  /// Classification backend client. Injectable for tests.
   final ClassifyApi api;
-
-  /// Saved settings to restore (selected model, manual path), and a callback to
-  /// report them back to the canvas for persistence.
-  final Map<String, String>? initialParams;
-  final void Function(Map<String, String> params)? onParams;
 
   const ModelClassifierNode({
     super.key,
-    required this.node,
-    this.inputConnected = false,
-    this.onTextConnect,
-    this.onInputPort,
+    required super.node,
+    super.inputConnected,
+    void Function(PortRef source)? onTextConnect,
+    super.onInputPort,
     this.modelConnected = false,
     this.onModelConnect,
     this.modelInput,
     this.categoryConnected = false,
     this.onCategoryConnect,
     this.onCategoryPort,
-    this.onOutputPort,
-    this.connectedOutputs = const {},
+    super.onOutputPort,
+    super.connectedOutputs,
     this.store,
     this.api = const ClassifyApi(),
-    this.initialParams,
-    this.onParams,
-  });
+    super.initialParams,
+    super.onParams,
+  }) : super(onInputConnect: onTextConnect);
 
   @override
   State<ModelClassifierNode> createState() => _ModelClassifierNodeState();
 }
 
-class _ModelClassifierNodeState extends State<ModelClassifierNode> {
+class _ModelClassifierNodeState extends BaseNodeState<ModelClassifierNode> {
+  @override String   get nodeTitle => 'Model Classifier';
+  @override IconData get nodeIcon  => Icons.category_outlined;
+  @override double   get nodeWidth => ModelClassifierNode._width;
+
   late final ModelCatalogStore _catalog = widget.store ?? ModelCatalogStore();
 
-  final InputPort _in = InputPort('aaIn');
-  final InputPort _categoryIn = InputPort('categoryIn');
-  final OutputPort _out = OutputPort('classifiedAaOut');
+  final InputPort  _in         = InputPort('aaIn');
+  final InputPort  _categoryIn = InputPort('categoryIn');
+  final OutputPort _out        = OutputPort('classifiedAaOut');
 
   final TextEditingController _manual = TextEditingController();
 
-  // aaIn: incoming AA payload with text column
   AaPayload? _incomingAa;
-  int _bytes = 0; // total bytes across all `text` column entries
+  int _bytes = 0;
 
-  // categoryIn: incoming categories AA (label / hypothesis_template / threshold)
   AaPayload? _categories;
 
-  List<ModelEntry> _models = [];
-  String? _selectedId; // modelId of the dropdown selection
-  String? _modelOverride; // latest value from modelIn (overrides the rest)
+  List<ModelEntry> _models       = [];
+  String?          _selectedId;
+  String?          _modelOverride;
 
   StreamSubscription<String>? _modelSub;
-  bool _loading = true;
-  bool _busy = false;
-  String? _error;
+  bool       _loading    = true;
+  bool       _busy       = false;
+  String?    _error;
   AaPayload? _lastOutput;
-  String? _status;
+  String?    _status;
 
-  // Auto-execution: fire when input data arrives, debounced, and de-duplicated
-  // so identical inputs don't re-hit the backend.
-  Timer? _autoTimer;
+  Timer?  _autoTimer;
   String? _lastRunSig;
 
   bool get _hasOverride =>
@@ -169,26 +144,24 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
   @override
   void initState() {
     super.initState();
-    // Restore saved settings so they survive save/reload.
     final p = widget.initialParams;
     if (p != null) {
       final sid = p['selectedId'];
       if (sid != null && sid.isNotEmpty) _selectedId = sid;
       if (p['manual'] != null) _manual.text = p['manual']!;
     }
-    widget.onInputPort?.call(_in);
+    initInputPort(_in, _onIncoming);
     widget.onCategoryPort?.call(_categoryIn);
-    widget.onOutputPort?.call(_out);
-    _in.onDataArrived.listen(_onIncoming);
     _categoryIn.onDataArrived.listen(_onCategories);
+    initOutputPort(_out);
     _subscribeModel();
     _load();
   }
 
-  void _reportParams() => widget.onParams?.call({
-    'selectedId': _selectedId ?? '',
-    'manual': _manual.text,
-  });
+  void _reportParams() => saveParams({
+        'selectedId': _selectedId ?? '',
+        'manual':     _manual.text,
+      });
 
   @override
   void didUpdateWidget(ModelClassifierNode oldWidget) {
@@ -210,7 +183,7 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
   Future<void> _load() async {
     setState(() {
       _loading = true;
-      _error = null;
+      _error   = null;
     });
     try {
       final models = await _catalog.models();
@@ -226,7 +199,6 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
     }
   }
 
-  /// Extract text from the incoming AA's text column.
   void _onIncoming(AaPayload payload) {
     if (!mounted) return;
     var total = 0;
@@ -234,15 +206,13 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
       if (payload.cols[i] == 'text') total += payload.vals[i].toString().length;
     }
     setState(() {
-      _status = null;
+      _status     = null;
       _incomingAa = payload;
-      _bytes = total;
+      _bytes      = total;
     });
     _maybeAutoClassify();
   }
 
-  /// Accept an incoming categories AA — its `label` column supplies the
-  /// candidate categories (superseding the removed comma-separated field).
   void _onCategories(AaPayload payload) {
     if (!mounted) return;
     setState(() => _categories = payload);
@@ -258,10 +228,8 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
     });
   }
 
-  /// Signature of the inputs a classify run depends on — used to skip re-running
-  /// on identical data.
   String? _runSignature() {
-    final m = _resolveModel();
+    final m    = _resolveModel();
     final cats = _categories;
     if (m == null || !_hasText || cats == null) return null;
     final aa = _incomingAa!;
@@ -269,9 +237,6 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
         'aa:${aa.rows.length}:${aa.vals.hashCode}';
   }
 
-  /// Fire a classification when input data arrives — debounced, skipping a run
-  /// whose inputs match the last one. Manual [_classify] via the button still
-  /// works regardless.
   void _maybeAutoClassify() {
     _autoTimer?.cancel();
     _autoTimer = Timer(const Duration(milliseconds: 400), () {
@@ -282,28 +247,21 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
     });
   }
 
-  /// Resolve the model to classify with: modelIn → manual → dropdown. Returns
-  /// the identifier the runner should receive plus its source type, or null.
-  ({String identifier, String sourceType, String displayName})?
-  _resolveModel() {
+  ({String identifier, String sourceType, String displayName})? _resolveModel() {
     final override = _modelOverride?.trim();
-    final manual = _manual.text.trim();
-    final raw = (override != null && override.isNotEmpty)
+    final manual   = _manual.text.trim();
+    final raw      = (override != null && override.isNotEmpty)
         ? override
         : (manual.isNotEmpty ? manual : null);
     if (raw != null) {
-      return (
-        identifier: raw,
-        sourceType: _sourceTypeFor(raw),
-        displayName: raw,
-      );
+      return (identifier: raw, sourceType: _sourceTypeFor(raw), displayName: raw);
     }
     final sel = _selectedModel;
     if (sel != null) {
       return (
-        identifier: sel.pathOrUrl.isNotEmpty ? sel.pathOrUrl : sel.modelId,
-        sourceType: sel.sourceType,
-        displayName: sel.displayName,
+        identifier:   sel.pathOrUrl.isNotEmpty ? sel.pathOrUrl : sel.modelId,
+        sourceType:   sel.sourceType,
+        displayName:  sel.displayName,
       );
     }
     return null;
@@ -311,26 +269,15 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
 
   static String _sourceTypeFor(String s) {
     final u = Uri.tryParse(s);
-    if (u != null && (u.scheme == 'http' || u.scheme == 'https')) {
-      return 'remote_url';
-    }
-    if (s.startsWith('/') ||
-        s.startsWith('.') ||
-        s.startsWith('~') ||
-        s.startsWith('file:')) {
-      return 'local';
-    }
-    // e.g. "org/name" — a Hugging Face repo id.
-    if (!s.contains(' ') && s.contains('/')) return 'huggingface';
+    if (u != null && (u.scheme == 'http' || u.scheme == 'https')) { return 'remote_url'; }
+    if (s.startsWith('/') || s.startsWith('.') || s.startsWith('~') ||
+        s.startsWith('file:')) { return 'local'; }
+    if (!s.contains(' ') && s.contains('/')) { return 'huggingface'; }
     return 'local';
   }
 
-  /// The full incoming AA to send to the classifier. Preserves every chunk row
-  /// so the backend scores each one independently. Null when no text column
-  /// has arrived on `aaIn`.
   AaPayload? _document() => _hasText ? _incomingAa : null;
 
-  /// Candidate labels drawn from the incoming categories AA's `label` column.
   List<String> _labelList() =>
       _categories == null ? const [] : CategoryStore.labelsOf(_categories!);
 
@@ -338,71 +285,58 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
       !_busy && _hasText && _resolveModel() != null && _labelList().isNotEmpty;
 
   Future<void> _classify() async {
-    final model = _resolveModel();
-    final docs = _document();
+    final model      = _resolveModel();
+    final docs       = _document();
     final categories = _categories;
-    final labels = _labelList();
+    final labels     = _labelList();
     if (model == null || docs == null || categories == null || labels.isEmpty) {
-      setState(
-        () => _error =
-            'Need text on aaIn, a model, and categories on categoryIn.',
-      );
+      setState(() => _error =
+          'Need text on aaIn, a model, and categories on categoryIn.');
       return;
     }
     setState(() {
-      _busy = true;
-      _error = null;
+      _busy   = true;
+      _error  = null;
       _status = 'Classifying…';
     });
     try {
       final result = await widget.api.classify(
-        model: model.identifier,
+        model:      model.identifier,
         sourceType: model.sourceType,
-        labels: labels,
-        documents: docs,
+        labels:     labels,
+        documents:  docs,
         categories: categories,
       );
       if (!mounted) return;
       _lastOutput = result;
       _lastRunSig = _runSignature();
       _out.emit(result);
-      final rowCount = result.distinctRows().length;
+      final rowCount    = result.distinctRows().length;
       final scoreLabels = ModelClassifierNode.displayCategories(result.cols);
-      setState(
-        () => _status =
-            'Classified $rowCount chunk${rowCount == 1 ? '' : 's'} × '
-            '${scoreLabels.length} categor${scoreLabels.length == 1 ? 'y' : 'ies'}',
-      );
+      setState(() => _status =
+          'Classified $rowCount chunk${rowCount == 1 ? '' : 's'} × '
+          '${scoreLabels.length} categor${scoreLabels.length == 1 ? 'y' : 'ies'}');
     } catch (e) {
       if (mounted) {
         setState(() {
           _status = null;
-          _error = '$e';
+          _error  = '$e';
         });
       }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) { setState(() => _busy = false); }
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final muted = theme.textTheme.bodySmall?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
-    );
-    final hasOutput = _lastOutput != null;
+  // ── Build overrides ──────────────────────────────────────────────────────
 
-    return DoubleNaughtNodeWrapper(
-      title: 'Model Classifier',
-      icon: Icons.category_outlined,
-      width: ModelClassifierNode._width,
-      inputPorts: [
+  @override
+  List<Widget> buildInputConnectors(BuildContext context) => [
         InputConnector(
           label: 'aaIn',
           idx: 0,
           active: widget.inputConnected,
-          onConnect: widget.onTextConnect,
+          onConnect: widget.onInputConnect,
         ),
         InputConnector(
           label: 'modelIn',
@@ -416,111 +350,103 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
           active: widget.categoryConnected,
           onConnect: widget.onCategoryConnect,
         ),
-      ],
-      outputPorts: [
-        OutputConnector(
+      ];
+
+  @override
+  List<Widget> buildOutputConnectors(BuildContext context) => [
+        singleOutputConnector(
           label: 'classifiedAaOut',
           idx: 0,
-          active: hasOutput || widget.connectedOutputs.contains(0),
-          dragData: PortRef(nodeId: widget.node.id, idx: 0),
+          hasData: _lastOutput != null,
         ),
-      ],
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const SizedBox(height: _kPortLaneInset),
-          _dropdown(theme),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _manual,
-            style: theme.textTheme.bodySmall,
-            decoration: const InputDecoration(
-              isDense: true,
-              labelText: 'Manual path / URL',
-              hintText: 'org/model or https://… or /path',
-              border: OutlineInputBorder(),
-              contentPadding: EdgeInsets.symmetric(
-                horizontal: 10,
-                vertical: 10,
-              ),
-            ),
-            onChanged: (_) {
-              setState(() {});
-              _reportParams();
-            },
+      ];
+
+  @override
+  Widget buildNodeBody(BuildContext context) {
+    final theme  = Theme.of(context);
+    final muted  = theme.textTheme.bodySmall
+        ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: _kPortLaneInset),
+        _dropdown(theme),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _manual,
+          style: theme.textTheme.bodySmall,
+          decoration: const InputDecoration(
+            isDense: true,
+            labelText: 'Manual path / URL',
+            hintText: 'org/model or https://… or /path',
+            border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
           ),
-          if (_hasOverride) ...[
-            const SizedBox(height: 8),
-            _overrideBanner(theme),
-          ],
-          const SizedBox(height: 14),
-          _categoriesInfo(theme, muted),
-          const SizedBox(height: 10),
-          _textInInfo(theme, muted),
-          const SizedBox(height: 14),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _canClassify ? _classify : null,
-              icon: _busy
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.play_arrow_rounded, size: 18),
-              label: const Text('Classify'),
-            ),
-          ),
-          if (_status != null) ...[
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                const Icon(
-                  Icons.check_circle_outline,
-                  size: 14,
-                  color: Colors.green,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    _status!,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: Colors.green,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-          if (_error != null) ...[
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Icon(
-                  Icons.error_outline,
-                  size: 14,
-                  color: theme.colorScheme.error,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    _error!.replaceAll('\n', ' '),
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
+          onChanged: (_) {
+            setState(() {});
+            _reportParams();
+          },
+        ),
+        if (_hasOverride) ...[
+          const SizedBox(height: 8),
+          _overrideBanner(theme),
         ],
-      ),
+        const SizedBox(height: 14),
+        _categoriesInfo(theme, muted),
+        const SizedBox(height: 10),
+        _textInInfo(theme, muted),
+        const SizedBox(height: 14),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _canClassify ? _classify : null,
+            icon: _busy
+                ? const SizedBox(
+                    width: 16, height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.play_arrow_rounded, size: 18),
+            label: const Text('Classify'),
+          ),
+        ),
+        if (_status != null) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Icon(Icons.check_circle_outline, size: 14, color: Colors.green),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  _status!,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(color: Colors.green),
+                ),
+              ),
+            ],
+          ),
+        ],
+        if (_error != null) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(Icons.error_outline, size: 14, color: theme.colorScheme.error),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  _error!.replaceAll('\n', ' '),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall
+                      ?.copyWith(color: theme.colorScheme.error),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ],
     );
   }
 
@@ -532,9 +458,8 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
       return Text(
         'No models in the catalog. Use the manual field or modelIn, or add rows '
         'to models_rcvs.json.',
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
+        style: theme.textTheme.bodySmall
+            ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
       );
     }
     return DropdownButtonFormField<String>(
@@ -552,11 +477,7 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
         for (final m in _models)
           DropdownMenuItem(
             value: m.modelId,
-            child: Text(
-              m.displayName,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
+            child: Text(m.displayName, maxLines: 1, overflow: TextOverflow.ellipsis),
           ),
       ],
       onChanged: _busy
@@ -569,24 +490,22 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
   }
 
   Widget _overrideBanner(ThemeData theme) => Row(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Icon(Icons.link, size: 14, color: theme.colorScheme.primary),
-      const SizedBox(width: 6),
-      Expanded(
-        child: Text(
-          'modelIn override: ${_modelOverride!.trim()}',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: theme.colorScheme.primary,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.link, size: 14, color: theme.colorScheme.primary),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              'modelIn override: ${_modelOverride!.trim()}',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: theme.colorScheme.primary),
+            ),
           ),
-        ),
-      ),
-    ],
-  );
+        ],
+      );
 
-  /// The categories drawn from `categoryIn`, or a hint to connect it.
   Widget _categoriesInfo(ThemeData theme, TextStyle? muted) {
     final labels = _labelList();
     if (labels.isEmpty) {
@@ -600,17 +519,12 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
       children: [
         Text(
           'Categories (${labels.length}) · from categoryIn',
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
+          style: theme.textTheme.labelSmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
         ),
         const SizedBox(height: 2),
-        Text(
-          labels.join(', '),
-          maxLines: 3,
-          overflow: TextOverflow.ellipsis,
-          style: theme.textTheme.bodySmall,
-        ),
+        Text(labels.join(', '), maxLines: 3, overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall),
       ],
     );
   }
@@ -629,17 +543,12 @@ class _ModelClassifierNodeState extends State<ModelClassifierNode> {
     if (incoming == null) {
       return Text('Connect aaIn (AA payload with text column).', style: muted);
     }
-    // Wired, but the AA has no `text` column — almost always a mis-wire (e.g.
-    // Load Model's `model` AA or a categories AA landed on aaIn instead of
-    // Chunk's passages). Name the columns that did arrive so it's self-evident.
     final cols = {for (final c in incoming.cols) c}.join(', ');
     return Text(
       "aaIn AA has no 'text' column — got: $cols. Wire Chunk's aaOut here.",
       maxLines: 3,
       overflow: TextOverflow.ellipsis,
-      style: theme.textTheme.bodySmall?.copyWith(
-        color: theme.colorScheme.error,
-      ),
+      style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),
     );
   }
 }

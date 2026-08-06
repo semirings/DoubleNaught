@@ -2,14 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../../models/aa_payload.dart';
-import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/review_api.dart';
 import '../../../services/storage_service.dart';
-import '../base/double_naught_node_wrapper.dart';
-import '../base/input_connector.dart';
-import '../base/output_connector.dart';
+import '../base/base_node_widget.dart';
 
 /// A human-in-the-loop curation node (AA-in → AA-out, per `DESIGN.md`) that sits
 /// between [ChunkNode] and [Aa2JsonlNode]. It presents candidate passages one at
@@ -22,26 +19,9 @@ import '../base/output_connector.dart';
 /// survives interruption. The node remembers its `reviewId` locally (via
 /// [StorageService]) and resumes on re-mount. Keyboard shortcuts `a` / `r`
 /// approve / reject the current passage for fast review.
-class ReviewNode extends StatefulWidget {
+class ReviewNode extends BaseNodeWidget {
   /// Wider than the default node so passage text is readable.
   static const double _width = 320;
-
-  final WorkflowNode node;
-
-  /// True when an edge feeds this node's input (drives the port highlight).
-  final bool inputConnected;
-
-  /// Called with the source endpoint when an edge is dropped on the input port.
-  final void Function(PortRef source)? onInputConnect;
-
-  /// Registers this node's ingress InputPort with the canvas bridge.
-  final void Function(InputPort port)? onInputPort;
-
-  /// Registers this node's egress OutputPort with the canvas bridge.
-  final void Function(OutputPort port)? onOutputPort;
-
-  /// Output port indices with an outgoing edge — drives the connected highlight.
-  final Set<int> connectedOutputs;
 
   /// Backend client. Injectable for tests; defaults to the shared instance.
   final ReviewApi api;
@@ -51,12 +31,12 @@ class ReviewNode extends StatefulWidget {
 
   ReviewNode({
     super.key,
-    required this.node,
-    this.inputConnected = false,
-    this.onInputConnect,
-    this.onInputPort,
-    this.onOutputPort,
-    this.connectedOutputs = const {},
+    required super.node,
+    super.inputConnected,
+    super.onInputConnect,
+    super.onInputPort,
+    super.onOutputPort,
+    super.connectedOutputs,
     this.api = const ReviewApi(),
     StorageService? storage,
   }) : storage = storage ?? StorageService();
@@ -65,10 +45,12 @@ class ReviewNode extends StatefulWidget {
   State<ReviewNode> createState() => _ReviewNodeState();
 }
 
-class _ReviewNodeState extends State<ReviewNode> {
-  /// Ingress/egress ports. The node listens to its own [_in] from birth, so the
-  /// upstream's retained value is delivered when the canvas calls connect().
-  final InputPort _in = InputPort('chunks');
+class _ReviewNodeState extends BaseNodeState<ReviewNode> {
+  @override String   get nodeTitle => 'Review';
+  @override IconData get nodeIcon  => Icons.rate_review_outlined;
+  @override double   get nodeWidth => ReviewNode._width;
+
+  final InputPort  _in  = InputPort('chunks');
   final OutputPort _out = OutputPort('curated');
 
   AaPayload? _incoming;
@@ -79,7 +61,7 @@ class _ReviewNodeState extends State<ReviewNode> {
   bool _editing = false;
   final TextEditingController _editController = TextEditingController();
 
-  bool _busy = false;
+  bool    _busy  = false;
   String? _error;
 
   AaPayload? _lastOutput;
@@ -91,9 +73,8 @@ class _ReviewNodeState extends State<ReviewNode> {
   @override
   void initState() {
     super.initState();
-    widget.onInputPort?.call(_in);
-    widget.onOutputPort?.call(_out);
-    _in.onDataArrived.listen(_onIncoming);
+    initInputPort(_in, _onIncoming);
+    initOutputPort(_out);
     _tryResumeFromStorage();
   }
 
@@ -116,7 +97,7 @@ class _ReviewNodeState extends State<ReviewNode> {
   Future<void> _tryResumeFromStorage() async {
     if (_session != null) return;
     try {
-      final record = await widget.storage.read(_storageKey);
+      final record   = await widget.storage.read(_storageKey);
       final reviewId = record?['reviewId'] as String?;
       if (reviewId == null || _session != null) return;
       final session = await widget.api.session(reviewId);
@@ -129,7 +110,7 @@ class _ReviewNodeState extends State<ReviewNode> {
 
   Future<void> _startReview(AaPayload aa) async {
     setState(() {
-      _busy = true;
+      _busy  = true;
       _error = null;
     });
     try {
@@ -138,22 +119,22 @@ class _ReviewNodeState extends State<ReviewNode> {
       try {
         await widget.storage.write(_storageKey, {'reviewId': session.reviewId});
       } catch (_) {
-        // dart:io unavailable (web) or write failed — resume still works while
-        // the app stays open; ignore.
+        // dart:io unavailable (web) or write failed — ignore; resume still works
+        // while the app stays open.
       }
       _applySession(session);
     } catch (e) {
-      if (mounted) setState(() => _error = '$e');
+      if (mounted) { setState(() => _error = '$e'); }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) { setState(() => _busy = false); }
     }
   }
 
   void _applySession(ReviewSession session) {
     setState(() {
       _session = session;
-      _index = _firstPending(session, 0);
-      _error = null;
+      _index   = _firstPending(session, 0);
+      _error   = null;
     });
     if (session.complete) {
       _emitOutput(session.reviewId);
@@ -169,21 +150,21 @@ class _ReviewNodeState extends State<ReviewNode> {
     final passage = session.passages[_index];
 
     setState(() {
-      _busy = true;
+      _busy  = true;
       _error = null;
     });
     try {
       final updated = await widget.api.decide(
-        reviewId: session.reviewId,
-        chunkId: passage.chunkId,
-        status: status,
+        reviewId:   session.reviewId,
+        chunkId:    passage.chunkId,
+        status:     status,
         editedText: editedText,
       );
       if (!mounted) return;
       setState(() {
         _session = updated;
         _editing = false;
-        _index = _firstPending(updated, _index + 1);
+        _index   = _firstPending(updated, _index + 1);
       });
       if (updated.complete) {
         await _emitOutput(updated.reviewId);
@@ -191,22 +172,22 @@ class _ReviewNodeState extends State<ReviewNode> {
         _requestFocusSoon();
       }
     } catch (e) {
-      if (mounted) setState(() => _error = '$e');
+      if (mounted) { setState(() => _error = '$e'); }
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) { setState(() => _busy = false); }
     }
   }
 
   Future<void> _emitOutput(String reviewId) async {
     try {
-      final full = await widget.api.output(reviewId);
+      final full      = await widget.api.output(reviewId);
       final forwarded = _forwardable(full);
       if (!mounted) return;
       _lastOutput = forwarded;
       _out.emit(forwarded);
-      setState(() {}); // refresh the output-port highlight
+      setState(() {}); // refresh output-port highlight
     } catch (e) {
-      if (mounted) setState(() => _error = '$e');
+      if (mounted) { setState(() => _error = '$e'); }
     }
   }
 
@@ -276,44 +257,28 @@ class _ReviewNodeState extends State<ReviewNode> {
     _requestFocusSoon();
   }
 
+  // ── Build overrides ──────────────────────────────────────────────────────
+
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final wired = widget.inputConnected;
-    final session = _session;
-    final hasOutput = _lastOutput != null;
+  List<Widget> buildInputConnectors(BuildContext context) =>
+      [singleInputConnector(label: 'chunks')];
 
-    final Widget body;
-    if (session == null) {
-      body = _preSessionBody(theme, wired);
-    } else if (session.complete) {
-      body = _completeBody(theme, session);
-    } else {
-      body = _reviewingBody(theme, session);
-    }
-
-    return DoubleNaughtNodeWrapper(
-      title: 'Review',
-      icon: Icons.rate_review_outlined,
-      width: ReviewNode._width,
-      inputPorts: [
-        InputConnector(
-          label: 'chunks',
-          idx: 0,
-          active: wired,
-          onConnect: widget.onInputConnect,
-        ),
-      ],
-      outputPorts: [
-        OutputConnector(
+  @override
+  List<Widget> buildOutputConnectors(BuildContext context) => [
+        singleOutputConnector(
           label: 'curated',
           idx: 0,
-          active: hasOutput || widget.connectedOutputs.contains(0),
-          dragData: PortRef(nodeId: widget.node.id, idx: 0),
+          hasData: _lastOutput != null,
         ),
-      ],
-      child: body,
-    );
+      ];
+
+  @override
+  Widget buildNodeBody(BuildContext context) {
+    final theme   = Theme.of(context);
+    final session = _session;
+    if (session == null)      return _preSessionBody(theme, widget.inputConnected);
+    if (session.complete)     return _completeBody(theme, session);
+    return _reviewingBody(theme, session);
   }
 
   Widget _preSessionBody(ThemeData theme, bool wired) {
@@ -321,7 +286,8 @@ class _ReviewNodeState extends State<ReviewNode> {
       return Row(
         children: [
           const SizedBox(
-              width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+              width: 16, height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2)),
           const SizedBox(width: 10),
           Text('Starting review…', style: theme.textTheme.bodySmall),
         ],
@@ -396,11 +362,11 @@ class _ReviewNodeState extends State<ReviewNode> {
   }
 
   Widget _passageCard(ThemeData theme, ReviewPassage passage) {
-    final scheme = theme.colorScheme;
+    final scheme      = theme.colorScheme;
     final displayText = passage.editedText ?? passage.text;
     final facts = <String>[
-      if (passage.author.isNotEmpty) passage.author,
-      if (passage.workTitle.isNotEmpty) passage.workTitle,
+      if (passage.author.isNotEmpty)        passage.author,
+      if (passage.workTitle.isNotEmpty)     passage.workTitle,
       'pos ${passage.position}',
       '${passage.tokenCount} tok',
       if (passage.chunkStrategy.isNotEmpty) passage.chunkStrategy,
@@ -424,7 +390,8 @@ class _ReviewNodeState extends State<ReviewNode> {
           const Divider(height: 14),
           Text(
             facts.join('  •  '),
-            style: theme.textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
           ),
         ],
       ),
@@ -452,7 +419,8 @@ class _ReviewNodeState extends State<ReviewNode> {
         Expanded(
           child: OutlinedButton.icon(
             onPressed: _busy ? null : () => _decide('rejected'),
-            style: OutlinedButton.styleFrom(foregroundColor: theme.colorScheme.error),
+            style: OutlinedButton.styleFrom(
+                foregroundColor: theme.colorScheme.error),
             icon: const Icon(Icons.close, size: 16),
             label: const Text('Reject'),
           ),
@@ -501,7 +469,7 @@ class _ReviewNodeState extends State<ReviewNode> {
   }
 
   Widget _completeBody(ThemeData theme, ReviewSession session) {
-    final c = session.counts;
+    final c         = session.counts;
     final forwarded = c.approved + c.edited;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

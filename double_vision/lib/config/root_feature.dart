@@ -2,6 +2,7 @@ import 'package:go_router/go_router.dart';
 import 'package:vyuh_core/vyuh_core.dart';
 
 import '../pages/home_page.dart';
+import '../pages/textfield_test_page.dart';
 import '../pages/workflow_page.dart';
 
 /// The application's root feature.
@@ -23,6 +24,10 @@ final rootFeature = FeatureDescriptor(
     GoRoute(
       path: '/nodes',
       builder: (context, state) => const WorkflowPage(),
+    ),
+    GoRoute(
+      path: '/textfield-test',
+      builder: (context, state) => const TextFieldTestPage(),
     ),
   ],
 );
