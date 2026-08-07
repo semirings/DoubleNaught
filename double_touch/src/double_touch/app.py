@@ -77,6 +77,10 @@ from .models import (
     ReviewOutputResponse,
     ReviewSessionResponse,
     ReviewStartRequest,
+    LoadFileRequest,
+    LoadFileResponse,
+    SaveFileRequest,
+    SaveFileResponse,
     SegmentResponse,
     SegmentResults,
     TextHealthResponse,
@@ -107,6 +111,8 @@ from .review import ReviewStore
 from .sessions import PromptRecord, Session, SessionStore
 from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
+from .save_file import execute_save
+from .load_file import load_file
 
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
@@ -1184,6 +1190,57 @@ async def split(request: SplitRequest) -> SplitResponse:
         train_count=train_count,
         val_count=val_count,
         total_count=total_count,
+    )
+
+
+# --- Load File node (LoadFileNode) -------------------------------------------
+
+@app.post("/load", response_model=LoadFileResponse)
+async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
+    try:
+        aa, data = await run_in_threadpool(
+            load_file,
+            request.file_path,
+            request.schema_mode,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    payload_type = "associative_array" if aa is not None else "table"
+    return LoadFileResponse(
+        aa=aa,
+        data=data or {},
+        payload_type=payload_type,
+        message=f"Loaded {payload_type} from {Path(request.file_path).name}",
+    )
+
+
+# --- Save File node (SaveFileNode) -------------------------------------------
+
+@app.post("/save", response_model=SaveFileResponse)
+async def save_file(request: SaveFileRequest) -> SaveFileResponse:
+    try:
+        out_path, bytes_written = await run_in_threadpool(
+            execute_save,
+            request.aa,
+            request.text,
+            request.image_base64,
+            request.filename,
+            request.format,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return SaveFileResponse(
+        file_path=str(out_path),
+        bytes_written=bytes_written,
+        message=f"Saved {bytes_written} bytes to {out_path.name}",
     )
 
 

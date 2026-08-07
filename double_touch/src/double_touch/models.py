@@ -609,3 +609,53 @@ class AaBinaryNormalizeResponse(CamelModel):
     column_schema: dict[str, str]
     # True when the backing Dataset was memory-mapped (keep_in_memory=False).
     is_memory_mapped: bool
+
+
+# --- Load File node (LoadFileNode) -------------------------------------------
+# A source node: loads files (.parquet, .arrow, .json, .csv, .txt) from disk
+# and auto-detects Associative Arrays based on schema metadata or column patterns.
+
+
+class LoadFileRequest(CamelModel):
+    # Absolute path to the file to load.
+    file_path: str
+    # Schema handling mode: "auto" (default), "force_aa", or "raw_table".
+    schema_mode: str = "auto"
+
+
+class LoadFileResponse(CamelModel):
+    # The loaded AA (if detected/requested), else None.
+    aa: Optional[AssocArray] = None
+    # The raw data representation (dict/table).
+    data: dict = {}
+    # Detected payload type: "associative_array", "table", "text", "unknown".
+    payload_type: str = "unknown"
+    # Status message for UI display.
+    message: str = ""
+
+
+# --- Save File node (SaveFileNode) -------------------------------------------
+# A sink node: persists incoming data (AA, text, or image bytes) to the backend
+# storage directory in Parquet (for AA) or native format (text/image).
+
+
+class SaveFileRequest(CamelModel):
+    # Data payload: AA for tabular data, text string, or base64-encoded image.
+    aa: Optional[AssocArray] = None
+    text: Optional[str] = None
+    # Image bytes as base64-encoded string.
+    image_base64: Optional[str] = None
+    # Output filename (without extension). Defaults to "export".
+    filename: str = "export"
+    # Output format: "parquet" (AA only), "csv", "json", "txt", "png", "jpg".
+    # Ignored if auto-detected from incoming data. Default: "parquet".
+    format: str = "parquet"
+
+
+class SaveFileResponse(CamelModel):
+    # Absolute path of the saved file on the backend.
+    file_path: str
+    # Byte size of the written file.
+    bytes_written: int
+    # Status message for UI display.
+    message: str

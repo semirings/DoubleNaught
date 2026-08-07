@@ -1,155 +1,138 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:typed_data';
 
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
-import '../../../services/aa_file.dart';
+import '../../../services/load_file_api.dart';
 import '../../../services/infobus/output_port.dart';
 import '../base/base_node_widget.dart';
 import '../base/output_connector.dart';
 
-/// A workflow source node that opens the local file dialog and streams the
-/// chosen file's bytes out of a `contents` connector (idx 0).
+/// A workflow source node that loads files from the backend storage directory
+/// and auto-detects Associative Arrays based on schema metadata or column patterns.
 ///
-/// When the chosen file is a `.json` file that conforms to the rcvs AA schema
-/// (`{rows, cols, vals}`), it is *also* parsed and emitted as an [AaPayload] on
-/// a second `aa` connector (idx 1), so a downstream Preview (or any AA
-/// consumer) can display it as a table rather than raw text. Non-AA files leave
-/// that port inert.
+/// Supports .parquet, .arrow, .json, .csv, .txt files. AA detection is handled
+/// by the backend /load endpoint, which checks for metadata tags and reconstructs
+/// native AA objects. Non-AA files are returned as raw tables/text.
 ///
-/// Renamed from `FileSourceNode` (type `file_source`). The `file_source` type
-/// is handled as a backward-compat alias in the workflow page's `_buildNode`.
+/// Emits two output ports:
+/// - `contents` (idx 0): raw file data as dict/string (for non-AA files)
+/// - `aa` (idx 1): the loaded AA if detected, else null
 class LoadFileNode extends BaseNodeWidget {
-  final void Function(Stream<Uint8List> contents)? onConnect;
-  final void Function(String fileName)? onFileName;
+  final void Function(AaPayload aa)? onAaLoaded;
 
   const LoadFileNode({
     super.key,
     required super.node,
     super.initialParams,
     super.onParams,
-    this.onConnect,
-    this.onFileName,
+    this.onAaLoaded,
     super.onOutputPort,
     super.connectedOutputs,
   });
-
-  static AaPayload? detectAa(Uint8List bytes, String? fileName) {
-    if (fileName == null || !fileName.toLowerCase().endsWith('.json')) {
-      return null;
-    }
-    try {
-      final aa = AaFile.decode(jsonDecode(utf8.decode(bytes))).toSparse();
-      return aa.cols.isNotEmpty ? aa : null;
-    } catch (_) {
-      return null;
-    }
-  }
 
   @override
   State<LoadFileNode> createState() => _LoadFileNodeState();
 }
 
+enum _SchemaMode { auto, forceAa, rawTable }
+
 class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   @override String   get nodeTitle => 'Load File';
   @override IconData get nodeIcon  => Icons.upload_file_outlined;
 
-  final List<Uint8List> _buffer = [];
-  late final StreamController<Uint8List> _output;
+  final OutputPort _contentsOut = OutputPort('contents');
   final OutputPort _aaOut = OutputPort('aa');
+  final LoadFileApi _api = const LoadFileApi();
 
+  late TextEditingController _filePathController;
+  _SchemaMode _schemaMode = _SchemaMode.auto;
   AaPayload? _aa;
-  XFile?     _selectedFile;
-  int        _bytesStreamed = 0;
-  int        _totalBytes   = 0;
-  bool       _isStreaming  = false;
-  bool       _allDone      = false;
-  String?    _errorMessage;
-
-  double? get _loadingProgress =>
-      _totalBytes > 0 ? (_bytesStreamed / _totalBytes).clamp(0.0, 1.0) : null;
+  bool _isLoading = false;
+  String? _errorMessage;
+  String? _statusMessage;
 
   @override
   void initState() {
     super.initState();
-    _output = StreamController<Uint8List>.broadcast(onListen: _replayBuffer);
-    widget.onConnect?.call(_output.stream);
+    initOutputPort(_contentsOut);
     initOutputPort(_aaOut);
-    final savedPath = widget.initialParams?['filePath'];
-    if (savedPath != null && savedPath.isNotEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _streamFile(XFile(savedPath));
-      });
-    }
-  }
 
-  void _replayBuffer() {
-    if (_buffer.isEmpty) return;
-    final pending = List<Uint8List>.of(_buffer);
-    scheduleMicrotask(() {
-      if (_output.isClosed) return;
-      for (final chunk in pending) {
-        _output.add(chunk);
+    _filePathController = TextEditingController(
+      text: widget.initialParams?['filePath'] ?? 'storage/out/export.parquet',
+    );
+
+    final schemaMode = widget.initialParams?['schemaMode'];
+    if (schemaMode != null) {
+      try {
+        _schemaMode = _SchemaMode.values.byName(schemaMode);
+      } catch (_) {
+        _schemaMode = _SchemaMode.auto;
       }
-    });
+    }
   }
 
   @override
   void dispose() {
-    _output.close();
+    _filePathController.dispose();
+    _contentsOut.dispose();
     _aaOut.dispose();
     super.dispose();
   }
 
-  Future<void> _pickAndStream() async {
-    final XFile? picked = await openFile();
-    if (picked == null) return;
-    saveParams({'filePath': picked.path});
-    widget.onFileName?.call(picked.name);
-    await _streamFile(picked);
-  }
+  Future<void> _onLoadPressed() async {
+    final filePath = _filePathController.text.trim();
+    if (filePath.isEmpty) {
+      setState(() {
+        _errorMessage = 'Error: Enter a file path';
+        _statusMessage = null;
+      });
+      return;
+    }
 
-  Future<void> _streamFile(XFile picked) async {
     setState(() {
-      _selectedFile  = picked;
-      _bytesStreamed = 0;
-      _totalBytes    = 0;
-      _isStreaming   = true;
-      _allDone       = false;
-      _errorMessage  = null;
-      _aa            = null;
+      _isLoading = true;
+      _errorMessage = null;
+      _statusMessage = 'Loading...';
     });
-    _buffer.clear();
 
     try {
-      _totalBytes = await picked.length();
-      await for (final chunk in picked.openRead()) {
-        if (!mounted) return;
-        _buffer.add(chunk);
-        _output.add(chunk);
-        setState(() => _bytesStreamed += chunk.length);
-      }
-      if (mounted) {
-        setState(() => _allDone = true);
-        _detectAndEmitAa();
-      }
-    } catch (e) {
-      if (mounted) setState(() => _errorMessage = '$e');
-    } finally {
-      if (mounted) setState(() => _isStreaming = false);
-    }
-  }
+      final response = await _api.load(
+        filePath: filePath,
+        schemaMode: _schemaMode.name,
+      );
 
-  void _detectAndEmitAa() {
-    final all = Uint8List.fromList(_buffer.expand((c) => c).toList());
-    final aa  = LoadFileNode.detectAa(all, _selectedFile?.name);
-    if (aa == null) return;
-    setState(() => _aa = aa);
-    _aaOut.emit(aa);
+      if (!mounted) return;
+
+      setState(() {
+        _aa = response.aa;
+        _statusMessage = response.message;
+        _errorMessage = null;
+      });
+
+      // Emit the AA if detected.
+      if (response.aa != null) {
+        _aaOut.emit(response.aa!);
+      }
+
+      // Save params for persistence.
+      saveParams({
+        'filePath': filePath,
+        'schemaMode': _schemaMode.name,
+      });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Error: ${e.toString()}';
+          _statusMessage = null;
+        });
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
   // ── Build overrides ──────────────────────────────────────────────────────
@@ -159,8 +142,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
         OutputConnector(
           label: 'contents',
           idx: 0,
-          active: _selectedFile != null,
-          onTap: _isStreaming ? null : _pickAndStream,
+          active: _statusMessage != null || _aa != null,
           dragData: PortRef(nodeId: widget.node.id, idx: 0),
         ),
         OutputConnector(
@@ -173,37 +155,59 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
 
   @override
   Widget buildNodeBody(BuildContext context) {
-    final theme   = Theme.of(context);
-    final hasFile = _selectedFile != null;
+    final theme = Theme.of(context);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SizedBox(height: 28),
-        InkWell(
-          onTap: _isStreaming ? null : _pickAndStream,
-          borderRadius: BorderRadius.circular(8),
-          child: Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: theme.colorScheme.outlineVariant),
+        TextField(
+          controller: _filePathController,
+          enabled: !_isLoading,
+          decoration: const InputDecoration(
+            labelText: 'File Path (backend storage)',
+            hintText: 'storage/out/export.parquet',
+            isDense: true,
+            border: OutlineInputBorder(),
+            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          ),
+        ),
+        const SizedBox(height: 8),
+        DropdownMenu<_SchemaMode>(
+          enableSearch: false,
+          label: const Text('Schema Mode'),
+          initialSelection: _schemaMode,
+          onSelected: (mode) {
+            if (mode != null) setState(() => _schemaMode = mode);
+          },
+          dropdownMenuEntries: const [
+            DropdownMenuEntry(
+              value: _SchemaMode.auto,
+              label: 'Auto-Detect',
             ),
-            child: Row(
-              children: [
-                const Icon(Icons.folder_open, size: 20),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    hasFile ? _selectedFile!.name : 'Choose file…',
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyMedium,
-                  ),
-                ),
-              ],
+            DropdownMenuEntry(
+              value: _SchemaMode.forceAa,
+              label: 'Force AA',
             ),
+            DropdownMenuEntry(
+              value: _SchemaMode.rawTable,
+              label: 'Raw Table',
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 40,
+          child: ElevatedButton.icon(
+            onPressed: _isLoading ? null : _onLoadPressed,
+            icon: _isLoading
+                ? const SizedBox(
+                    width: 16, height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.download, size: 16),
+            label: Text(_isLoading ? 'Loading...' : 'Load'),
           ),
         ),
         const SizedBox(height: 8),
@@ -217,7 +221,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   }
 
   Widget _buildAaIndicator(ThemeData theme) {
-    final aa   = _aa!;
+    final aa = _aa!;
     final rows = aa.distinctRows().length;
     final cols = <String>{...aa.cols}.length;
     return Row(
@@ -242,38 +246,18 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
       return Text(_errorMessage!,
           style: TextStyle(color: theme.colorScheme.error, fontSize: 12));
     }
-    if (_isStreaming) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: _loadingProgress,
-              minHeight: 6,
-              color: Colors.green,
-              backgroundColor: theme.colorScheme.outlineVariant,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Loading… $_bytesStreamed'
-            '${_totalBytes > 0 ? ' / $_totalBytes' : ''} bytes',
-            style: theme.textTheme.bodySmall,
-          ),
-        ],
-      );
-    }
-    if (_allDone) {
+    if (_statusMessage != null) {
       return Row(
         children: [
           const Icon(Icons.check_circle_outline, size: 16, color: Colors.green),
           const SizedBox(width: 6),
-          Text('Done',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: Colors.green, fontWeight: FontWeight.w600)),
-          const SizedBox(width: 8),
-          Text('$_bytesStreamed bytes', style: theme.textTheme.bodySmall),
+          Expanded(
+            child: Text(_statusMessage!,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: Colors.green),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis),
+          ),
         ],
       );
     }

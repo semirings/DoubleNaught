@@ -14,6 +14,11 @@
 # `flutter run -d <device>` directly from the double_vision/ directory.
 
 set -e
+# Correct configuration for run.sh
+unset PYTHON_JULIACALL_EXE
+export PYTHON_JULIACALL_EXE="$(which julia)"
+export JULIA_PROJECT="$(pwd)"
+export PYTHON_JULIACALL_PROJECT="$(pwd)"
 
 # Absolute path to this script's directory, so it works from anywhere.
 ROOT="${0:A:h}"

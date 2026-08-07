@@ -1683,8 +1683,6 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          onConnect: (stream) => _outputs[node.id] = stream,
-          onFileName: (name) => setState(() => _sourceNames[node.id] = name),
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
