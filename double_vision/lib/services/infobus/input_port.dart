@@ -21,6 +21,12 @@ class InputPort {
   final _arrivalController = StreamController<AaPayload>.broadcast();
   Stream<AaPayload> get onDataArrived => _arrivalController.stream;
 
+  // Fires when a live wire is severed — the other half of [connect]'s replay
+  // contract. Without it a consumer keeps rendering the payload of an upstream
+  // it is no longer wired to.
+  final _departureController = StreamController<void>.broadcast();
+  Stream<void> get onDisconnected => _departureController.stream;
+
   InputPort(this.id, {this.isRequired = true, this.maxBufferSize = 64});
 
   bool get isConnected => _subscription != null;
@@ -60,16 +66,24 @@ class InputPort {
     );
   }
 
-  /// Disconnect the wire (when user deletes a connection)
-  void disconnect() {
+  /// Disconnect the wire (when user deletes a connection).
+  ///
+  /// Fires [onDisconnected] when a live wire was actually severed, unless
+  /// [notify] is false (used by [dispose], where nobody is left to tell).
+  /// [connect] calls this first, so re-pointing an input emits a departure and
+  /// then immediately replays the new upstream's retained payload.
+  void disconnect({bool notify = true}) {
+    final wasConnected = _subscription != null;
     _subscription?.cancel();
     _subscription = null;
     _connectedOutputPort = null;
     _buffer.clear();
+    if (wasConnected && notify) _departureController.add(null);
   }
 
   void dispose() {
-    disconnect();
+    disconnect(notify: false);
     _arrivalController.close();
+    _departureController.close();
   }
 }

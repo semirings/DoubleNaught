@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../../../models/aa_payload.dart';
@@ -22,8 +24,14 @@ enum _SaveFormat { parquet, csv, json, txt, png, jpg }
 /// - `textIn`  (idx 1): Plain text stream from upstream
 /// - `imageIn` (idx 2): Raw image bytes stream from upstream
 ///
-/// The node includes file path text input, a "Browse..." button for path
-/// selection, a format dropdown, a "Save / Export" button, and status display.
+/// The node includes file path text input with a save-location icon beside it
+/// (the counterpart of Load File's Browse icon — it opens the native save
+/// dialog to fill the field in), a format dropdown, a "Save / Export" button,
+/// and status display.
+///
+/// A bare name is written under the backend's `storage/out/`; an absolute path
+/// — which is what the dialog yields — is written there instead, so the icon
+/// only does something useful while the backend is local.
 class SaveFileNode extends BaseNodeWidget {
   // aaIn (AA, idx 0) — the "canonical" input uses base's inputConnected/onInputConnect
   // onInputPort used for aaIn registration
@@ -46,6 +54,11 @@ class SaveFileNode extends BaseNodeWidget {
   /// Image bytes stream wired from upstream nodes.
   final Stream<Uint8List>? imageInput;
 
+  /// Save-dialog seam. Defaults to `file_selector`'s [getSaveLocation];
+  /// overridden by tests, which cannot drive a platform dialog.
+  final Future<FileSaveLocation?> Function(String suggestedName)?
+      pickSaveLocation;
+
   const SaveFileNode({
     super.key,
     required super.node,
@@ -58,6 +71,7 @@ class SaveFileNode extends BaseNodeWidget {
     this.onImageConnect,
     this.textInput,
     this.imageInput,
+    this.pickSaveLocation,
     super.initialParams,
     super.onParams,
   }) : super(inputConnected: aaConnected, onInputConnect: onAaConnect);
@@ -243,13 +257,48 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
     }
   }
 
-  Future<void> _onBrowsePressed() async {
-    // Note: Browse is disabled on the backend since the backend controls paths.
-    // Show a hint to the user instead.
+  /// Open the native save dialog to fill in the destination field.
+  ///
+  /// The backend is still what writes the file, so this only captures a path.
+  /// The chosen extension picks the format and is then stripped, because the
+  /// savers append the extension for the selected format themselves.
+  Future<void> _onPickLocationPressed() async {
+    final base = _filePathController.text.trim().split('/').last;
+    final location = await (widget.pickSaveLocation ?? _openNativeDialog)(
+      '${base.isEmpty ? 'export' : base}.${_extensionOf(_selectedFormat)}',
+    );
+    if (location == null || !mounted) return;
+
+    final format = _formatOfPath(location.path) ?? _selectedFormat;
+    final path = location.path.endsWith('.${_extensionOf(format)}')
+        ? location.path
+            .substring(0, location.path.length - _extensionOf(format).length - 1)
+        : location.path;
+
     setState(() {
-      _statusMessage = 'Files are saved to backend storage/out/ directory';
+      _filePathController.text = path;
+      _selectedFormat = format;
+      _statusMessage = 'Saving to $path.${_extensionOf(format)}';
       _statusIsError = false;
     });
+    saveParams({'filePath': path, 'format': format.name});
+  }
+
+  static Future<FileSaveLocation?> _openNativeDialog(String suggestedName) =>
+      getSaveLocation(suggestedName: suggestedName);
+
+  /// The on-disk extension for [format] — the same suffix the backend appends.
+  static String _extensionOf(_SaveFormat format) => format.name;
+
+  /// The format implied by [path]'s extension, or null when unrecognised.
+  static _SaveFormat? _formatOfPath(String path) {
+    final dot = path.lastIndexOf('.');
+    if (dot < 0) return null;
+    final ext = path.substring(dot + 1).toLowerCase();
+    for (final f in _SaveFormat.values) {
+      if (_extensionOf(f) == ext) return f;
+    }
+    return ext == 'jpeg' ? _SaveFormat.jpg : null;
   }
 
   String _formatLabel(_SaveFormat format) => switch (format) {
@@ -295,26 +344,36 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SizedBox(height: 52),
-        TextField(
-          controller: _filePathController,
-          enabled: !_isSaving,
-          decoration: const InputDecoration(
-            labelText: 'File Path (relative to storage/out/)',
-            hintText: 'export',
-            isDense: true,
-            border: OutlineInputBorder(),
-            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-          ),
-        ),
-        const SizedBox(height: 8),
-        SizedBox(
-          width: double.infinity,
-          height: 36,
-          child: OutlinedButton.icon(
-            onPressed: _isSaving ? null : _onBrowsePressed,
-            icon: const Icon(Icons.folder_open, size: 16),
-            label: const Text('Browse...'),
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _filePathController,
+                enabled: !_isSaving,
+                decoration: const InputDecoration(
+                  labelText: 'File Path (storage/out/ or absolute)',
+                  hintText: 'export',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                  contentPadding:
+                      EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                ),
+              ),
+            ),
+            // Web has no real paths to hand the backend, so the field is the
+            // only way in there.
+            if (!kIsWeb) ...[
+              const SizedBox(width: 4),
+              IconButton(
+                onPressed: _isSaving ? null : _onPickLocationPressed,
+                icon: const Icon(Icons.save_as_outlined, size: 18),
+                tooltip: 'Choose location…',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              ),
+            ],
+          ],
         ),
         const SizedBox(height: 8),
         DropdownMenu<_SaveFormat>(

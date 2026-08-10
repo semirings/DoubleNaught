@@ -214,6 +214,21 @@ class _WorkflowPageState extends State<WorkflowPage>
     });
   }
 
+  /// Retract a node's tab when it no longer has content to show — e.g. a
+  /// Preview whose input was unwired. Without this the panel would keep
+  /// rendering a payload the node itself has already dropped.
+  void _clearFocusContent(int nodeId) {
+    if (!_focusContent.containsKey(nodeId)) return;
+    setState(() {
+      _focusContent.remove(nodeId);
+      _focusOrder.remove(nodeId);
+      _focusSelected = _focusSelected.clamp(
+        0,
+        _focusOrder.isEmpty ? 0 : _focusOrder.length - 1,
+      );
+    });
+  }
+
   /// Open the panel and select a node's tab (the node's "View" affordance).
   void _openFocusTab(int nodeId) {
     setState(() {
@@ -1683,7 +1698,14 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
+          // `aa` is also the node's headline output (Focus Panel edits re-emit
+          // on it); both ports additionally register by index so _bindAaPorts
+          // can tell a `contents` wire from an `aa` wire.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          onContentsOutputPort: (port) =>
+              (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
+          onAaOutputPort: (port) =>
+              (_aaMultiOutputPorts[node.id] ??= {})[1] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'image_display':
@@ -1813,8 +1835,10 @@ class _WorkflowPageState extends State<WorkflowPage>
           aaConnected: _hasIncomingEdgeAt(node.id, 1),
           onAaConnect: (source) => _connectAt(source, node.id, 1),
           onAaInputPort: (port) => _registerAaInput(node.id, 1, port),
-          // Route decoded content to the Focus Panel tab for this node.
+          // Route decoded content to the Focus Panel tab for this node, and
+          // retract that tab once the node's inputs go dead.
           onContent: _pushFocusContent,
+          onContentCleared: _clearFocusContent,
           onView: _openFocusTab,
         );
       case 'save_file':

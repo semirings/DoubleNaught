@@ -39,6 +39,9 @@ class PreviewNode extends BaseNodeWidget {
   /// Pushes decoded content to the Focus Panel as this node's tab.
   final void Function(int nodeId, FocusContent content)? onContent;
 
+  /// Retracts this node's Focus Panel tab when its inputs go dead.
+  final void Function(int nodeId)? onContentCleared;
+
   /// Opens the Focus Panel and selects this node's tab.
   final void Function(int nodeId)? onView;
 
@@ -53,6 +56,7 @@ class PreviewNode extends BaseNodeWidget {
     this.onAaInputPort,
     this.fileName,
     this.onContent,
+    this.onContentCleared,
     this.onView,
   }) : super(onInputConnect: onConnect);
 
@@ -84,6 +88,7 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode> {
     super.initState();
     widget.onAaInputPort?.call(_aaIn);
     _aaIn.onDataArrived.listen(_onAa);
+    _aaIn.onDisconnected.listen((_) => _dropAa());
     _subscribeBytes();
   }
 
@@ -101,6 +106,7 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode> {
   }
 
   void _subscribeBytes() {
+    final hadBytes = _data != null && _bytes > 0;
     _sub?.cancel();
     _builder     = BytesBuilder();
     _data        = null;
@@ -109,6 +115,14 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode> {
     _imageWidth  = null;
     _imageHeight = null;
     _sub = widget.input?.listen(_onChunk);
+    // Retract after the frame: this runs from initState/didUpdateWidget, where
+    // the parent cannot be asked to rebuild synchronously. A re-pointed stream
+    // pushes its own content again as soon as the first chunk lands.
+    if (hadBytes) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _report();
+      });
+    }
   }
 
   void _onChunk(Uint8List chunk) {
@@ -133,9 +147,28 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode> {
     _report();
   }
 
+  /// Drop the retained AA when the `aa` wire is cut or re-pointed, so the node
+  /// stops advertising an upstream it is no longer fed by.
+  ///
+  /// Re-pointing emits the departure and then immediately replays the new
+  /// upstream's retained payload, so this clears only when the new source has
+  /// nothing to give.
+  void _dropAa() {
+    if (!mounted || _aa == null) return;
+    setState(() => _aa = null);
+    _report();
+  }
+
+  /// Push the current content to the Focus Panel — or retract this node's tab
+  /// once there is nothing left to show, so a dead payload cannot linger there
+  /// after the node summary has cleared.
   void _report() {
     final content = _buildContent();
-    if (content != null) widget.onContent?.call(widget.node.id, content);
+    if (content != null) {
+      widget.onContent?.call(widget.node.id, content);
+    } else {
+      widget.onContentCleared?.call(widget.node.id);
+    }
   }
 
   FocusContent? _buildContent() {
