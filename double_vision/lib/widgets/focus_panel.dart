@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../models/aa_payload.dart';
 import 'aa_dataframe.dart';
+import 'prompt_canvas_editor.dart';
 
 ImageProvider? resolveImageProvider(String targetUrl) {
   final trimmed = targetUrl.trim();
@@ -20,7 +21,7 @@ ImageProvider? resolveImageProvider(String targetUrl) {
 }
 
 /// What a Focus Panel tab shows.
-enum FocusContentKind { image, text, aa }
+enum FocusContentKind { image, text, aa, promptEditor }
 
 /// A piece of heavy content routed to the Focus Panel by a node.
 class FocusContent {
@@ -31,6 +32,12 @@ class FocusContent {
   final AaPayload? aa;
   final String? subtitle;
 
+  /// For [FocusContentKind.promptEditor]: the *live* controller owned by the
+  /// contributing node's `State`. The panel edits that state directly rather
+  /// than a snapshot of it, which is what makes the node's inline field and this
+  /// tab two views of one document.
+  final TextEditingController? controller;
+
   const FocusContent._({
     required this.kind,
     this.text,
@@ -38,6 +45,7 @@ class FocusContent {
     this.imageUrl,
     this.aa,
     this.subtitle,
+    this.controller,
   });
 
   const FocusContent.image({Uint8List? bytes, String? url, String? subtitle})
@@ -53,6 +61,17 @@ class FocusContent {
 
   const FocusContent.aa(AaPayload value, {String? subtitle})
     : this._(kind: FocusContentKind.aa, aa: value, subtitle: subtitle);
+
+  /// A live text-editing workspace backed by [controller] — the Prompt Node's
+  /// expanded editor.
+  const FocusContent.promptEditor(
+    TextEditingController controller, {
+    String? subtitle,
+  }) : this._(
+         kind: FocusContentKind.promptEditor,
+         controller: controller,
+         subtitle: subtitle,
+       );
 }
 
 /// One tab in the Focus Panel, owned by the node with [nodeId].
@@ -329,6 +348,8 @@ class _FocusPanelState extends State<FocusPanel> {
           padding: const EdgeInsets.all(8),
           child: AaDataFrame(aa: content.aa!),
         );
+      case FocusContentKind.promptEditor:
+        return PromptCanvasEditor(controller: content.controller!);
       case FocusContentKind.text:
         return Scrollbar(
           child: SingleChildScrollView(

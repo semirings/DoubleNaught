@@ -31,6 +31,9 @@ const List<NodeType> nodeTypes = [
   NodeType(name: 'Model Builder', type: 'model_builder'),
   NodeType(name: 'Model Classifier', type: 'model_classifier'),
   NodeType(name: 'Preview', type: 'preview'),
+  // Camel-case type per the Prompt Node spec in DESIGN.md; the rest of this
+  // registry predates that convention.
+  NodeType(name: 'Prompt Node', type: 'promptNode'),
   NodeType(name: 'Review', type: 'review'),
   NodeType(name: 'SAM3 Control', type: 'sam3'),
   NodeType(name: 'Save File', type: 'save_file'),

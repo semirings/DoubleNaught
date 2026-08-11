@@ -292,6 +292,10 @@ class _WorkflowPageState extends State<WorkflowPage>
         // Three inputs: `aaIn` (AA, idx 0), `textIn` (String, idx 1),
         // `imageIn` (bytes, idx 2).
         return const [0, 1, 2];
+      case 'promptNode':
+      case 'prompt_node': // tolerate a snake_case spelling in saved workflows
+        // One input: `fileInput` (AA, idx 0).
+        return const [0];
       case 'text_model_loader':
         // One optional input: `trigger` (AA, idx 0).
         return const [0];
@@ -1839,6 +1843,24 @@ class _WorkflowPageState extends State<WorkflowPage>
           // retract that tab once the node's inputs go dead.
           onContent: _pushFocusContent,
           onContentCleared: _clearFocusContent,
+          onView: _openFocusTab,
+        );
+      case 'promptNode':
+      case 'prompt_node': // tolerate a snake_case spelling in saved workflows
+        return PromptNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `fileInput` (AA, idx 0) — text/code to merge into the prompt.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `promptOutput` (AA, idx 0).
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+          // The expanded editor is this node's Focus Panel tab; "Expand Editor"
+          // pushes it and brings the panel forward.
+          onContent: _pushFocusContent,
           onView: _openFocusTab,
         );
       case 'save_file':

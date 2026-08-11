@@ -25,6 +25,7 @@ export 'implementations/inventory_node.dart';
 export 'implementations/load_model_node.dart';
 export 'implementations/model_classifier_node.dart';
 export 'implementations/preview_node.dart';
+export 'implementations/prompt_node_widget.dart';
 export 'implementations/review_node.dart';
 export 'implementations/save_file_node.dart';
 export 'implementations/start_node.dart';

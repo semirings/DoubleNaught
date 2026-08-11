@@ -191,6 +191,60 @@ snake_case; that convention is **not** carried into DoubleNaught.)
   associative array. It sits at the very edge of the graph: it has no input
   port, only a raw output stream that a downstream node parses into an AA.
 
+## Prompt Node (`promptNode`)
+
+A prompt-authoring processing node: it composes free text (a prompt, a code
+snippet, an instruction block) and publishes it as an AA, optionally seeded from
+an upstream file.
+
+### Node contract
+
+| | |
+|---|---|
+| Type | `promptNode` |
+| Input port (left edge, idx 0) | **`fileInput`** — an AA carrying text/code |
+| Output port (right edge, idx 0) | **`promptOutput`** — an AA carrying the composed prompt |
+
+- **`fileInput` ingest.** An arriving AA is flattened to text and merged into the
+  prompt state — **appended** by default, **prepended** when the node's insert
+  mode says so. Preference order for which cells supply the text: a `text`,
+  `prompt`, `content`, or `val` column if the AA has one; otherwise every string
+  value, joined by newline. Ingest mutates the same editable state the user
+  types into, so an ingested file is immediately editable.
+- **`promptOutput` payload.** Row `prompt:<nodeId>` — stable across edits so
+  downstream row keys do not churn per keystroke.
+
+  | col | val |
+  |---|---|
+  | `prompt` | the full composed text |
+  | `char_count` | length of `prompt` (int) |
+
+- Being AA-in → AA-out, the Prompt Node is a **processing node**, not an ingest
+  boundary: it never reads local files itself.
+
+### Interface policy
+
+The prompt text has exactly **one owner** — a single `TextEditingController`
+held by the node's `State`. Every editing surface attaches to that controller,
+so synchronisation is structural rather than a mirroring routine that can drift:
+
+1. **Small inline editor.** A compact multi-line `TextField` in the node body
+   for quick edits and clipboard work.
+2. **Large expanded canvas editor.** `PromptCanvasEditor`, mounted as this
+   node's tab in the right-hand Focus Panel and opened by the body's **Expand
+   Editor** action. High-density monospace workspace with line numbers, a word
+   wrap toggle, and Copy All / Paste / Clear actions.
+3. **Bidirectional sync.** Because both surfaces share the one controller, a
+   keystroke in either is visible in the other on the next frame; neither is a
+   copy of the other.
+
+### Stream dispatch
+
+Every state change re-broadcasts on `promptOutput`, coalesced by a short
+debounce so a burst of keystrokes emits once the typing settles rather than one
+AA per character. Emission is unconditional on content: clearing the editor
+publishes an empty prompt rather than silently retaining the last one.
+
 <!-- ──────────────────────── Visual Design System (Stitch-synced) ──────────── -->
 
 ## Brand & Style
