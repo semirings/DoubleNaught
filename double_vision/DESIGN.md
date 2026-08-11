@@ -457,6 +457,156 @@ there is no honest completion fraction.
 with `stream: false` and the body is read incrementally. Token-level SSE would
 mean implementing four different event dialects and is deliberately out of scope.
 
+## Group node (`groupNode`)
+
+A collapsed subgraph: several nodes and the wires between them, packed into one
+card that drags, selects and deletes as a single thing.
+
+### Node contract
+
+| | |
+|---|---|
+| Type | `groupNode` |
+| Input ports (left edge) | one per **input boundary** — an external source that fed a node inside |
+| Output ports (right edge) | one per **output boundary** — a node inside that fed an external target |
+
+The spec's `GroupInputNode` / `GroupOutputNode` are modelled as **data, not nodes**:
+a `GroupBoundary` is the mapping `group port idx ⇄ inner child port`, which is all
+an edge needs to be re-pointed in either direction. Two proxy node types would
+have to be created, positioned, rendered and cleaned up, and would show up in
+every `_nodes` traversal on the canvas; a boundary list does the same work
+without any of that.
+
+### Where a subgraph lives
+
+`SubgraphGraph` — child nodes (positions **relative to the container**), internal
+edges, and the input/output boundary lists — is stored as JSON in the group node's
+`params['subgraph']`.
+
+That means a group persists through the existing save/load path with **no change
+to `Workflow`**: `params` is already "the node's saved settings", and for a group
+the contents *are* the setting. It also keeps one source of truth — there is no
+parallel map on the canvas to drift out of step with `_nodes`.
+
+Relative child positions mean dragging the container moves its contents for free,
+and expanding is one addition per child.
+
+### Group (`⌘G`)
+
+1. The container is placed at the selection's **top-left** (min x, min y, per axis).
+2. Each child is stored at `child position − container position`.
+3. Edges wholly inside move into the subgraph; edges wholly outside are untouched.
+4. Edges crossing the boundary become ports, and the external edge is re-pointed
+   at the group. **Several external sources into one child port share a single
+   input port** — they address the same destination.
+5. Boundary numbering is sorted by `(child id, port idx)`, so the same selection
+   always yields the same port order and a group/ungroup/regroup cycle never
+   shuffles a user's wires.
+
+A selection of fewer than two nodes is refused: a group of one is just a node.
+
+### Ungroup (`⌘⇧G`)
+
+The exact inverse:
+
+1. Read the subgraph.
+2. Spawn each child at `container position + relative position`.
+3. Restore internal edges verbatim.
+4. Re-point every external edge from a group port to the child port that port
+   proxied.
+5. Remove the container.
+6. **Leave the unpacked children selected**, so `⌘⌥G` can act on them immediately.
+
+An external edge on a port index with no boundary — a hand-edited workflow file,
+say — is **dropped rather than re-pointed at nothing**, since keeping it would
+leave an edge addressing a node that no longer exists.
+
+### Regroup (`⌘⌥G`)
+
+Rebuilds the container the selection was last unpacked from, reusing its **id,
+position and label** from a `_previousGroupOf` cache keyed by child id.
+
+Boundaries are **re-derived from the current edges**, not replayed from the cache:
+a wire added or removed while the nodes were loose is honoured instead of silently
+reverted. With nothing cached, `⌘⌥G` forms a fresh group — which is what pressing
+"regroup" on an arbitrary selection means.
+
+### Collapsed groups do not run
+
+The children are not mounted while packed, so their info-bus ports do not exist
+and **no payload crosses the boundary**. A group is an organisational device;
+ungroup to execute. The card says so, so a packed group cannot be mistaken for a
+broken pipeline.
+
+Making a collapsed group executable would mean mounting children offstage purely
+to keep their ports alive, and registering each child port under the container's
+boundary index — a materially different feature, and deliberately not this one.
+
+### Where the commands live
+
+`_groupSelected()`, `_ungroupSelected()` and `_regroupSelected()` are methods on
+`_WorkflowPageState`, alongside `_deleteSelectedNodes()` and `_copySelectedNodes()`;
+there is no separate `CanvasStateController` in this codebase. The **algorithm**
+is not in the page: `Grouping.group` / `Grouping.ungroup` are pure functions over
+`(nodes, edges, selection)` in `services/canvas/grouping.dart`, which is what
+makes the edge-remapping rules — the part that silently loses connections when
+wrong — testable without a widget tree.
+
+Nodes entering or leaving a group unmount, so the canvas drops their port-bus
+registrations first (`_forgetNodeWiring`); otherwise the bus keeps dead ports.
+
+`groupNode` is **not** in the Node Catalog: a group is made by grouping, never
+placed empty.
+
+## Canvas selection
+
+Selecting is how every multi-node command — Delete, Copy, Group, multi-drag —
+gets its operands, so the gestures are specified here rather than left to each
+command.
+
+| Gesture | Result |
+|---|---|
+| Click a card | selects it, replacing the selection |
+| Shift-click a card | toggles that card in the selection |
+| Click empty canvas | clears the node selection (and selects an edge if one is under the pointer) |
+| **Left-drag on empty canvas** | **box select** — a marquee |
+| **Shift + left-drag** | box select **added** to the existing selection |
+| Press-and-drag a card's title bar | moves it, or the whole selection if it is a member |
+| Right-click inside a selection | keeps the selection and opens the node menu |
+
+### Box select
+
+A left-drag beginning on empty canvas draws a rectangle and selects every node
+it **touches** — a node need not be wholly enclosed, matching every other
+node-graph canvas.
+
+No modifier is needed because plain left-drag on empty canvas was unused: the
+**view** pans on middle-mouse drag and trackpad two-finger, and zooms on scroll
+and pinch. The marquee therefore steals no existing gesture.
+
+Three details are load-bearing:
+
+1. **A drag that begins on a card is not a marquee.** The press belongs to that
+   card, so `_onCanvasPanStart` bails when `_nodeAt(pressPoint)` hits something.
+   The canvas gesture layer sits *beneath* the cards but a card body has no pan
+   handler of its own, so without this check a body-drag would rubber-band over
+   the very node being pressed.
+2. **`dragStartBehavior: DragStartBehavior.down`.** The default (`start`) reports
+   the position where the pan was *recognised* — a slop-distance into the drag —
+   which would both offset the anchor corner and test the wrong point in rule 1.
+3. **Heights are measured, not assumed.** Cards size themselves to their content,
+   so `_nodeRect` takes width from the type table but height from the rendered
+   box (via a per-node `GlobalKey`, read only while dragging). A nominal height
+   would put the hit test tens of pixels out on the tall nodes.
+
+The previous selection stands until the first move event replaces it, rather than
+being cleared on press. The selection bar lives in the page column, so clearing
+on press would drop the bar and re-insert it moments later, jolting the canvas
+twice during one drag.
+
+The marquee ends leaving focus on the canvas, so ⌘G / Delete apply to what was
+just swept up without an intervening click.
+
 <!-- ──────────────────────── Visual Design System (Stitch-synced) ──────────── -->
 
 ## Brand & Style

@@ -8,13 +8,18 @@ import '../config/node_registry.dart';
 import '../models/content_payload.dart';
 import '../services/infobus/input_port.dart';
 import '../services/infobus/output_port.dart';
+import '../models/node_group.dart';
 import '../models/workflow.dart';
+import '../services/canvas/grouping.dart';
 import '../services/workflow_store.dart';
 import '../widgets/focus_panel.dart';
 import '../widgets/nodes/nodes.dart';
 
 /// Default node width — used both for layout and to anchor edge endpoints.
 const double _kNodeWidth = 240;
+
+/// The box-select rectangle, so tests can assert it is drawn while dragging.
+const Key marqueeKey = ValueKey('canvas-marquee');
 
 /// Wider nodes. Must match the node widgets' own `_width` (InventoryNode /
 /// ReviewNode = 320). Output ports anchor at `node.x + width`, so a wrong value
@@ -27,6 +32,7 @@ const double _kD4mNodeWidth = 340;
 /// Rendered width of a node by type, for anchoring its right-edge output ports.
 double _nodeWidthFor(String type) {
   if (type == 'd4m') { return _kD4mNodeWidth; }
+  if (type == NodeGroup.type) { return 260; }
   if (type == 'inventory' ||
       type == 'review' ||
       type == 'load_model' ||
@@ -106,6 +112,28 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// The set of selected node IDs (distinct outline; Delete removes them all).
   /// Shift-click adds/toggles; plain click replaces.
   final Set<int> _selectedNodeIds = {};
+
+  // Press bookkeeping, so a press on a member of a multi-selection can start a
+  // drag of the whole selection while a *click* still narrows to one node.
+  // Narrowing therefore happens on release, and only if nothing moved.
+  /// Per-node keys, so a box-select can measure real card heights instead of
+  /// guessing them. Only read while marquee-dragging.
+  final Map<int, GlobalKey> _nodeKeys = {};
+
+  /// Box-select drag, in scene coordinates. Null when no marquee is in flight.
+  Offset? _marqueeStart;
+  Offset? _marqueeEnd;
+
+  /// Selection to union with while shift-dragging, so a marquee can add to an
+  /// existing selection instead of replacing it.
+  Set<int> _marqueeBase = const {};
+
+  int? _pressedNodeId;
+
+  /// True when the press deliberately *skipped* selecting, because the node was
+  /// already part of a multi-selection. Only such a press narrows on release.
+  bool _pressDeferredSelect = false;
+  bool _draggedSincePress = false;
 
   /// The edge under the pointer, for hover feedback.
   WorkflowEdge? _hoveredEdge;
@@ -292,6 +320,12 @@ class _WorkflowPageState extends State<WorkflowPage>
         // Three inputs: `aaIn` (AA, idx 0), `textIn` (String, idx 1),
         // `imageIn` (bytes, idx 2).
         return const [0, 1, 2];
+      case NodeGroup.type:
+        // One input per boundary the group exposes.
+        return [
+          for (final b in (NodeGroup.subgraphOf(n)?.inputs ?? const []))
+            b.idx,
+        ];
       case 'promptNode':
       case 'prompt_node': // tolerate a snake_case spelling in saved workflows
         // One input: `fileInput` (AA, idx 0).
@@ -582,16 +616,158 @@ class _WorkflowPageState extends State<WorkflowPage>
     });
   }
 
+  // --- Group / ungroup / regroup -------------------------------------------
+
+  /// Container a child came out of, kept so [_regroupSelected] can rebuild the
+  /// same group in the same place. Keyed by child node id; the value is the
+  /// removed container itself, which carries its id, position and label.
+  ///
+  /// Entries are dropped as soon as they are used or the child is deleted, so a
+  /// stale cache cannot resurrect a group whose members are long gone.
+  final Map<int, WorkflowNode> _previousGroupOf = {};
+
+  /// Collapse the current selection into a group node (⌘G).
+  void _groupSelected({int? reuseId, double? atX, double? atY, String? label}) {
+    final result = Grouping.group(
+      nodes: _nodes,
+      edges: _edges,
+      selection: _selectedNodeIds,
+      newId: _nextId,
+      reuseId: reuseId,
+      atX: atX,
+      atY: atY,
+      label: label,
+    );
+    if (result == null) return;
+
+    // Members are leaving the canvas: their widgets unmount, so drop the port
+    // registrations that pointed at them or the bus keeps dead ports.
+    for (final id in _selectedNodeIds) {
+      _forgetNodeWiring(id);
+    }
+    if (reuseId == null) _nextId++;
+
+    setState(() {
+      _nodes
+        ..clear()
+        ..addAll(result.nodes);
+      _edges
+        ..clear()
+        ..addAll(result.edges);
+      _selectedNodeIds
+        ..clear()
+        ..addAll(result.selection);
+      _selectedEdge = null;
+    });
+  }
+
+  /// Expand the selected group back onto the canvas (⌘⇧G).
+  void _ungroupSelected() {
+    final container = _nodes
+        .where((n) =>
+            _selectedNodeIds.contains(n.id) && NodeGroup.isGroup(n))
+        .firstOrNull;
+    if (container == null) return;
+
+    final result = Grouping.ungroup(
+      nodes: _nodes,
+      edges: _edges,
+      groupId: container.id,
+    );
+    if (result == null) return;
+
+    _forgetNodeWiring(container.id);
+
+    setState(() {
+      _nodes
+        ..clear()
+        ..addAll(result.nodes);
+      _edges
+        ..clear()
+        ..addAll(result.edges);
+      _selectedNodeIds
+        ..clear()
+        ..addAll(result.selection);
+      _selectedEdge = null;
+      // Remember where these came from so ⌘⌥G can put them back.
+      for (final id in result.selection) {
+        _previousGroupOf[id] = container;
+      }
+    });
+
+    // Children are mounting fresh, so their params must be restorable: seed the
+    // per-node param store from what the subgraph carried.
+    final sub = NodeGroup.subgraphOf(container);
+    if (sub != null) {
+      for (final child in sub.nodes) {
+        if (child.params.isNotEmpty) _nodeParams[child.id] = child.params;
+      }
+    }
+  }
+
+  /// Rebuild the group the selection was last unpacked from (⌘⌥G).
+  ///
+  /// Boundaries are re-derived from the *current* edges rather than replayed from
+  /// the cache, so a wire added or removed while the nodes were loose is honoured
+  /// instead of silently reverted. Only the container's identity — id, position,
+  /// label — is restored from the cache.
+  void _regroupSelected() {
+    final previous = _selectedNodeIds
+        .map((id) => _previousGroupOf[id])
+        .whereType<WorkflowNode>()
+        .firstOrNull;
+    if (previous == null) {
+      // Nothing was unpacked: fall back to forming a fresh group, which is what
+      // a user pressing "regroup" on an arbitrary selection means.
+      _groupSelected();
+      return;
+    }
+
+    final ids = _selectedNodeIds.toSet();
+    _groupSelected(
+      reuseId: _nodes.any((n) => n.id == previous.id) ? null : previous.id,
+      atX: previous.x,
+      atY: previous.y,
+      label: NodeGroup.labelOf(previous),
+    );
+    for (final id in ids) {
+      _previousGroupOf.remove(id);
+    }
+  }
+
+  /// Drop every canvas-side registration for [id] — port bus entries, focus tab,
+  /// cached streams. Called when a node's widget is about to unmount because it
+  /// moved into or out of a group.
+  void _forgetNodeWiring(int id) {
+    _unbindAaInput(id);
+    for (final e in _edges.where((e) => e.from.nodeId == id)) {
+      _unbindAaInput(e.to.nodeId, e.to.idx);
+    }
+    _aaOutputPorts.remove(id);
+    _aaMultiOutputPorts.remove(id);
+    _aaInputPorts.remove(id);
+    _outputs.remove(id);
+    _locationOutputs.remove(id);
+    _contentOutputs.remove(id);
+  }
+
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
 
     final isDelete =
         event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace;
-    final isCopy = event.logicalKey == LogicalKeyboardKey.keyC &&
-        HardwareKeyboard.instance.isMetaPressed; // Cmd+C on macOS
+    final meta = HardwareKeyboard.instance.isMetaPressed; // Cmd on macOS
+    final isCopy = event.logicalKey == LogicalKeyboardKey.keyC && meta;
 
-    if (!isDelete && !isCopy) return KeyEventResult.ignored;
+    // ⌘G group · ⌘⇧G ungroup · ⌘⌥G regroup. Checked most-modified first, since
+    // ⌘⇧G also satisfies the bare ⌘G test.
+    final isG = event.logicalKey == LogicalKeyboardKey.keyG && meta;
+    final isUngroup = isG && HardwareKeyboard.instance.isShiftPressed;
+    final isRegroup = isG && HardwareKeyboard.instance.isAltPressed;
+    final isGroup = isG && !isUngroup && !isRegroup;
+
+    if (!isDelete && !isCopy && !isG) return KeyEventResult.ignored;
 
     // If a text field (not the canvas) is focused, let it handle the key.
     final focus = FocusManager.instance.primaryFocus;
@@ -606,6 +782,18 @@ class _WorkflowPageState extends State<WorkflowPage>
           : KeyEventResult.ignored;
     }
 
+    if (isG) {
+      if (_selectedNodeIds.isEmpty) return KeyEventResult.ignored;
+      if (isUngroup) {
+        _ungroupSelected();
+      } else if (isRegroup) {
+        _regroupSelected();
+      } else if (isGroup) {
+        _groupSelected();
+      }
+      return KeyEventResult.handled;
+    }
+
     if (_selectedNodeIds.isNotEmpty) {
       _deleteSelectedNodes();
       return KeyEventResult.handled;
@@ -618,12 +806,24 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   Future<void> _showNodeMenu(Offset globalPos, int id) async {
-    setState(() {
-      _selectedNodeIds
-        ..clear()
-        ..add(id);
-      _selectedEdge = null;
-    });
+    // A right-click on a node outside the current selection retargets to it;
+    // clicking one *inside* a multi-selection keeps the selection, so Group can
+    // act on all of it.
+    final keepSelection =
+        _selectedNodeIds.length > 1 && _selectedNodeIds.contains(id);
+    if (!keepSelection) {
+      setState(() {
+        _selectedNodeIds
+          ..clear()
+          ..add(id);
+        _selectedEdge = null;
+      });
+    }
+
+    final node = _nodes.where((n) => n.id == id).firstOrNull;
+    final isGroup = node != null && NodeGroup.isGroup(node);
+    final canRegroup = _selectedNodeIds.any(_previousGroupOf.containsKey);
+
     final result = await showMenu<String>(
       context: context,
       position: RelativeRect.fromLTRB(
@@ -632,12 +832,30 @@ class _WorkflowPageState extends State<WorkflowPage>
         globalPos.dx,
         globalPos.dy,
       ),
-      items: const [
-        PopupMenuItem(value: 'duplicate', child: Text('Duplicate Node')),
-        PopupMenuItem(value: 'delete', child: Text('Delete Node')),
+      items: [
+        if (isGroup)
+          const PopupMenuItem(value: 'ungroup', child: Text('Ungroup  ⌘⇧G'))
+        else ...[
+          if (_selectedNodeIds.length > 1)
+            const PopupMenuItem(value: 'group', child: Text('Group  ⌘G')),
+          PopupMenuItem(
+            value: 'regroup',
+            enabled: canRegroup,
+            child: const Text('Regroup  ⌘⌥G'),
+          ),
+        ],
+        const PopupMenuDivider(),
+        const PopupMenuItem(value: 'duplicate', child: Text('Duplicate Node')),
+        const PopupMenuItem(value: 'delete', child: Text('Delete Node')),
       ],
     );
     switch (result) {
+      case 'ungroup':
+        _ungroupSelected();
+      case 'group':
+        _groupSelected();
+      case 'regroup':
+        _regroupSelected();
       case 'duplicate':
         _duplicateNode(id);
       case 'delete':
@@ -785,6 +1003,85 @@ class _WorkflowPageState extends State<WorkflowPage>
     setState(() => _view = zoom..multiply(_view));
   }
 
+  GlobalKey _nodeKeyFor(int id) => _nodeKeys.putIfAbsent(id, GlobalKey.new);
+
+  /// Rendered size of a node's card, or null before its first layout.
+  Size? _nodeSize(int id) {
+    final box = _nodeKeys[id]?.currentContext?.findRenderObject();
+    return box is RenderBox && box.hasSize ? box.size : null;
+  }
+
+  /// A node's bounds in scene coordinates.
+  ///
+  /// Width comes from the type table; height is *measured*, because cards size
+  /// themselves to their content and a nominal value would put the marquee tens
+  /// of pixels wrong on the tall nodes. The fallback only applies to a node that
+  /// has not laid out yet.
+  Rect _nodeRect(WorkflowNode n) => Rect.fromLTWH(
+        n.x,
+        n.y,
+        _nodeWidthFor(n.type),
+        _nodeSize(n.id)?.height ?? 140,
+      );
+
+  /// The topmost node under a scene point, or null over empty canvas. Later
+  /// entries in [_nodes] paint on top, so the search runs backwards.
+  WorkflowNode? _nodeAt(Offset scene) {
+    for (final n in _nodes.reversed) {
+      if (_nodeRect(n).contains(scene)) return n;
+    }
+    return null;
+  }
+
+  Rect? get _marqueeRect {
+    final a = _marqueeStart;
+    final b = _marqueeEnd;
+    return (a == null || b == null) ? null : Rect.fromPoints(a, b);
+  }
+
+  /// Begin a box-select — unless the drag started on a node, which belongs to
+  /// that node rather than to the canvas.
+  void _onCanvasPanStart(DragStartDetails d) {
+    if (_nodeAt(d.localPosition) != null) return;
+    _canvasFocus.requestFocus(); // so Delete / Cmd-G land here afterwards
+    final extend = HardwareKeyboard.instance.isShiftPressed;
+    setState(() {
+      _marqueeStart = d.localPosition;
+      _marqueeEnd = d.localPosition;
+      _marqueeBase = extend ? {..._selectedNodeIds} : const {};
+      _selectedEdge = null;
+      // The old selection is left standing until the first move event replaces
+      // it. Clearing here instead would drop the selection bar out of the page
+      // column and then put it back, jolting the canvas twice mid-drag.
+    });
+  }
+
+  void _onCanvasPanUpdate(DragUpdateDetails d) {
+    if (_marqueeStart == null) return;
+    setState(() {
+      _marqueeEnd = d.localPosition;
+      final rect = _marqueeRect!;
+      _selectedNodeIds
+        ..clear()
+        ..addAll(_marqueeBase)
+        // Touching is enough, as on every other canvas: a node need not be
+        // wholly enclosed to be caught.
+        ..addAll([
+          for (final n in _nodes)
+            if (_nodeRect(n).overlaps(rect)) n.id,
+        ]);
+    });
+  }
+
+  void _onCanvasPanEnd(DragEndDetails d) {
+    if (_marqueeStart == null) return;
+    setState(() {
+      _marqueeStart = null;
+      _marqueeEnd = null;
+      _marqueeBase = const {};
+    });
+  }
+
   /// Pan the view by a viewport-space delta.
   void _panBy(Offset delta) {
     setState(
@@ -824,15 +1121,38 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   /// Move the node with [id] by the drag delta, clamped to the canvas.
+  /// Drag [id] by [delta] — and everything selected with it.
+  ///
+  /// Dragging a node that is part of a multi-selection moves the whole selection,
+  /// which is what a user who just shift-clicked five nodes expects. Dragging a
+  /// node that is *not* selected moves only that node (the pointer-down handler
+  /// has already made it the selection by then).
+  ///
+  /// The delta is clamped **once against the whole set**, not per node: clamping
+  /// each node independently would let one node stop at the canvas edge while its
+  /// neighbours kept going, shearing the arrangement apart. Here the first node
+  /// to reach a bound stops the entire selection, so relative positions survive
+  /// any drag.
   void _moveNode(int id, Offset delta) {
-    final i = _nodes.indexWhere((n) => n.id == id);
-    if (i < 0) return;
-    final n = _nodes[i];
+    final moving = (_selectedNodeIds.length > 1 && _selectedNodeIds.contains(id))
+        ? _selectedNodeIds
+        : {id};
+
+    var dx = delta.dx;
+    var dy = delta.dy;
+    for (final n in _nodes) {
+      if (!moving.contains(n.id)) continue;
+      dx = dx.clamp(-n.x, 4000 - n.x);
+      dy = dy.clamp(_kPortY - n.y, 4000 - n.y);
+    }
+    if (dx == 0 && dy == 0) return;
+
     setState(() {
-      _nodes[i] = n.copyWith(
-        x: (n.x + delta.dx).clamp(0, 4000),
-        y: (n.y + delta.dy).clamp(_kPortY, 4000),
-      );
+      for (var i = 0; i < _nodes.length; i++) {
+        final n = _nodes[i];
+        if (!moving.contains(n.id)) continue;
+        _nodes[i] = n.copyWith(x: n.x + dx, y: n.y + dy);
+      }
     });
   }
 
@@ -1524,6 +1844,18 @@ class _WorkflowPageState extends State<WorkflowPage>
                         behavior: HitTestBehavior.opaque,
                         onTapUp: _onCanvasTapUp,
                         onSecondaryTapUp: _onCanvasSecondaryTapUp,
+                        // Box select. Left-drag on empty canvas was unused —
+                        // the view pans on middle-drag and trackpad two-finger
+                        // — so the marquee needs no modifier and steals nothing.
+                        //
+                        // `down` rather than the default `start`: the default
+                        // reports where the pan was *recognised*, which places
+                        // the anchor corner a slop-distance into the drag and
+                        // tests the wrong point for "did this start on a node?".
+                        dragStartBehavior: DragStartBehavior.down,
+                        onPanStart: _onCanvasPanStart,
+                        onPanUpdate: _onCanvasPanUpdate,
+                        onPanEnd: _onCanvasPanEnd,
                         child: CustomPaint(
                           painter: _EdgePainter(
                             edges: _edges,
@@ -1566,6 +1898,23 @@ class _WorkflowPageState extends State<WorkflowPage>
                       ),
                     ),
                   ),
+
+                  // Box-select rectangle, above everything and inert to
+                  // pointers so it cannot interrupt the drag drawing it.
+                  if (_marqueeRect case final rect?)
+                    Positioned.fromRect(
+                      key: marqueeKey,
+                      rect: rect,
+                      child: IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: scheme.primary.withValues(alpha: 0.08),
+                            border: Border.all(color: scheme.primary, width: 1),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -1587,13 +1936,42 @@ class _WorkflowPageState extends State<WorkflowPage>
       // compete with or delay the TextFields' TapGestureRecognizers inside the
       // node body (unlike the former GestureDetector wrapper).
       onPointerDown: (event) {
-        _selectNode(node.id,
-            extend: HardwareKeyboard.instance.isShiftPressed);
-        if (event.buttons & kSecondaryMouseButton != 0) {
+        final secondary = event.buttons & kSecondaryMouseButton != 0;
+        _pressedNodeId = node.id;
+        _draggedSincePress = false;
+
+        // Pressing a node that is already part of a multi-selection must not
+        // collapse it: a left-press starts a drag of the whole selection, and a
+        // right-press opens a menu whose actions (Group, Delete) mean the
+        // selection. Anything else selects immediately, as before.
+        final inMultiSelection =
+            _selectedNodeIds.length > 1 && _selectedNodeIds.contains(node.id);
+        // A right-press never narrows, so nothing is deferred for it.
+        _pressDeferredSelect = inMultiSelection && !secondary;
+        if (!inMultiSelection) {
+          _selectNode(node.id,
+              extend: HardwareKeyboard.instance.isShiftPressed);
+        }
+        if (secondary) {
           _showNodeMenu(event.position, node.id);
         }
       },
+      onPointerUp: (event) {
+        final wasPress = _pressedNodeId == node.id;
+        _pressedNodeId = null;
+        // A left *click* (no movement) on a member of a multi-selection narrows
+        // to that node — the deferred half of the rule above. A drag leaves the
+        // selection alone, and a press that already selected is not redone.
+        final deferred = _pressDeferredSelect;
+        _pressDeferredSelect = false;
+        if (wasPress && deferred && !_draggedSincePress) {
+          _selectNode(node.id,
+              extend: HardwareKeyboard.instance.isShiftPressed);
+        }
+      },
       child: Stack(
+          // Keyed so a box-select can measure this card's real height.
+          key: _nodeKeyFor(node.id),
           clipBehavior: Clip.none,
           children: [
             KeyedSubtree(
@@ -1614,7 +1992,10 @@ class _WorkflowPageState extends State<WorkflowPage>
                 child: GestureDetector(
                   behavior: HitTestBehavior.translucent,
                   onPanStart: (_) => _bringToFront(node.id),
-                  onPanUpdate: (d) => _moveNode(node.id, d.delta),
+                  onPanUpdate: (d) {
+                    _draggedSincePress = true;
+                    _moveNode(node.id, d.delta);
+                  },
                 ),
               ),
             ),
@@ -1646,6 +2027,18 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   Widget _buildNode(WorkflowNode node) {
     switch (node.type) {
+      case NodeGroup.type:
+        return GroupNodeWidget(
+          node: node,
+          // Boundary ports proxy child ports; the canvas tracks their edges the
+          // same way it tracks any other node's.
+          connectedInputs: {
+            for (final e in _edges)
+              if (e.to.nodeId == node.id) e.to.idx,
+          },
+          onInputConnectAt: (source, idx) => _connectAt(source, node.id, idx),
+          connectedOutputs: _connectedOutputs(node.id),
+        );
       case 'start':
         return StartNode(
           node: node,
