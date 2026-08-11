@@ -245,6 +245,99 @@ debounce so a burst of keystrokes emits once the typing settles rather than one
 AA per character. Emission is unconditional on content: clearing the editor
 publishes an empty prompt rather than silently retaining the last one.
 
+## Secure Settings node (`secureSettingsNode`)
+
+The graph's credential source. Holds named provider profiles and publishes the
+selected one's **metadata** — never its secret.
+
+### Data contract
+
+| | |
+|---|---|
+| Type | `secureSettingsNode` |
+| Output port (right edge, idx 0) | **`authOutput`** — a 1×5 AA of profile metadata |
+
+Row key is the profile id; the five columns are `displayName`, `provider`,
+`baseUrl`, `credentialRef`, `maxContextTokens`.
+
+**The invariant: a raw secret never enters the AA matrix or any serialized
+state.** `credentialRef` is an opaque handle (`credential:<profileId>`) that a
+downstream node redeems against `KeyVault.secretFor` at request time. Three
+structural guarantees back that up rather than leaving it to discipline:
+
+- `AuthProfile` has **no field that can hold a key**, so no serializer,
+  `toString`, or log line can emit one.
+- `KeyVault.secretFor` is the single egress point for plaintext — one greppable
+  call site per consumer.
+- Node params persist only `selectedProfileId`, a pointer. A workflow file has
+  never held a credential, so sharing one is safe by construction.
+
+Emission is gated on a key actually being on file: a profile whose secret is
+missing (session-only after a restart, or saved without one) reads **error** and
+stays off the wire, because a `credentialRef` nobody can redeem is worse than no
+payload.
+
+### Storage layer (local-first vault)
+
+`VaultStore` is opaque key→value storage with platform-appropriate protection;
+`KeyVault` selects the backing and routes by the profile's `sessionOnly` flag.
+
+| Mode | Backing | At rest |
+|---|---|---|
+| Desktop / mobile | `KeychainVaultStore` | OS keychain — macOS Keychain, Linux Secret Service, Windows DPAPI, iOS/Android keystore. The OS owns the key; this process holds none. Items are device-bound and non-syncing, so keys can't ride a backup off-machine. |
+| Web / WASM | `EncryptedIdbVaultStore` | AES-256-GCM per value (fresh nonce per write), ciphertext + nonce + MAC into IndexedDB. |
+| Session Storage Only | `SessionVaultStore` | RAM for the process lifetime; nothing persisted. |
+
+Profile IDs map to secrets through `credentialRef`; the non-secret profile index
+rides in the same store under a reserved key, which buys one storage path per
+platform instead of two.
+
+**Honest limit on the web path.** A browser has no OS keychain, so the data key
+must live where the page can reach it — its own IndexedDB store. That defeats
+anything reading the secrets store or persisted bytes without also reading the
+key store (DevTools browsing, an IndexedDB export, a profile backup), and GCM's
+MAC makes tampering fail closed rather than decrypt to garbage. It does **not**
+defeat script running on the same origin. Web storage is therefore
+obfuscation-plus-integrity, not confidentiality against local code; users needing
+more should choose Session Storage Only or the desktop build. A
+passphrase-derived key would close the gap at the cost of a prompt every launch —
+a deliberate non-goal here, not an oversight.
+
+### Interface
+
+- **Node body** — header status dot (green = key on file and validated, red =
+  error, grey = nothing selected), a profile dropdown by display name, and
+  **Add** / **Edit**, which open the drawer.
+- **`KeyVaultDrawer`** — mounted in the right-hand inspection canvas. Fields:
+  Display Name, Provider Type (Google Gemini · Anthropic · OpenAI/Compatible ·
+  Ollama Local), Base URL (pre-filled per provider — `http://localhost:11434`
+  for Ollama), API Key (masked, show/hide), Max Context Tokens, and Session
+  Storage Only. Actions: **Test Connection** and **Save Profile**.
+- The drawer edits a working copy and commits only on save. **A stored key is
+  never read back into the field** — it shows only whether one is on file, so a
+  saved key has no path back onto the screen and "leave blank to keep" is a
+  guarantee rather than a hint.
+
+### Test Connection
+
+The cheapest authenticated request each provider offers — a model-listing call in
+every case, so a test spends no inference tokens and creates no completion:
+
+| Provider | Request | Credential carried as |
+|---|---|---|
+| Anthropic | `GET /v1/models` | `x-api-key` **+** `anthropic-version: 2023-06-01` |
+| OpenAI/Compatible | `GET /v1/models` | `Authorization: Bearer …` |
+| Google Gemini | `GET /v1beta/models` | `x-goog-api-key` |
+| Ollama Local | `GET /api/tags` | none — local daemon, key optional |
+
+Anthropic needs both headers: `anthropic-version` is required on every request to
+that API, and omitting it fails for the wrong reason, which would read as a bad
+key. Results distinguish causes the user can act on — 401/403 is a rejected
+credential, 404 means the base URL isn't the API root, 429 means rate-limited
+*with* a probably-valid key. Failure text is built from the status code and
+exception type, never from the exception's string form, which can quote the
+request and its headers.
+
 <!-- ──────────────────────── Visual Design System (Stitch-synced) ──────────── -->
 
 ## Brand & Style

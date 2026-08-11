@@ -28,6 +28,7 @@ export 'implementations/preview_node.dart';
 export 'implementations/prompt_node_widget.dart';
 export 'implementations/review_node.dart';
 export 'implementations/save_file_node.dart';
+export 'implementations/secure_settings_node.dart';
 export 'implementations/start_node.dart';
 export 'implementations/text_inference_node.dart';
 export 'implementations/text_model_loader_node.dart';

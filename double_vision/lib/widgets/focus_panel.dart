@@ -21,7 +21,7 @@ ImageProvider? resolveImageProvider(String targetUrl) {
 }
 
 /// What a Focus Panel tab shows.
-enum FocusContentKind { image, text, aa, promptEditor }
+enum FocusContentKind { image, text, aa, promptEditor, panel }
 
 /// A piece of heavy content routed to the Focus Panel by a node.
 class FocusContent {
@@ -38,6 +38,13 @@ class FocusContent {
   /// tab two views of one document.
   final TextEditingController? controller;
 
+  /// For [FocusContentKind.panel]: an interactive panel the contributing node
+  /// builds and owns. The escape hatch for tabs whose state is richer than a
+  /// payload or a controller (the Secure Settings node's `KeyVaultDrawer`);
+  /// content that fits one of the data kinds above should use that kind instead,
+  /// so the panel keeps rendering it consistently.
+  final Widget? child;
+
   const FocusContent._({
     required this.kind,
     this.text,
@@ -46,6 +53,7 @@ class FocusContent {
     this.aa,
     this.subtitle,
     this.controller,
+    this.child,
   });
 
   const FocusContent.image({Uint8List? bytes, String? url, String? subtitle})
@@ -72,6 +80,11 @@ class FocusContent {
          controller: controller,
          subtitle: subtitle,
        );
+
+  /// An interactive panel supplied by the contributing node — e.g. the Secure
+  /// Settings node's `KeyVaultDrawer`.
+  const FocusContent.panel(Widget child, {String? subtitle})
+    : this._(kind: FocusContentKind.panel, child: child, subtitle: subtitle);
 }
 
 /// One tab in the Focus Panel, owned by the node with [nodeId].
@@ -350,6 +363,8 @@ class _FocusPanelState extends State<FocusPanel> {
         );
       case FocusContentKind.promptEditor:
         return PromptCanvasEditor(controller: content.controller!);
+      case FocusContentKind.panel:
+        return content.child!;
       case FocusContentKind.text:
         return Scrollbar(
           child: SingleChildScrollView(

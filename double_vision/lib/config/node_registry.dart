@@ -37,6 +37,8 @@ const List<NodeType> nodeTypes = [
   NodeType(name: 'Review', type: 'review'),
   NodeType(name: 'SAM3 Control', type: 'sam3'),
   NodeType(name: 'Save File', type: 'save_file'),
+  // Camel-case type per the Secure Settings spec in DESIGN.md.
+  NodeType(name: 'Secure Settings', type: 'secureSettingsNode'),
   NodeType(name: 'Split', type: 'split'),
   NodeType(name: 'Start', type: 'start'),
   NodeType(name: 'Text Inference', type: 'text_inference'),

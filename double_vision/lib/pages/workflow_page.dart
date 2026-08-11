@@ -1863,6 +1863,19 @@ class _WorkflowPageState extends State<WorkflowPage>
           onContent: _pushFocusContent,
           onView: _openFocusTab,
         );
+      case 'secureSettingsNode':
+      case 'secure_settings': // tolerate a snake_case spelling in saved workflows
+        return SecureSettingsNode(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `authOutput` (AA, idx 0) — profile metadata only, never the key.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+          // The Key Vault drawer is this node's Focus Panel tab.
+          onContent: _pushFocusContent,
+          onView: _openFocusTab,
+        );
       case 'save_file':
         return SaveFileNode(
           node: node,
