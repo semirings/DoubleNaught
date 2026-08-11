@@ -107,6 +107,50 @@ def test_camel_case_wire_modes_are_honoured(tmp_path, mode, expect_aa):
     assert (aa is not None) is expect_aa
 
 
+# ── Plain text (.txt / .jl / .md) ────────────────────────────────────────────
+
+@pytest.mark.parametrize("name", ["notes.txt", "model.jl", "README.md"])
+def test_text_files_come_back_verbatim_with_no_aa(tmp_path, name):
+    body = "module M\n  f(x) = x + 1\nend\n"
+    path = _write(tmp_path, name, body)
+
+    aa, data = load_file(path, "auto")
+
+    # Source and prose are content, not a table: text through, no invented AA.
+    assert aa is None
+    assert data == {"text": body}
+
+
+def test_text_ignores_schema_mode(tmp_path):
+    path = _write(tmp_path, "model.jl", "x = 1\n")
+    # force_aa has nothing to force — it must not raise for a text input.
+    assert load_file(path, "force_aa")[1] == {"text": "x = 1\n"}
+    assert load_file(path, "raw_table")[1] == {"text": "x = 1\n"}
+
+
+def test_the_loader_accepts_everything_the_picker_allows(tmp_path):
+    # The picker's allowedExtensions, minus the structured ones covered above.
+    # A selectable file the loader rejects is the bug this pins.
+    for name in ("a.txt", "b.jl", "c.md"):
+        aa, data = load_file(_write(tmp_path, name, "hi"), "auto")
+        assert data["text"] == "hi", name
+
+
+def test_a_still_unsupported_suffix_names_itself(tmp_path):
+    with pytest.raises(ValueError, match=r"Unsupported file format: \.png"):
+        load_file(_write(tmp_path, "image.png", "not really a png"), "auto")
+
+
+def test_load_route_returns_text_for_a_julia_file(tmp_path):
+    path = _write(tmp_path, "model.jl", "greet() = println(\"hi\")\n")
+    response = client.post("/load", json={"filePath": path, "schemaMode": "auto"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["aa"] is None
+    assert body["data"]["text"] == "greet() = println(\"hi\")\n"
+
+
 # ── JSON / missing file ──────────────────────────────────────────────────────
 
 def test_rcvs_json_still_loads_as_aa(tmp_path):

@@ -1,11 +1,9 @@
-import 'dart:convert';
-
-import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:idb_shim/idb_shim.dart';
 
 import 'idb_platform_stub.dart'
     if (dart.library.js_interop) 'idb_platform_web.dart';
+import 'secret_envelope.dart';
 import 'vault_store.dart';
 
 /// Web/WASM vault backing: every value is sealed with **AES-256-GCM** before it
@@ -40,17 +38,16 @@ class EncryptedIdbVaultStore implements VaultStore {
   static const int _dbVersion = 1;
 
   final IdbFactory _factory;
-  final AesGcm _algorithm;
+  final SecretEnvelope _envelope = SecretEnvelope();
 
   Database? _db;
-  SecretKey? _dataKey;
+  String? _dataKeyBase64;
 
   /// [factory] defaults to the platform's IndexedDB; tests pass
   /// `idbFactoryMemory`, which exercises this class's real encryption path
   /// against a real (in-memory) IndexedDB implementation.
   EncryptedIdbVaultStore({IdbFactory? factory})
-      : _factory = factory ?? platformIdbFactory,
-        _algorithm = AesGcm.with256bits();
+      : _factory = factory ?? platformIdbFactory;
 
   Future<Database> _open() async {
     final existing = _db;
@@ -72,25 +69,21 @@ class EncryptedIdbVaultStore implements VaultStore {
 
   /// The AES key for this browser profile — generated on first use and reused
   /// after that, so values written in an earlier session still open.
-  Future<SecretKey> _key() async {
-    final cached = _dataKey;
+  Future<String> _keyBase64() async {
+    final cached = _dataKeyBase64;
     if (cached != null) return cached;
 
     final db = await _open();
     final read = db.transaction(_keyStore, idbModeReadOnly);
     final stored = await read.objectStore(_keyStore).getObject(_dataKeyId);
     await read.completed;
+    if (stored is String) return _dataKeyBase64 = stored;
 
-    if (stored is String) {
-      return _dataKey = SecretKey(base64Decode(stored));
-    }
-
-    final generated = await _algorithm.newSecretKey();
-    final bytes = await generated.extractBytes();
+    final generated = await _envelope.newKeyBase64();
     final write = db.transaction(_keyStore, idbModeReadWrite);
-    await write.objectStore(_keyStore).put(base64Encode(bytes), _dataKeyId);
+    await write.objectStore(_keyStore).put(generated, _dataKeyId);
     await write.completed;
-    return _dataKey = generated;
+    return _dataKeyBase64 = generated;
   }
 
   @override
@@ -100,39 +93,21 @@ class EncryptedIdbVaultStore implements VaultStore {
     final record = await txn.objectStore(_secretsStore).getObject(key);
     await txn.completed;
     if (record is! Map) return null;
-
-    final box = SecretBox(
-      base64Decode(record['cipherText'] as String),
-      nonce: base64Decode(record['nonce'] as String),
-      mac: Mac(base64Decode(record['mac'] as String)),
+    return _envelope.open(
+      record,
+      _envelope.keyFromBase64(await _keyBase64()),
     );
-    // A failed MAC means the record was altered or the key changed. Surfacing
-    // null (rather than the exception) keeps a single tampered entry from
-    // bricking the whole vault; the caller sees a missing secret.
-    try {
-      final clear = await _algorithm.decrypt(box, secretKey: await _key());
-      return utf8.decode(clear);
-    } on SecretBoxAuthenticationError {
-      return null;
-    }
   }
 
   @override
   Future<void> write(String key, String value) async {
     final db = await _open();
-    final box = await _algorithm.encrypt(
-      utf8.encode(value),
-      secretKey: await _key(),
-      // Fresh nonce per write — GCM's security collapses if a nonce repeats
-      // under one key.
-      nonce: _algorithm.newNonce(),
+    final sealed = await _envelope.seal(
+      value,
+      _envelope.keyFromBase64(await _keyBase64()),
     );
     final txn = db.transaction(_secretsStore, idbModeReadWrite);
-    await txn.objectStore(_secretsStore).put({
-      'cipherText': base64Encode(box.cipherText),
-      'nonce': base64Encode(box.nonce),
-      'mac': base64Encode(box.mac.bytes),
-    }, key);
+    await txn.objectStore(_secretsStore).put(sealed, key);
     await txn.completed;
   }
 
@@ -157,7 +132,7 @@ class EncryptedIdbVaultStore implements VaultStore {
   Future<void> close() async {
     _db?.close();
     _db = null;
-    _dataKey = null;
+    _dataKeyBase64 = null;
   }
 
   /// The sealed record exactly as stored — for tests asserting that what lands

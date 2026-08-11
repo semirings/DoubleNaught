@@ -23,6 +23,11 @@ import '../base/output_connector.dart';
 /// native dialog purely to capture a path — the *backend* still does the
 /// reading, so this only helps when the backend is local).
 ///
+/// The dialog applies **no type filter**, because an `XTypeGroup` becomes UTI
+/// filtering on macOS and greys out extensions the system has no registered type
+/// for — `.jl` among them. [allowedExtensions] is the filter instead, checked
+/// after selection, and a rejected pick shows an inline badge on the card.
+///
 /// Emits two output ports:
 /// - `contents` (idx 0): the raw file data as an AA-shaped table
 /// - `aa` (idx 1): the loaded AA if detected, else nothing
@@ -51,6 +56,49 @@ class LoadFileNode extends BaseNodeWidget {
     super.onOutputPort,
     super.connectedOutputs,
   });
+
+  /// Extensions the node will accept from the file dialog.
+  ///
+  /// This is the *whole* filter: the dialog itself no longer restricts anything
+  /// (see `_openNativeDialog` for why), so a pick that is not on this list is
+  /// reported on the card.
+  ///
+  /// `.csv` is here because the backend reconstructs an AA from one; `.jl` and
+  /// `.md` are here because they are plain text a user may legitimately want to
+  /// load — note the backend does not yet route those two anywhere and answers
+  /// "Unsupported file format", so they pass selection and fail at Load.
+  static const List<String> allowedExtensions = [
+    '.jl',
+    '.md',
+    '.txt',
+    '.json',
+    '.parquet',
+    '.arrow',
+    '.csv',
+  ];
+
+  /// The lowercase extension of [path] including the dot, or empty when it has
+  /// none.
+  ///
+  /// Only looks at the last segment, so a dot in a *directory* name
+  /// (`/tmp/v1.2/model`) is not mistaken for an extension, and a dotfile with no
+  /// extension (`.gitignore`) reports empty rather than claiming to be one.
+  static String extensionOf(String path) {
+    // Both separators by hand rather than `Platform.pathSeparator`: this widget
+    // also compiles for web, where `dart:io` does not exist.
+    final slash = path.lastIndexOf('/');
+    final backslash = path.lastIndexOf(r'\');
+    final cut = slash > backslash ? slash : backslash;
+    final name = cut < 0 ? path : path.substring(cut + 1);
+
+    final dot = name.lastIndexOf('.');
+    if (dot <= 0) return '';
+    return name.substring(dot).toLowerCase();
+  }
+
+  /// Whether [path] is a file type this node will hand to the backend.
+  static bool isAllowedPath(String path) =>
+      allowedExtensions.contains(extensionOf(path));
 
   /// The backend's raw `data` blob as an [AaPayload], so it can travel on the
   /// info bus — [OutputPort] carries [AaPayload] and nothing else.
@@ -132,6 +180,10 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   String? _errorMessage;
   String? _statusMessage;
 
+  /// File name of a pick rejected by [LoadFileNode.isAllowedPath] — drives the
+  /// inline badge. Non-null only between a bad pick and the next good one.
+  String? _rejectedFile;
+
   @override
   void initState() {
     super.initState();
@@ -172,8 +224,19 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
     final picked = await (widget.pickFile ?? _openNativeDialog)();
     if (picked == null || !mounted) return;
 
+    // Validate here, because the dialog no longer can — see [_openNativeDialog].
+    if (!LoadFileNode.isAllowedPath(picked.path)) {
+      setState(() {
+        _rejectedFile = picked.name;
+        _statusMessage = null;
+        _errorMessage = null;
+      });
+      return;
+    }
+
     setState(() {
       _filePathController.text = picked.path;
+      _rejectedFile = null;
       _errorMessage = null;
       _statusMessage = null;
     });
@@ -183,14 +246,18 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
     });
   }
 
-  static Future<XFile?> _openNativeDialog() => openFile(
-        acceptedTypeGroups: const [
-          XTypeGroup(
-            label: 'Data',
-            extensions: ['parquet', 'arrow', 'json', 'csv', 'txt'],
-          ),
-        ],
-      );
+  /// Open the dialog with **no type filter**.
+  ///
+  /// An `XTypeGroup(extensions: …)` becomes UTI filtering on macOS, and the panel
+  /// greys out any extension the system has no UTI registered for. `.jl` is
+  /// exactly that case: a Julia source file is unselectable even when named in
+  /// the list, because macOS cannot map the extension to a type it knows.
+  ///
+  /// So the filter moves into Dart: accept anything from the panel, then check
+  /// the extension ourselves against [LoadFileNode.allowedExtensions]. The user
+  /// can reach every file they own, and an unsupported pick is reported on the
+  /// card rather than silently unselectable.
+  static Future<XFile?> _openNativeDialog() => openFile();
 
   Future<void> _onLoadPressed() async {
     final filePath = _filePathController.text.trim();
@@ -347,6 +414,10 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
             label: Text(_isLoading ? 'Loading...' : 'Load'),
           ),
         ),
+        if (_rejectedFile != null) ...[
+          const SizedBox(height: 8),
+          _buildRejectedBadge(theme),
+        ],
         const SizedBox(height: 8),
         _buildStatus(theme),
         if (_aa != null) ...[
@@ -354,6 +425,60 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
           _buildAaIndicator(theme),
         ],
       ],
+    );
+  }
+
+  /// Inline badge for a file type this node will not send to the backend.
+  ///
+  /// Deliberately not an exception and not the status line: the pick failed a
+  /// local rule, no request was attempted, and the previously chosen path is
+  /// untouched — so it reads as a rejected *selection*, not a failed load.
+  Widget _buildRejectedBadge(ThemeData theme) {
+    final scheme = theme.colorScheme;
+    final ext = LoadFileNode.extensionOf(_rejectedFile!);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: scheme.errorContainer,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: scheme.error),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.block, size: 14, color: scheme.onErrorContainer),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  ext.isEmpty
+                      ? 'Unsupported file: $_rejectedFile'
+                      : 'Unsupported file type: $ext',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: scheme.onErrorContainer,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Text(
+                  'Allowed: ${LoadFileNode.allowedExtensions.join(' ')}',
+                  style: theme.textTheme.labelSmall
+                      ?.copyWith(color: scheme.onErrorContainer),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: () => setState(() => _rejectedFile = null),
+            icon: Icon(Icons.close, size: 14, color: scheme.onErrorContainer),
+            tooltip: 'Dismiss',
+            visualDensity: VisualDensity.compact,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 24, minHeight: 24),
+          ),
+        ],
+      ),
     );
   }
 

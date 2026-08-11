@@ -67,28 +67,10 @@ class PromptNodeWidget extends BaseNodeWidget {
   /// `val`) when the AA has one; otherwise takes every string value. Values are
   /// joined by newline in payload order, and numeric cells are skipped — a
   /// chunk's `position` or `token_count` is metadata, not prose.
-  static String extractText(AaPayload aa) {
-    const preferred = ['text', 'prompt', 'content', 'val'];
-    final cols = aa.cols.map((c) => c.toLowerCase()).toList();
-
-    String? chosen;
-    for (final name in preferred) {
-      if (cols.contains(name)) {
-        chosen = name;
-        break;
-      }
-    }
-
-    final parts = <String>[];
-    for (var i = 0; i < aa.cols.length && i < aa.vals.length; i++) {
-      if (chosen != null && cols[i] != chosen) continue;
-      final v = aa.vals[i];
-      if (v is! String) continue;
-      if (v.isEmpty) continue;
-      parts.add(v);
-    }
-    return parts.join('\n');
-  }
+  /// Delegates to [AaPayload.flattenText] — the Remote Service Node reads its
+  /// `dataInput` through the same helper, so "what counts as the text of an AA"
+  /// is defined once.
+  static String extractText(AaPayload aa) => aa.flattenText();
 
   @override
   State<PromptNodeWidget> createState() => _PromptNodeWidgetState();

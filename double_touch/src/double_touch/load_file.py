@@ -1,7 +1,16 @@
 """Load File node execution logic.
 
-Loads files (.parquet, .arrow, .json, .csv, .txt) and auto-detects Associative Arrays
-based on schema metadata tags or column patterns.
+Loads files and auto-detects Associative Arrays based on schema metadata tags or
+column patterns.
+
+Two families of input:
+
+* **Structured** — .parquet, .arrow, .json, .csv — reconstructed as an AA where
+  the shape allows (see ``_load_csv`` for the CSV conventions).
+* **Plain text** — .txt, .jl, .md — returned verbatim as ``{"text": ...}`` with no
+  AA, for a downstream node (a prompt, an LLM dispatch) to read. The set matches
+  the Load File node's own ``allowedExtensions``, so anything the picker accepts
+  is something this loader can answer.
 """
 
 from __future__ import annotations
@@ -21,13 +30,19 @@ from .save_file import load_parquet_with_auto_detect, _table_to_aa
 # through to "auto" for every explicit mode the user picks.
 _SCHEMA_MODE_ALIASES = {"forceAa": "force_aa", "rawTable": "raw_table"}
 
+# Extensions read as plain text. Kept in step with `allowedExtensions` in
+# `double_vision/lib/widgets/nodes/implementations/load_file_node.dart`: the
+# picker and the loader agreeing is what keeps a selectable file loadable.
+TEXT_SUFFIXES = (".txt", ".jl", ".md")
+
 
 def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[AssocArray], Optional[dict]]:
     """Load a file and optionally auto-detect Associative Array format.
 
     Args:
         file_path: Absolute or relative path to the file.
-        schema_mode: "auto" (default), "force_aa", or "raw_table".
+        schema_mode: "auto" (default), "force_aa", or "raw_table". Ignored for
+                     plain-text inputs, which have no AA to detect.
                      - "auto": detect based on metadata or column names
                      - "force_aa": force reconstruction as AA even if not tagged
                      - "raw_table": return raw table/dict representation
@@ -55,7 +70,10 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
         return _load_json(path, schema_mode)
     elif suffix == ".csv":
         return _load_csv(path, schema_mode)
-    elif suffix == ".txt":
+    elif suffix in TEXT_SUFFIXES:
+        # Source and prose files are content, not tables: hand back the text and
+        # let the graph decide what to do with it. No AA — a Julia file has no
+        # rows and columns, and inventing some would only obscure it.
         return None, {"text": path.read_text()}
     else:
         raise ValueError(f"Unsupported file format: {suffix}")

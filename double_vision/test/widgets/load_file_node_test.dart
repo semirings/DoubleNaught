@@ -126,6 +126,114 @@ void main() {
     });
   });
 
+  group('file-type filter', () {
+    test('extensionOf reads the last segment only, lowercased', () {
+      expect(LoadFileNode.extensionOf('/tmp/model.JL'), '.jl');
+      expect(LoadFileNode.extensionOf('/tmp/notes.md'), '.md');
+      // A dot in a directory name is not an extension.
+      expect(LoadFileNode.extensionOf('/tmp/v1.2/model'), '');
+      // Nor is a leading dot on an extension-less dotfile.
+      expect(LoadFileNode.extensionOf('/tmp/.gitignore'), '');
+      // Windows separators too — the helper avoids dart:io for the web build.
+      expect(LoadFileNode.extensionOf(r'C:\data\export.parquet'), '.parquet');
+      expect(LoadFileNode.extensionOf('bare'), '');
+      // Only the final extension counts.
+      expect(LoadFileNode.extensionOf('/tmp/archive.tar.gz'), '.gz');
+    });
+
+    test('the allow-list is the whole filter', () {
+      for (final ext in LoadFileNode.allowedExtensions) {
+        expect(LoadFileNode.isAllowedPath('/tmp/file$ext'), isTrue,
+            reason: '$ext should be allowed');
+      }
+      // .csv stays allowed: the backend reconstructs an AA from one.
+      expect(LoadFileNode.isAllowedPath('/tmp/data.csv'), isTrue);
+      for (final path in [
+        '/tmp/image.png',
+        '/tmp/archive.zip',
+        '/tmp/binary',
+        '/tmp/.gitignore',
+      ]) {
+        expect(LoadFileNode.isAllowedPath(path), isFalse, reason: path);
+      }
+    });
+
+    testWidgets('a .jl pick is accepted — the case the UTI filter blocked',
+        (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            pickFile: () async => XFile('/Users/me/src/model.jl'),
+          ),
+        ),
+      ));
+
+      await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+
+      expect(_pathField(tester), '/Users/me/src/model.jl');
+      expect(find.textContaining('Unsupported file type'), findsNothing);
+    });
+
+    testWidgets('an unsupported pick shows a badge and keeps the path',
+        (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            pickFile: () async => XFile('/Users/me/pictures/cat.png'),
+          ),
+        ),
+      ));
+
+      await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+
+      // Reported, not thrown — and the previous path is untouched.
+      expect(find.text('Unsupported file type: .png'), findsOneWidget);
+      expect(find.textContaining('Allowed: .jl .md'), findsOneWidget);
+      expect(_pathField(tester), 'storage/out/export.parquet');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a file with no extension names the file instead',
+        (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            pickFile: () async => XFile('/Users/me/Makefile'),
+          ),
+        ),
+      ));
+
+      await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unsupported file: Makefile'), findsOneWidget);
+    });
+
+    testWidgets('the badge is dismissible', (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            pickFile: () async => XFile('/Users/me/pictures/cat.png'),
+          ),
+        ),
+      ));
+
+      await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+      expect(find.text('Unsupported file type: .png'), findsOneWidget);
+
+      await tester.tapAt(tester.getCenter(find.byTooltip('Dismiss')));
+      await tester.pumpAndSettle();
+      expect(find.text('Unsupported file type: .png'), findsNothing);
+    });
+  });
+
   testWidgets('contents and aa register as separate indexed ports',
       (tester) async {
     final ports = <int, OutputPort>{};

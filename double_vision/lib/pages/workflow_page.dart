@@ -296,6 +296,10 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'prompt_node': // tolerate a snake_case spelling in saved workflows
         // One input: `fileInput` (AA, idx 0).
         return const [0];
+      case 'remoteServiceNode':
+      case 'remote_service': // tolerate a snake_case spelling in saved workflows
+        // Two inputs: `dataInput` (AA, idx 0), `authInput` (AA, idx 1).
+        return const [0, 1];
       case 'text_model_loader':
         // One optional input: `trigger` (AA, idx 0).
         return const [0];
@@ -1862,6 +1866,24 @@ class _WorkflowPageState extends State<WorkflowPage>
           // pushes it and brings the panel forward.
           onContent: _pushFocusContent,
           onView: _openFocusTab,
+        );
+      case 'remoteServiceNode':
+      case 'remote_service': // tolerate a snake_case spelling in saved workflows
+        return RemoteServiceNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `dataInput` (AA, idx 0) — the payload to dispatch.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `authInput` (AA, idx 1) — profiles from a Secure Settings node.
+          authConnected: _hasIncomingEdgeAt(node.id, 1),
+          onAuthConnect: (source) => _connectAt(source, node.id, 1),
+          onAuthInputPort: (port) => _registerAaInput(node.id, 1, port),
+          // `dataOutput` (AA, idx 0) — the result matrix.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
         );
       case 'secureSettingsNode':
       case 'secure_settings': // tolerate a snake_case spelling in saved workflows

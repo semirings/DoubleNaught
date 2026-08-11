@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
 import '../../models/auth_profile.dart';
+import 'encrypted_file_vault_store.dart';
 import 'encrypted_idb_vault_store.dart';
 import 'keychain_vault_store.dart';
 import 'vault_store.dart';
@@ -21,10 +22,39 @@ class KeyVault {
   final VaultStore persistent;
   final SessionVaultStore session;
 
+  /// Which desktop backing to use, from `--dart-define=DN_VAULT=...`:
+  /// `file` (default) or `keychain`.
+  static const String _backing =
+      String.fromEnvironment('DN_VAULT', defaultValue: 'file');
+
+  /// Whether the persistent backing is the OS keychain.
+  static bool get usesKeychain => !kIsWeb && _backing == 'keychain';
+
   KeyVault({VaultStore? persistent, SessionVaultStore? session})
-      : persistent = persistent ??
-            (kIsWeb ? EncryptedIdbVaultStore() : KeychainVaultStore()),
+      : persistent = persistent ?? _defaultStore(),
         session = session ?? SessionVaultStore();
+
+  /// Pick the persistent backing.
+  ///
+  /// Web has no keychain, so it gets the encrypted IndexedDB store. Desktop
+  /// **defaults to the encrypted file** rather than the OS keychain, because the
+  /// keychain is unusable from a build with no signing identity — the
+  /// data-protection keychain rejects every write with `-34018`, and the
+  /// file-based one re-prompts for the login password on every access because an
+  /// ad-hoc signature cannot be recorded in an item's ACL. Neither degrades
+  /// gracefully; both make the feature unusable.
+  ///
+  /// Once the app is signed with a development certificate, the keychain is the
+  /// stronger choice — the OS holds the key rather than a file this process can
+  /// read. Opt back in with `--dart-define=DN_VAULT=keychain`. See
+  /// [EncryptedFileVaultStore] for what the file backing does and does not
+  /// protect.
+  static VaultStore _defaultStore() {
+    if (kIsWeb) return EncryptedIdbVaultStore();
+    return _backing == 'keychain'
+        ? KeychainVaultStore()
+        : EncryptedFileVaultStore();
+  }
 
   List<AuthProfile>? _cache;
 

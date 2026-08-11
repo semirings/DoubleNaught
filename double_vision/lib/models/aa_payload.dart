@@ -96,4 +96,36 @@ class AaPayload {
     final v = vals[i];
     return v is int ? v : int.tryParse(v.toString());
   }
+
+  /// This payload flattened to prose — the text a consumer should treat as "the
+  /// content", when it needs one string rather than a matrix.
+  ///
+  /// Takes the cells of the first [preferred] column the payload actually has;
+  /// failing that, every string value. Numeric cells are always skipped — a
+  /// chunk's `position` or `token_count` is metadata, not content. Values are
+  /// joined by newline in payload order.
+  ///
+  /// Shared by the Prompt Node's `fileInput` ingest and the Remote Service
+  /// Node's `dataInput` extraction so both read an upstream AA the same way.
+  String flattenText({
+    List<String> preferred = const ['text', 'prompt', 'content', 'val'],
+  }) {
+    final lower = cols.map((c) => c.toLowerCase()).toList();
+    String? chosen;
+    for (final name in preferred) {
+      if (lower.contains(name)) {
+        chosen = name;
+        break;
+      }
+    }
+
+    final parts = <String>[];
+    for (var i = 0; i < cols.length && i < vals.length; i++) {
+      if (chosen != null && lower[i] != chosen) continue;
+      final v = vals[i];
+      if (v is! String || v.isEmpty) continue;
+      parts.add(v);
+    }
+    return parts.join('\n');
+  }
 }

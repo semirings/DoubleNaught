@@ -284,24 +284,56 @@ payload.
 
 | Mode | Backing | At rest |
 |---|---|---|
-| Desktop / mobile | `KeychainVaultStore` | OS keychain — macOS Keychain, Linux Secret Service, Windows DPAPI, iOS/Android keystore. The OS owns the key; this process holds none. Items are device-bound and non-syncing, so keys can't ride a backup off-machine. |
-| Web / WASM | `EncryptedIdbVaultStore` | AES-256-GCM per value (fresh nonce per write), ciphertext + nonce + MAC into IndexedDB. |
+| Desktop **(default)** | `EncryptedFileVaultStore` | AES-256-GCM per value into a JSON file under app-support, data key in a sibling `chmod 600` file. |
+| Desktop, signed builds | `KeychainVaultStore` — opt in with `--dart-define=DN_VAULT=keychain` | OS keychain: macOS Keychain, Linux Secret Service, Windows DPAPI, iOS/Android keystore. The OS owns the key; this process holds none. Items are device-bound and non-syncing, so keys can't ride a backup off-machine. |
+| Web / WASM | `EncryptedIdbVaultStore` | AES-256-GCM per value into IndexedDB. |
 | Session Storage Only | `SessionVaultStore` | RAM for the process lifetime; nothing persisted. |
+
+Both encrypting backings share one implementation of the envelope
+(`SecretEnvelope`: AES-256-GCM, fresh nonce per write, ciphertext + nonce + MAC),
+so the crypto is written and reasoned about once.
+
+**Why the keychain is not the desktop default.** It is the stronger option and
+should be used wherever the app is signed — but it is *unusable* from a build with
+no signing identity, in both of its flavors, and neither failure degrades
+gracefully:
+
+- The **data-protection** keychain needs a `keychain-access-groups` entitlement,
+  which needs a development certificate. Without one every write fails
+  `-34018 errSecMissingEntitlement`; adding the entitlement anyway fails the
+  build outright (*"has entitlements that require signing with a development
+  certificate"*).
+- The **file-based** login keychain records the accessing app's code signature in
+  each item's ACL. An ad-hoc-signed binary (what `flutter run` produces, and what
+  this project builds — `CODE_SIGN_IDENTITY = "-"`, no team) has no stable
+  identity to record, so *Always Allow* has nothing to persist and macOS
+  re-prompts for the login password on every access. An unbreakable loop, not a
+  slow path.
+
+So the vault must not depend on the keychain being usable. Desktop defaults to the
+encrypted file; set up signing and pass `--dart-define=DN_VAULT=keychain` to get
+the stronger backing back.
 
 Profile IDs map to secrets through `credentialRef`; the non-secret profile index
 rides in the same store under a reserved key, which buys one storage path per
 platform instead of two.
 
-**Honest limit on the web path.** A browser has no OS keychain, so the data key
-must live where the page can reach it — its own IndexedDB store. That defeats
-anything reading the secrets store or persisted bytes without also reading the
-key store (DevTools browsing, an IndexedDB export, a profile backup), and GCM's
-MAC makes tampering fail closed rather than decrypt to garbage. It does **not**
-defeat script running on the same origin. Web storage is therefore
-obfuscation-plus-integrity, not confidentiality against local code; users needing
-more should choose Session Storage Only or the desktop build. A
-passphrase-derived key would close the gap at the cost of a prompt every launch —
-a deliberate non-goal here, not an oversight.
+**Honest limit on both encrypting paths.** Whether the sealed bytes are in
+IndexedDB or in a file, the data key has to live somewhere this process can read
+unaided, so it sits next to them. That defeats
+anything reading the sealed records without also reading the key — DevTools
+browsing, an IndexedDB export, a copied Application Support folder, a profile
+backup — and GCM's MAC makes tampering fail closed rather than decrypt to
+garbage. It does **not** defeat code running in the same context: script on the
+page, or any process running as this user. Both encrypting backings are therefore
+obfuscation-plus-integrity, not confidentiality against local code — strictly
+weaker than the OS keychain, which is why the keychain remains the right choice
+wherever the app is signed.
+
+Users who need more should mark the profile **Session Storage Only** (RAM,
+nothing persisted), or set up signing and switch to the keychain. A
+passphrase-derived key (PBKDF2/Argon2) would close the gap at the cost of a
+prompt every launch — a deliberate non-goal, not an oversight.
 
 ### Interface
 
@@ -337,6 +369,93 @@ credential, 404 means the base URL isn't the API root, 429 means rate-limited
 *with* a probably-valid key. Failure text is built from the status code and
 exception type, never from the exception's string form, which can quote the
 request and its headers.
+
+## Remote Service node (`remoteServiceNode`)
+
+The graph's egress point. Takes a payload from upstream, a credential *reference*
+from the Secure Settings node, dispatches one request to an online or on-network
+resource (LLM, vision service, remote API), and puts the response plus its
+telemetry back on the graph as an AA.
+
+### Node contract
+
+| | |
+|---|---|
+| Type | `remoteServiceNode` |
+| Input port (left edge, idx 0) | **`dataInput`** — payload AA from upstream |
+| Input port (left edge, idx 1) | **`authInput`** — profile AA from `secureSettingsNode` |
+| Output port (right edge, idx 0) | **`dataOutput`** — result AA |
+
+- **`dataInput`** is flattened to prose by `AaPayload.flattenText()`: the cells of
+  the first `text` / `prompt` / `content` / `val` column present, else every
+  string value, newline-joined, numeric cells skipped. The Prompt Node's
+  `fileInput` reads an upstream AA through the same helper, so "what counts as the
+  text of an AA" is defined once rather than twice.
+- **`authInput`** supplies `displayName`, `provider`, `baseUrl`, and
+  `credentialRef`. Profiles accumulate across payloads keyed by profile id, so a
+  Secure Settings node emitting one at a time still fills the dropdown, and a
+  re-emission updates a row instead of duplicating it.
+- **`dataOutput`** — row `request:<time><rand>`, one per dispatch:
+
+  | col | val |
+  |---|---|
+  | `text` | the service's reply, empty on failure |
+  | `serviceProvider` | the provider that served it |
+  | `status` | `ok` · `error` · `cancelled` |
+  | `executionTimeMs` | wall-clock for the dispatch (int) |
+  | `errorMsg` | empty on success |
+
+  Emitted on **every** outcome, not just success — a downstream node should be
+  able to see a failure rather than infer it from silence.
+
+### Credentials never travel between nodes
+
+`authInput` carries the `credentialRef` handle, never the key. At dispatch the
+node resolves the profile from the vault by id and reads the secret through
+`KeyVault.secretFor`, holding it only for the length of one request. A ref is
+therefore only redeemable on the machine whose vault holds it: a workflow shared
+with someone else fails with *"No credential redeemable for this profile"* rather
+than a puzzling 401.
+
+### Provider dispatch
+
+| Provider | Request | Credential carried as |
+|---|---|---|
+| Anthropic | `POST /v1/messages` | `x-api-key` **+** `anthropic-version: 2023-06-01` |
+| OpenAI/Compatible | `POST /v1/chat/completions` | `Authorization: Bearer …` |
+| Google Gemini | `POST /v1beta/models/{model}:generateContent` | `x-goog-api-key` |
+| Ollama Local | `POST /api/generate` | none — local daemon |
+
+- **Model ids come from the provider, not from a hardcoded list.** The field's
+  **Available models** control asks the credential's own catalogue endpoint —
+  `GET /v1/models` (Anthropic, OpenAI-compatible), `GET /v1beta/models` (Gemini,
+  `models/` prefix stripped and non-`generateContent` entries dropped), or
+  `GET /api/tags` (Ollama) — and offers what comes back. Only Anthropic's default
+  is pre-filled (`claude-opus-5`); a hardcoded list for the others would rot, and
+  a guessed id 404s in a way that reads like a broken node. The field stays
+  **editable**: a catalogue can omit an id that still works (a fine-tune, an
+  alias, a private deployment), so the pick-list is a convenience over free text,
+  not a replacement. Dispatch refuses with no id at all.
+- **Anthropic needs a refusal guard.** A request its safety classifiers decline
+  returns **HTTP 200** with `stop_reason: "refusal"` and possibly an empty
+  `content` array, so reading `content[0]` unconditionally would throw on a
+  well-formed response. The node checks `stop_reason` first and reports the
+  refusal category as the error.
+- **Failure text is built from the status code and the provider's own `error.message`,
+  truncated** — never from a request echo, which would carry the auth header.
+
+### Execution and telemetry
+
+**Submit Request** toggles to **Cancel Request** while in flight; cancelling
+closes the HTTP client, which aborts the request and emits a `cancelled` AA.
+The status bar reports `Idle` → `Connecting…` → `Streaming response… N bytes` →
+`Complete` / `Error`, with an indeterminate progress bar during dispatch —
+indeterminate because providers send no content-length for a generated reply, so
+there is no honest completion fraction.
+
+`Streaming response…` means the **response body** is arriving: requests are sent
+with `stream: false` and the body is read incrementally. Token-level SSE would
+mean implementing four different event dialects and is deliberately out of scope.
 
 <!-- ──────────────────────── Visual Design System (Stitch-synced) ──────────── -->
 

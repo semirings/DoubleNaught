@@ -34,6 +34,8 @@ const List<NodeType> nodeTypes = [
   // Camel-case type per the Prompt Node spec in DESIGN.md; the rest of this
   // registry predates that convention.
   NodeType(name: 'Prompt Node', type: 'promptNode'),
+  // Camel-case type per the Remote Service spec in DESIGN.md.
+  NodeType(name: 'Remote Service', type: 'remoteServiceNode'),
   NodeType(name: 'Review', type: 'review'),
   NodeType(name: 'SAM3 Control', type: 'sam3'),
   NodeType(name: 'Save File', type: 'save_file'),
