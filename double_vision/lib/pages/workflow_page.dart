@@ -33,6 +33,7 @@ const double _kD4mNodeWidth = 340;
 double _nodeWidthFor(String type) {
   if (type == 'd4m') { return _kD4mNodeWidth; }
   if (type == NodeGroup.type) { return 260; }
+  if (type == 'polyglotExecNode') { return 320; }
   if (type == 'inventory' ||
       type == 'review' ||
       type == 'load_model' ||
@@ -334,6 +335,10 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'remote_service': // tolerate a snake_case spelling in saved workflows
         // Two inputs: `dataInput` (AA, idx 0), `authInput` (AA, idx 1).
         return const [0, 1];
+      case 'polyglotExecNode':
+      case 'polyglot_exec': // tolerate a snake_case spelling in saved workflows
+        // One input: `in_aa` (AA, idx 0).
+        return const [0];
       case 'text_model_loader':
         // One optional input: `trigger` (AA, idx 0).
         return const [0];
@@ -2275,6 +2280,20 @@ class _WorkflowPageState extends State<WorkflowPage>
           onAuthConnect: (source) => _connectAt(source, node.id, 1),
           onAuthInputPort: (port) => _registerAaInput(node.id, 1, port),
           // `dataOutput` (AA, idx 0) — the result matrix.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'polyglotExecNode':
+      case 'polyglot_exec': // tolerate a snake_case spelling in saved workflows
+        return PolyglotExecNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `in_aa` (AA, idx 0) — the code to run.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `out_aa` (AA, idx 0) — the 1x8 result matrix.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );

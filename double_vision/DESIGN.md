@@ -457,6 +457,105 @@ there is no honest completion fraction.
 with `stream: false` and the body is read incrementally. Token-level SSE would
 mean implementing four different event dialects and is deliberately out of scope.
 
+## Polyglot Exec node (`polyglotExecNode`)
+
+Runs the source code on an incoming AA under a local interpreter, and puts the
+run's output back on the graph. The execution half of "load a source file, then
+do something with it": `Load File` → **Polyglot Exec** → Preview / Remote Service.
+
+### Node contract
+
+| | |
+|---|---|
+| Type | `polyglotExecNode` |
+| Input port (left edge) | `in_aa` (idx 0) — an AA carrying code, e.g. a `Load File` `contents` output |
+| Output port (right edge) | `out_aa` (idx 0) — the 1×8 result matrix |
+| Backend | `POST /exec` → `PolyglotExecNode` in `polyglot_exec_node.py` |
+
+**Input.** The documented payload is `file_path`, `language`, `code`, `shebang`,
+`args`. All five are optional and read off the AA by column name, because the
+node has to work with what upstream actually sends: `Load File` emits a **single
+`text` column** for a `.jl` or `.py` file and says nothing about the language. So
+`code` is read from the first of `code` / `text` / `content` / `source` / `val`
+that is present, and both snake_case and camelCase spellings match — the Dart side
+speaks camelCase on the wire. A multi-row AA runs its first usable row.
+
+**Output** — one row, eight columns, in this order:
+
+`status` · `language` · `stdout` · `stderr` · `exit_code` ·
+`execution_time_ms` · `code` · `file_path`
+
+`status` is `SUCCESS` | `FAILED` | `TIMEOUT`. `exit_code` stays an `int` and
+`execution_time_ms` a `float`: the AA value type is `str | int | float` precisely
+so numeric columns need not be stringified. `code` and `file_path` are passed
+through, so a downstream node can quote the source that produced the output.
+
+### Language resolution
+
+Layered, most-explicit first — **override → payload `language` → file extension
+→ shebang** — and it lives in the backend only. The node's dropdown sends `''`
+for *Auto-detect*, so the two sides cannot disagree about precedence. The Dart
+`ExecSource` mirrors the same order for the *label* it displays, so what the card
+says is what the backend will pick.
+
+| Language | Invocation | Extensions |
+|---|---|---|
+| `julia` | `julia --startup-file=no -e CODE` | `.jl` |
+| `python` | `python3 -c CODE` | `.py` |
+| `javascript` | `node -e CODE` | `.js` `.mjs` `.cjs` |
+| `bash` | `bash -c CODE` | `.sh` `.bash` |
+
+Nothing resolves ⇒ nothing runs. The node says "Pick a language" and keeps Run
+disabled rather than guessing at an interpreter.
+
+`bash -c CODE a b` binds `a` to `$0`, not `$1`, so a placeholder argv0 is
+inserted for bash alone — making `$1` the first user argument, as it is in every
+other language here.
+
+### Failure is data, not an exception
+
+A snippet that throws, times out, or names an uninstalled interpreter returns
+**200 with a `status`**, and the node emits the result AA anyway. A downstream
+node should be able to *read* a failure; if a failed run emitted nothing, the
+graph could not tell it apart from a run that never happened. Only an unrunnable
+*request* — no code at all, an unresolvable language, a non-positive timeout — is
+a 4xx, and then there is no run to report on.
+
+### Isolation and its limits
+
+* One subprocess per run via `asyncio.create_subprocess_exec` — an argv list, so
+  the snippet is a single argument that cannot be word-split or re-interpreted by
+  a shell of ours. (`bash -c` and `python3 -c` are interpreters; interpreting the
+  code is the point.)
+* `start_new_session=True`, so a timeout kills the **whole process group** — a
+  snippet that backgrounds a `sleep` does not leave it running.
+* The `communicate()` read is *shielded* from the timeout, so after the kill the
+  partial output is still returned. On a hung run that partial output is usually
+  the most useful thing there is.
+* `cwd` is the source file's directory when `file_path` names a real one, so a
+  relative path inside the snippet means what its author meant.
+* Output is capped (256 KB by default) with a truncation marker.
+
+**The timeout is the only real resource guard.** There is no sandbox, no syscall
+filter, no memory or CPU limit, and the cap bounds what is *returned* rather than
+what the child may buffer. This node executes arbitrary code by design — it is a
+local developer tool, the backend binds to 127.0.0.1, and the code comes from a
+file the user picked. Do not expose `/exec` to a network you do not control.
+
+### Widget
+
+Status is the canonical `NodeStatus` machinery, relabelled for this node:
+idle → **Idle**, working → **Running**, complete → **Success**, error → **Error**.
+The badge sits at the top of the body rather than in the title bar, because the
+shared node header takes a title and an icon only.
+
+Under it: what arrived on `in_aa` (`Lang: julia · File: demo.jl · 12 lines`), the
+language override, a timeout box, Run, and a collapsible dark console showing the
+last run's `stdout` with `stderr` in the error colour beneath it. The console is
+dark regardless of theme — it is a console, and it should read like one. A
+blank timeout box falls back to 30 s rather than sending the backend a value it
+would reject.
+
 ## Group node (`groupNode`)
 
 A collapsed subgraph: several nodes and the wires between them, packed into one

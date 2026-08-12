@@ -78,6 +78,8 @@ from .models import (
     ReviewSessionResponse,
     ReviewStartRequest,
     LoadFileRequest,
+    PolyglotExecRequest,
+    PolyglotExecResponse,
     LoadFileResponse,
     SaveFileRequest,
     SaveFileResponse,
@@ -113,6 +115,7 @@ from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
 from .save_file import execute_save
 from .load_file import load_file
+from .polyglot_exec_node import ExecInput, PolyglotExecNode
 
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
@@ -1217,6 +1220,57 @@ async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
         payload_type=payload_type,
         message=f"Loaded {payload_type} from {Path(request.file_path).name}",
     )
+
+
+# --- Polyglot Exec node (PolyglotExecNode) -----------------------------------
+
+@app.post("/exec", response_model=PolyglotExecResponse)
+async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
+    """Run the incoming payload's source code under a local interpreter.
+
+    The payload may arrive as an AA (a ``Load File`` ``contents`` output, whose
+    source sits in a ``text`` column) or as explicit ``code``. Explicit request
+    fields win over anything read off the AA, so the node's dropdown and timeout
+    box override what the upstream node happened to say.
+
+    A failing snippet is **not** an HTTP error: a non-zero exit, a timeout and a
+    missing interpreter all return 200 with a ``status`` of ``FAILED`` /
+    ``TIMEOUT``, because the result AA is how a downstream node sees the failure.
+    Only an unrunnable *request* — no code at all, or a language nothing can
+    resolve — is a 4xx.
+
+    Runs directly on the event loop rather than in a threadpool: the work is one
+    ``asyncio`` subprocess and its pipes, which is already non-blocking.
+    """
+    payload = (
+        PolyglotExecNode.from_aa(request.aa)
+        if request.aa is not None
+        else ExecInput()
+    )
+    # Explicit request fields beat the payload's own.
+    if request.code is not None:
+        payload.code = request.code
+    if request.file_path is not None:
+        payload.file_path = request.file_path
+    if request.args:
+        payload.args = list(request.args)
+
+    if not payload.code.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="no code to run: send `code`, or an AA with a "
+            f"{'/'.join(('code', 'text', 'content'))} column",
+        )
+    if request.timeout_s <= 0:
+        raise HTTPException(status_code=422, detail="timeoutS must be positive")
+
+    node = PolyglotExecNode(timeout_s=request.timeout_s)
+    try:
+        result = await node.run(payload, override_language=request.language)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return PolyglotExecResponse(aa=PolyglotExecNode.to_aa(result), **result)
 
 
 # --- Save File node (SaveFileNode) -------------------------------------------
