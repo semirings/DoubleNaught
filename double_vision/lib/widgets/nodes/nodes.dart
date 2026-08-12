@@ -43,3 +43,4 @@ export 'implementations/model_builder_node.dart';
 export 'implementations/split_node.dart';
 export 'implementations/tokenizer_node.dart';
 export 'implementations/url_source_node.dart';
+export 'implementations/polyglot_exec_node_widget.dart';

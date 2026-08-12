@@ -659,3 +659,54 @@ class SaveFileResponse(CamelModel):
     bytes_written: int
     # Status message for UI display.
     message: str
+
+
+# --- Polyglot Exec node (PolyglotExecNode) -----------------------------------
+# A functional node: it runs the source code carried on an incoming AA under a
+# local interpreter and emits stdout/stderr/exit-code/timing as an AA.
+
+
+class PolyglotExecRequest(CamelModel):
+    # The upstream payload, e.g. a Load File `contents` AA. Either this or `code`
+    # must be present; explicit fields below win over anything read out of it.
+    aa: Optional[AssocArray] = None
+    # Source to execute, when the caller has it in hand rather than on an AA.
+    code: Optional[str] = None
+    # Language override. "" or "auto" means infer (payload → extension → shebang).
+    language: str = ""
+    # Origin of the code. Sets the child's working directory when it resolves to
+    # a real directory, so relative paths inside the snippet behave.
+    file_path: Optional[str] = None
+    # Command-line arguments for the snippet.
+    args: list[str] = []
+    # Wall-clock budget in seconds.
+    timeout_s: float = 30.0
+
+
+class PolyglotExecResponse(CamelModel):
+    # The 1x8 result AA — the payload a downstream node consumes.
+    aa: AssocArray
+    # The same result as flat fields, for a caller that wants them directly.
+    status: str
+    language: str
+    stdout: str
+    stderr: str
+    exit_code: int
+    execution_time_ms: float
+    code: str
+    file_path: str
+
+
+# --- AST Extract node (AstExtractNode) ---------------------------------------
+# A source-indexing node: it runs julia/extract_ast.jl over a Julia source tree
+# and returns the 7-column definition index as Arrow IPC bytes (never JSON).
+
+
+class AstExtractRequest(CamelModel):
+    # Directory to index, recursively. Hidden directories and `deps` are skipped.
+    root_path: str
+    # Keep the Arrow artifact at this path instead of a temporary file.
+    out_path: Optional[str] = None
+    # Wall-clock budget for the Julia run. Cold Julia plus Arrow.jl is a couple of
+    # seconds before parsing begins, so this is generous by default.
+    timeout_s: float = 180.0

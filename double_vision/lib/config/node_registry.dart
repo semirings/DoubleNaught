@@ -31,6 +31,8 @@ const List<NodeType> nodeTypes = [
   NodeType(name: 'Model Builder', type: 'model_builder'),
   NodeType(name: 'Model Classifier', type: 'model_classifier'),
   NodeType(name: 'Preview', type: 'preview'),
+  // Camel-case type per the Polyglot Exec spec in DESIGN.md.
+  NodeType(name: 'Polyglot Exec', type: 'polyglotExecNode'),
   // Camel-case type per the Prompt Node spec in DESIGN.md; the rest of this
   // registry predates that convention.
   NodeType(name: 'Prompt Node', type: 'promptNode'),

@@ -457,6 +457,244 @@ there is no honest completion fraction.
 with `stream: false` and the body is read incrementally. Token-level SSE would
 mean implementing four different event dialects and is deliberately out of scope.
 
+## Patch Docstrings node (`PatchDocstringsNode`, backend-only)
+
+The write side of the docstring loop: takes the 7-column Arrow index enriched with
+`better_docstring` and writes those docstrings back into the `.jl` files.
+`julia/patch_docstrings.jl` plus `patch_docstrings.py` and `POST /ast/patch`.
+
+    extract_ast.jl  →  teacher node fills better_docstring  →  patch_docstrings.jl
+
+### Summary payload
+
+Arrow in, Arrow out: the index arrives as Arrow IPC, and the summary leaves as
+Arrow IPC with three columns — `file_path` (string), `symbols_patched`
+(**int64** — it is a count, and `validate_summary` rejects a stringified one), and
+`status`, one of `UPDATED` / `NO_CHANGE` / `ERROR`. Per-row failures ride in the
+schema metadata (`dn_errors`), as in the extractor.
+
+### Byte-for-byte preservation
+
+The AST **locates**, it never re-prints. Patching is a byte splice: the file is
+rebuilt as `bytes before … docstring … bytes after`, assembled over a `Vector{UInt8}`
+so multi-byte UTF-8 is safe. Everything outside the spliced range — code,
+comments, blank lines, tab indentation, trailing comments — survives unchanged.
+Re-printing a parsed tree would reformat the file, which is the one thing this
+must not do.
+
+Several edits to one file are applied in **descending byte order**, so an earlier
+splice cannot shift a later one's offsets. Inserted line endings match the file's
+own (`\r\n` if it has any). The insertion is indented to match the definition it
+sits above, and each write preserves the original's permission bits.
+
+### The docstring literal
+
+Emitted as a `"""` block with three escapes — and these three are the complete
+set, verified by round-tripping awkward text back through the parser:
+
+| in the text | emitted as | otherwise |
+|---|---|---|
+| `\` | `\\` | escapes the next character |
+| `$` | `\$` | interpolates |
+| `"""` | escaped quotes | closes the block early |
+
+A trailing `"` needs nothing special, because the block always puts a newline
+before the closing fence.
+
+**Not `raw"""`.** It looks like the neat answer for text full of `$` and `\`, but
+the parser treats a raw string literal above a definition as a `macrocall`, not a
+`doc` — `@doc` then returns `nothing` and the documentation is silently lost.
+
+### All-or-nothing per file
+
+If any row targeting a file cannot be located — a stale index, a file edited since
+extraction — that file is left **completely untouched** and reported `ERROR`. A
+half-patched source is worse than an unpatched one, and the fix is to re-extract,
+so partial application would only hide the staleness. Matching is on the exact
+`(symbol_name, line_range)` pair the extractor emitted, which is why both scripts
+share `julia/defs.jl`: two copies of "what is a definition and what is it called"
+drifting apart would make the patcher miss silently instead of failing loudly.
+
+Writes go through a temp file in the same directory, `chmod`-ed to match, then
+renamed over the original, so a crash mid-write cannot truncate a source file.
+`dry_run` computes the whole patch and reports what *would* change without writing
+(`dn_dry_run` records it in the summary metadata).
+
+`file_path` in the index is **relative** to the root it was extracted from, so the
+patcher needs that root: `--root=` first, then the index's own `dn_root` metadata,
+then the working directory. A relative index with no root available is refused
+rather than guessed at — guessing means patching the wrong tree.
+
+## AST Extract node (`AstExtractNode`, backend-only)
+
+Indexes every function and macro definition in a Julia source tree and emits the
+result as an **Apache Arrow table**. Backend-only for now: `julia/extract_ast.jl`
+plus `ast_extract.py` and `POST /ast/extract`. No canvas widget yet.
+
+### The seven columns
+
+`symbol_name` · `kind` · `file_path` · `line_range` · `docstring` · `raw_code` ·
+`better_docstring`
+
+All seven are non-nullable strings, in that order, and the order is asserted on
+both sides — `COLUMNS` in the Julia script, `SCHEMA_COLUMNS` in Python, checked by
+`validate_schema`. `better_docstring` is emitted empty: it is the slot a
+downstream teacher node fills.
+
+`kind` is `function` or `macro`; a macro's `symbol_name` carries its `@`.
+`line_range` is `"start:end"`. `file_path` is relative to the indexed root.
+
+### Arrow all the way, never JSON
+
+The index is a typed table and stays one: Julia writes Arrow IPC, Python reads it
+into a `pyarrow.Table`, and the route returns the Arrow **bytes**
+(`application/vnd.apache.arrow.file`). Nothing on this path calls `to_pydict()`
+or serialises the matrix as JSON — the schema and the typing are the point.
+
+Two format facts, both established by probing rather than assumed:
+
+* `Arrow.write` produces the IPC **file** format (`ARROW1` magic). So
+  `pyarrow.ipc.open_stream` **fails** on it, and `pyarrow.feather.read_table` —
+  which works — is deprecated as of pyarrow 24. `read_arrow_table` sniffs the
+  magic and picks the right reader, handling either format.
+* The Polyglot Exec node decodes a child's stdout as UTF-8 **text**, which would
+  corrupt binary Arrow. So the script always writes to a file, via its second
+  argument, and stdout carries nothing. Writing Arrow to stdout still works when
+  the script is run directly from a shell.
+
+**Diagnostics ride inside the artifact.** The Julia side records skipped files in
+the Arrow schema metadata (`dn_errors`, `dn_error_count`, `dn_files_scanned`,
+`dn_root`, `dn_schema`), so the reader gets them structurally instead of scraping
+stderr, and a run still produces exactly one file in one format.
+
+### What is and is not a definition
+
+Long-form `function`, short-form `f(x) = …`, and `macro` — JuliaSyntax normalises
+short forms to `K"function"`, so both arrive the same way, while `x = 1` is a
+`K"="` and never mistaken for one. Signature shapes handled: `f`, `Base.show`,
+operators, `where`, `f(x)::Int`, and callable objects `(::M)`.
+
+The walk descends into modules, blocks, conditionals and struct bodies (inner
+constructors are definitions). It does **not** descend into definition bodies or
+`quote` blocks: a closure already appears verbatim in its parent's `raw_code`, and
+the definitions inside a macro's template are code being *generated*, not code
+that exists. A consequence worth knowing: definitions produced by `@eval` loops
+are not indexed, because at parse time they do not exist yet.
+
+### Surviving broken source
+
+Parsing runs with `ignore_errors=true`, so a file whose one definition is
+truncated still yields the definitions around it. Anything that throws — an
+unreadable file, a traversal failure — is recorded as a skip message and the walk
+continues. A codebase with a broken file still gets an index of everything else.
+
+### Running it
+
+Hidden directories (`.git`, `.build`) and `deps` / `node_modules` / `target` are
+pruned before `walkdir` descends. Parsing uses the registered `JuliaSyntax`
+package when installed and the copy inside Base otherwise (Julia ≥ 1.10), so the
+script has no hard dependency beyond `Arrow.jl`. `$DN_EXTRACT_AST_JL` relocates
+the script.
+
+## Polyglot Exec node (`polyglotExecNode`)
+
+Runs the source code on an incoming AA under a local interpreter, and puts the
+run's output back on the graph. The execution half of "load a source file, then
+do something with it": `Load File` → **Polyglot Exec** → Preview / Remote Service.
+
+### Node contract
+
+| | |
+|---|---|
+| Type | `polyglotExecNode` |
+| Input port (left edge) | `in_aa` (idx 0) — an AA carrying code, e.g. a `Load File` `contents` output |
+| Output port (right edge) | `out_aa` (idx 0) — the 1×8 result matrix |
+| Backend | `POST /exec` → `PolyglotExecNode` in `polyglot_exec_node.py` |
+
+**Input.** The documented payload is `file_path`, `language`, `code`, `shebang`,
+`args`. All five are optional and read off the AA by column name, because the
+node has to work with what upstream actually sends: `Load File` emits a **single
+`text` column** for a `.jl` or `.py` file and says nothing about the language. So
+`code` is read from the first of `code` / `text` / `content` / `source` / `val`
+that is present, and both snake_case and camelCase spellings match — the Dart side
+speaks camelCase on the wire. A multi-row AA runs its first usable row.
+
+**Output** — one row, eight columns, in this order:
+
+`status` · `language` · `stdout` · `stderr` · `exit_code` ·
+`execution_time_ms` · `code` · `file_path`
+
+`status` is `SUCCESS` | `FAILED` | `TIMEOUT`. `exit_code` stays an `int` and
+`execution_time_ms` a `float`: the AA value type is `str | int | float` precisely
+so numeric columns need not be stringified. `code` and `file_path` are passed
+through, so a downstream node can quote the source that produced the output.
+
+### Language resolution
+
+Layered, most-explicit first — **override → payload `language` → file extension
+→ shebang** — and it lives in the backend only. The node's dropdown sends `''`
+for *Auto-detect*, so the two sides cannot disagree about precedence. The Dart
+`ExecSource` mirrors the same order for the *label* it displays, so what the card
+says is what the backend will pick.
+
+| Language | Invocation | Extensions |
+|---|---|---|
+| `julia` | `julia --startup-file=no -e CODE` | `.jl` |
+| `python` | `python3 -c CODE` | `.py` |
+| `javascript` | `node -e CODE` | `.js` `.mjs` `.cjs` |
+| `bash` | `bash -c CODE` | `.sh` `.bash` |
+
+Nothing resolves ⇒ nothing runs. The node says "Pick a language" and keeps Run
+disabled rather than guessing at an interpreter.
+
+`bash -c CODE a b` binds `a` to `$0`, not `$1`, so a placeholder argv0 is
+inserted for bash alone — making `$1` the first user argument, as it is in every
+other language here.
+
+### Failure is data, not an exception
+
+A snippet that throws, times out, or names an uninstalled interpreter returns
+**200 with a `status`**, and the node emits the result AA anyway. A downstream
+node should be able to *read* a failure; if a failed run emitted nothing, the
+graph could not tell it apart from a run that never happened. Only an unrunnable
+*request* — no code at all, an unresolvable language, a non-positive timeout — is
+a 4xx, and then there is no run to report on.
+
+### Isolation and its limits
+
+* One subprocess per run via `asyncio.create_subprocess_exec` — an argv list, so
+  the snippet is a single argument that cannot be word-split or re-interpreted by
+  a shell of ours. (`bash -c` and `python3 -c` are interpreters; interpreting the
+  code is the point.)
+* `start_new_session=True`, so a timeout kills the **whole process group** — a
+  snippet that backgrounds a `sleep` does not leave it running.
+* The `communicate()` read is *shielded* from the timeout, so after the kill the
+  partial output is still returned. On a hung run that partial output is usually
+  the most useful thing there is.
+* `cwd` is the source file's directory when `file_path` names a real one, so a
+  relative path inside the snippet means what its author meant.
+* Output is capped (256 KB by default) with a truncation marker.
+
+**The timeout is the only real resource guard.** There is no sandbox, no syscall
+filter, no memory or CPU limit, and the cap bounds what is *returned* rather than
+what the child may buffer. This node executes arbitrary code by design — it is a
+local developer tool, the backend binds to 127.0.0.1, and the code comes from a
+file the user picked. Do not expose `/exec` to a network you do not control.
+
+### Widget
+
+Status is the canonical `NodeStatus` machinery, relabelled for this node:
+idle → **Idle**, working → **Running**, complete → **Success**, error → **Error**.
+The badge sits at the top of the body rather than in the title bar, because the
+shared node header takes a title and an icon only.
+
+Under it: what arrived on `in_aa` (`Lang: julia · File: demo.jl · 12 lines`), the
+language override, a timeout box, Run, and a collapsible dark console showing the
+last run's `stdout` with `stderr` in the error colour beneath it. The console is
+dark regardless of theme — it is a console, and it should read like one. A
+blank timeout box falls back to 30 s rather than sending the backend a value it
+would reject.
+
 ## Group node (`groupNode`)
 
 A collapsed subgraph: several nodes and the wires between them, packed into one

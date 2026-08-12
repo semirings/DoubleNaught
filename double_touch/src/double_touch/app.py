@@ -17,7 +17,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -78,6 +78,9 @@ from .models import (
     ReviewSessionResponse,
     ReviewStartRequest,
     LoadFileRequest,
+    AstExtractRequest,
+    PolyglotExecRequest,
+    PolyglotExecResponse,
     LoadFileResponse,
     SaveFileRequest,
     SaveFileResponse,
@@ -113,6 +116,9 @@ from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
 from .save_file import execute_save
 from .load_file import load_file
+from .ast_extract import AstExtractError, AstExtractNode, to_arrow_bytes
+from .patch_docstrings import PatchDocstringsError, PatchDocstringsNode
+from .polyglot_exec_node import ExecInput, PolyglotExecNode
 
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
@@ -1217,6 +1223,146 @@ async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
         payload_type=payload_type,
         message=f"Loaded {payload_type} from {Path(request.file_path).name}",
     )
+
+
+# --- AST Extract node (AstExtractNode) ---------------------------------------
+
+@app.post("/ast/extract")
+async def ast_extract_endpoint(request: AstExtractRequest) -> Response:
+    """Index every function and macro under a Julia source tree.
+
+    Responds with the **Arrow IPC file bytes** — not JSON. The index is a typed
+    7-column table and it stays one all the way to the consumer; stringifying it
+    into a JSON envelope would throw away the schema this pipeline is built on.
+    Read it with `pyarrow.ipc.open_file`, or `ast_extract.read_arrow_table`.
+
+    Per-file parse failures are not errors here: they are reported in the
+    artifact's own schema metadata (`dn_errors`, `dn_error_count`) and summarised
+    in the `X-Dn-*` response headers, so a codebase with one unparsable file still
+    yields an index of everything else.
+    """
+    try:
+        index = await AstExtractNode(timeout_s=request.timeout_s).extract(
+            request.root_path,
+            out_path=request.out_path,
+        )
+    except AstExtractError as exc:
+        # A missing directory or absent Julia is the caller's problem to fix; a
+        # failed run is reported with whatever the script said.
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return Response(
+        content=to_arrow_bytes(index.table),
+        media_type="application/vnd.apache.arrow.file",
+        headers={
+            "X-Dn-Definition-Count": str(index.definition_count),
+            "X-Dn-Files-Scanned": str(index.files_scanned),
+            "X-Dn-Error-Count": str(len(index.errors)),
+            "X-Dn-Schema": "ast_index_v1",
+        },
+    )
+
+
+@app.post("/ast/patch")
+async def ast_patch_endpoint(
+    request: Request,
+    root: Optional[str] = None,
+    dry_run: bool = False,
+    timeout_s: float = 180.0,
+) -> Response:
+    """Write generated docstrings from a 7-column Arrow index back to disk.
+
+    The request **body is Arrow IPC bytes** — the index table, enriched with a
+    `better_docstring` column — not JSON. The response is the summary table, also
+    Arrow: `file_path`, `symbols_patched`, `status`.
+
+    `root` resolves the index's relative paths; omit it when the table carries the
+    extractor's `dn_root` metadata. `dry_run=true` computes the patch and reports
+    what would change without touching a file.
+
+    **This rewrites source files.** Patching is a byte splice located by the AST,
+    it is all-or-nothing per file, and each write goes through a temp file and a
+    rename — see `DESIGN.md` → "Patch Docstrings node".
+    """
+    body = await request.body()
+    if not body:
+        raise HTTPException(
+            status_code=422,
+            detail="empty body: POST the index as Arrow IPC bytes "
+            "(application/vnd.apache.arrow.file)",
+        )
+
+    try:
+        summary = await PatchDocstringsNode(timeout_s=timeout_s).patch(
+            body,
+            root=root,
+            dry_run=dry_run,
+        )
+    except PatchDocstringsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return Response(
+        content=to_arrow_bytes(summary.table),
+        media_type="application/vnd.apache.arrow.file",
+        headers={
+            "X-Dn-Files-Updated": str(len(summary.updated)),
+            "X-Dn-Symbols-Patched": str(summary.symbols_patched),
+            "X-Dn-Error-Count": str(len(summary.failed)),
+            "X-Dn-Dry-Run": str(summary.dry_run).lower(),
+            "X-Dn-Schema": "patch_summary_v1",
+        },
+    )
+
+
+# --- Polyglot Exec node (PolyglotExecNode) -----------------------------------
+
+@app.post("/exec", response_model=PolyglotExecResponse)
+async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
+    """Run the incoming payload's source code under a local interpreter.
+
+    The payload may arrive as an AA (a ``Load File`` ``contents`` output, whose
+    source sits in a ``text`` column) or as explicit ``code``. Explicit request
+    fields win over anything read off the AA, so the node's dropdown and timeout
+    box override what the upstream node happened to say.
+
+    A failing snippet is **not** an HTTP error: a non-zero exit, a timeout and a
+    missing interpreter all return 200 with a ``status`` of ``FAILED`` /
+    ``TIMEOUT``, because the result AA is how a downstream node sees the failure.
+    Only an unrunnable *request* — no code at all, or a language nothing can
+    resolve — is a 4xx.
+
+    Runs directly on the event loop rather than in a threadpool: the work is one
+    ``asyncio`` subprocess and its pipes, which is already non-blocking.
+    """
+    payload = (
+        PolyglotExecNode.from_aa(request.aa)
+        if request.aa is not None
+        else ExecInput()
+    )
+    # Explicit request fields beat the payload's own.
+    if request.code is not None:
+        payload.code = request.code
+    if request.file_path is not None:
+        payload.file_path = request.file_path
+    if request.args:
+        payload.args = list(request.args)
+
+    if not payload.code.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="no code to run: send `code`, or an AA with a "
+            f"{'/'.join(('code', 'text', 'content'))} column",
+        )
+    if request.timeout_s <= 0:
+        raise HTTPException(status_code=422, detail="timeoutS must be positive")
+
+    node = PolyglotExecNode(timeout_s=request.timeout_s)
+    try:
+        result = await node.run(payload, override_language=request.language)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return PolyglotExecResponse(aa=PolyglotExecNode.to_aa(result), **result)
 
 
 # --- Save File node (SaveFileNode) -------------------------------------------
