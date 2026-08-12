@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+from .aa_serializer import load_aa_arrow, save_aa_arrow, table_to_assoc
 from .aa_utils import aa_rows
 from .models import AssocArray
 
@@ -106,24 +107,40 @@ def select_aa(entry: dict) -> AssocArray:
 
 
 class InventoryStore:
-    """Disk-backed inventory AA (``inventory.json``), seeded on first load."""
+    """Disk-backed inventory AA (``inventory.arrow``), seeded on first load.
+
+    Persistence tier: Arrow IPC (zero-copy, binary).  A legacy ``inventory.json``
+    is migrated to Arrow automatically on the first load and left in place for
+    reference — the Arrow file takes precedence on all subsequent reads.
+    """
 
     def __init__(self, base_dir: Optional[str] = None) -> None:
         base = Path(base_dir or os.environ.get("DOUBLE_TOUCH_STORAGE_DIR", "../storage"))
-        self.path = base / "inventory.json"
+        self.path      = base / "inventory.arrow"
+        self._json_path = base / "inventory.json"   # legacy migration source
 
     def load(self) -> AssocArray:
-        """Return the inventory AA, seeding + persisting it on first run."""
-        if not self.path.exists():
-            seeded = [{"entry_id": new_entry_id(), **entry} for entry in SEED_ENTRIES]
-            aa = entries_to_aa(seeded)
+        """Return the inventory AA, migrating from JSON or seeding on first run."""
+        if self.path.exists():
+            return table_to_assoc(load_aa_arrow(self.path, memory_map=False))
+
+        # One-time migration: JSON → Arrow.
+        if self._json_path.exists():
+            aa = AssocArray.model_validate_json(
+                self._json_path.read_text(encoding="utf-8")
+            )
             self.save(aa)
             return aa
-        return AssocArray.model_validate_json(self.path.read_text(encoding="utf-8"))
+
+        # First run: seed, persist, return.
+        seeded = [{"entry_id": new_entry_id(), **entry} for entry in SEED_ENTRIES]
+        aa = entries_to_aa(seeded)
+        self.save(aa)
+        return aa
 
     def save(self, aa: AssocArray) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(aa.model_dump_json(), encoding="utf-8")
+        save_aa_arrow(aa, self.path)
 
     def entries(self) -> list[dict]:
         return aa_to_entries(self.load())
