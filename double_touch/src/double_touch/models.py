@@ -695,3 +695,18 @@ class PolyglotExecResponse(CamelModel):
     execution_time_ms: float
     code: str
     file_path: str
+
+
+# --- AST Extract node (AstExtractNode) ---------------------------------------
+# A source-indexing node: it runs julia/extract_ast.jl over a Julia source tree
+# and returns the 7-column definition index as Arrow IPC bytes (never JSON).
+
+
+class AstExtractRequest(CamelModel):
+    # Directory to index, recursively. Hidden directories and `deps` are skipped.
+    root_path: str
+    # Keep the Arrow artifact at this path instead of a temporary file.
+    out_path: Optional[str] = None
+    # Wall-clock budget for the Julia run. Cold Julia plus Arrow.jl is a couple of
+    # seconds before parsing begins, so this is generous by default.
+    timeout_s: float = 180.0

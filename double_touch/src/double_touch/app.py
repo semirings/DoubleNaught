@@ -17,7 +17,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -78,6 +78,7 @@ from .models import (
     ReviewSessionResponse,
     ReviewStartRequest,
     LoadFileRequest,
+    AstExtractRequest,
     PolyglotExecRequest,
     PolyglotExecResponse,
     LoadFileResponse,
@@ -115,6 +116,7 @@ from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
 from .save_file import execute_save
 from .load_file import load_file
+from .ast_extract import AstExtractError, AstExtractNode, to_arrow_bytes
 from .polyglot_exec_node import ExecInput, PolyglotExecNode
 
 DEFAULT_WIDTH = 1024
@@ -1219,6 +1221,44 @@ async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
         data=data or {},
         payload_type=payload_type,
         message=f"Loaded {payload_type} from {Path(request.file_path).name}",
+    )
+
+
+# --- AST Extract node (AstExtractNode) ---------------------------------------
+
+@app.post("/ast/extract")
+async def ast_extract_endpoint(request: AstExtractRequest) -> Response:
+    """Index every function and macro under a Julia source tree.
+
+    Responds with the **Arrow IPC file bytes** — not JSON. The index is a typed
+    7-column table and it stays one all the way to the consumer; stringifying it
+    into a JSON envelope would throw away the schema this pipeline is built on.
+    Read it with `pyarrow.ipc.open_file`, or `ast_extract.read_arrow_table`.
+
+    Per-file parse failures are not errors here: they are reported in the
+    artifact's own schema metadata (`dn_errors`, `dn_error_count`) and summarised
+    in the `X-Dn-*` response headers, so a codebase with one unparsable file still
+    yields an index of everything else.
+    """
+    try:
+        index = await AstExtractNode(timeout_s=request.timeout_s).extract(
+            request.root_path,
+            out_path=request.out_path,
+        )
+    except AstExtractError as exc:
+        # A missing directory or absent Julia is the caller's problem to fix; a
+        # failed run is reported with whatever the script said.
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return Response(
+        content=to_arrow_bytes(index.table),
+        media_type="application/vnd.apache.arrow.file",
+        headers={
+            "X-Dn-Definition-Count": str(index.definition_count),
+            "X-Dn-Files-Scanned": str(index.files_scanned),
+            "X-Dn-Error-Count": str(len(index.errors)),
+            "X-Dn-Schema": "ast_index_v1",
+        },
     )
 
 

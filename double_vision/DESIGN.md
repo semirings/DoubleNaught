@@ -457,6 +457,77 @@ there is no honest completion fraction.
 with `stream: false` and the body is read incrementally. Token-level SSE would
 mean implementing four different event dialects and is deliberately out of scope.
 
+## AST Extract node (`AstExtractNode`, backend-only)
+
+Indexes every function and macro definition in a Julia source tree and emits the
+result as an **Apache Arrow table**. Backend-only for now: `julia/extract_ast.jl`
+plus `ast_extract.py` and `POST /ast/extract`. No canvas widget yet.
+
+### The seven columns
+
+`symbol_name` · `kind` · `file_path` · `line_range` · `docstring` · `raw_code` ·
+`better_docstring`
+
+All seven are non-nullable strings, in that order, and the order is asserted on
+both sides — `COLUMNS` in the Julia script, `SCHEMA_COLUMNS` in Python, checked by
+`validate_schema`. `better_docstring` is emitted empty: it is the slot a
+downstream teacher node fills.
+
+`kind` is `function` or `macro`; a macro's `symbol_name` carries its `@`.
+`line_range` is `"start:end"`. `file_path` is relative to the indexed root.
+
+### Arrow all the way, never JSON
+
+The index is a typed table and stays one: Julia writes Arrow IPC, Python reads it
+into a `pyarrow.Table`, and the route returns the Arrow **bytes**
+(`application/vnd.apache.arrow.file`). Nothing on this path calls `to_pydict()`
+or serialises the matrix as JSON — the schema and the typing are the point.
+
+Two format facts, both established by probing rather than assumed:
+
+* `Arrow.write` produces the IPC **file** format (`ARROW1` magic). So
+  `pyarrow.ipc.open_stream` **fails** on it, and `pyarrow.feather.read_table` —
+  which works — is deprecated as of pyarrow 24. `read_arrow_table` sniffs the
+  magic and picks the right reader, handling either format.
+* The Polyglot Exec node decodes a child's stdout as UTF-8 **text**, which would
+  corrupt binary Arrow. So the script always writes to a file, via its second
+  argument, and stdout carries nothing. Writing Arrow to stdout still works when
+  the script is run directly from a shell.
+
+**Diagnostics ride inside the artifact.** The Julia side records skipped files in
+the Arrow schema metadata (`dn_errors`, `dn_error_count`, `dn_files_scanned`,
+`dn_root`, `dn_schema`), so the reader gets them structurally instead of scraping
+stderr, and a run still produces exactly one file in one format.
+
+### What is and is not a definition
+
+Long-form `function`, short-form `f(x) = …`, and `macro` — JuliaSyntax normalises
+short forms to `K"function"`, so both arrive the same way, while `x = 1` is a
+`K"="` and never mistaken for one. Signature shapes handled: `f`, `Base.show`,
+operators, `where`, `f(x)::Int`, and callable objects `(::M)`.
+
+The walk descends into modules, blocks, conditionals and struct bodies (inner
+constructors are definitions). It does **not** descend into definition bodies or
+`quote` blocks: a closure already appears verbatim in its parent's `raw_code`, and
+the definitions inside a macro's template are code being *generated*, not code
+that exists. A consequence worth knowing: definitions produced by `@eval` loops
+are not indexed, because at parse time they do not exist yet.
+
+### Surviving broken source
+
+Parsing runs with `ignore_errors=true`, so a file whose one definition is
+truncated still yields the definitions around it. Anything that throws — an
+unreadable file, a traversal failure — is recorded as a skip message and the walk
+continues. A codebase with a broken file still gets an index of everything else.
+
+### Running it
+
+Hidden directories (`.git`, `.build`) and `deps` / `node_modules` / `target` are
+pruned before `walkdir` descends. Parsing uses the registered `JuliaSyntax`
+package when installed and the copy inside Base otherwise (Julia ≥ 1.10), so the
+script has no hard dependency beyond `Arrow.jl`. `$DN_EXTRACT_AST_JL` relocates
+the script.
+
 ## Polyglot Exec node (`polyglotExecNode`)
 
 Runs the source code on an incoming AA under a local interpreter, and puts the
