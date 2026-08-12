@@ -17,7 +17,7 @@ from typing import Optional
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -117,6 +117,7 @@ from . import d4m_handles
 from .save_file import execute_save
 from .load_file import load_file
 from .ast_extract import AstExtractError, AstExtractNode, to_arrow_bytes
+from .patch_docstrings import PatchDocstringsError, PatchDocstringsNode
 from .polyglot_exec_node import ExecInput, PolyglotExecNode
 
 DEFAULT_WIDTH = 1024
@@ -1258,6 +1259,57 @@ async def ast_extract_endpoint(request: AstExtractRequest) -> Response:
             "X-Dn-Files-Scanned": str(index.files_scanned),
             "X-Dn-Error-Count": str(len(index.errors)),
             "X-Dn-Schema": "ast_index_v1",
+        },
+    )
+
+
+@app.post("/ast/patch")
+async def ast_patch_endpoint(
+    request: Request,
+    root: Optional[str] = None,
+    dry_run: bool = False,
+    timeout_s: float = 180.0,
+) -> Response:
+    """Write generated docstrings from a 7-column Arrow index back to disk.
+
+    The request **body is Arrow IPC bytes** — the index table, enriched with a
+    `better_docstring` column — not JSON. The response is the summary table, also
+    Arrow: `file_path`, `symbols_patched`, `status`.
+
+    `root` resolves the index's relative paths; omit it when the table carries the
+    extractor's `dn_root` metadata. `dry_run=true` computes the patch and reports
+    what would change without touching a file.
+
+    **This rewrites source files.** Patching is a byte splice located by the AST,
+    it is all-or-nothing per file, and each write goes through a temp file and a
+    rename — see `DESIGN.md` → "Patch Docstrings node".
+    """
+    body = await request.body()
+    if not body:
+        raise HTTPException(
+            status_code=422,
+            detail="empty body: POST the index as Arrow IPC bytes "
+            "(application/vnd.apache.arrow.file)",
+        )
+
+    try:
+        summary = await PatchDocstringsNode(timeout_s=timeout_s).patch(
+            body,
+            root=root,
+            dry_run=dry_run,
+        )
+    except PatchDocstringsError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return Response(
+        content=to_arrow_bytes(summary.table),
+        media_type="application/vnd.apache.arrow.file",
+        headers={
+            "X-Dn-Files-Updated": str(len(summary.updated)),
+            "X-Dn-Symbols-Patched": str(summary.symbols_patched),
+            "X-Dn-Error-Count": str(len(summary.failed)),
+            "X-Dn-Dry-Run": str(summary.dry_run).lower(),
+            "X-Dn-Schema": "patch_summary_v1",
         },
     )
 

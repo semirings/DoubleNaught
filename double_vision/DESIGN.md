@@ -457,6 +457,74 @@ there is no honest completion fraction.
 with `stream: false` and the body is read incrementally. Token-level SSE would
 mean implementing four different event dialects and is deliberately out of scope.
 
+## Patch Docstrings node (`PatchDocstringsNode`, backend-only)
+
+The write side of the docstring loop: takes the 7-column Arrow index enriched with
+`better_docstring` and writes those docstrings back into the `.jl` files.
+`julia/patch_docstrings.jl` plus `patch_docstrings.py` and `POST /ast/patch`.
+
+    extract_ast.jl  →  teacher node fills better_docstring  →  patch_docstrings.jl
+
+### Summary payload
+
+Arrow in, Arrow out: the index arrives as Arrow IPC, and the summary leaves as
+Arrow IPC with three columns — `file_path` (string), `symbols_patched`
+(**int64** — it is a count, and `validate_summary` rejects a stringified one), and
+`status`, one of `UPDATED` / `NO_CHANGE` / `ERROR`. Per-row failures ride in the
+schema metadata (`dn_errors`), as in the extractor.
+
+### Byte-for-byte preservation
+
+The AST **locates**, it never re-prints. Patching is a byte splice: the file is
+rebuilt as `bytes before … docstring … bytes after`, assembled over a `Vector{UInt8}`
+so multi-byte UTF-8 is safe. Everything outside the spliced range — code,
+comments, blank lines, tab indentation, trailing comments — survives unchanged.
+Re-printing a parsed tree would reformat the file, which is the one thing this
+must not do.
+
+Several edits to one file are applied in **descending byte order**, so an earlier
+splice cannot shift a later one's offsets. Inserted line endings match the file's
+own (`\r\n` if it has any). The insertion is indented to match the definition it
+sits above, and each write preserves the original's permission bits.
+
+### The docstring literal
+
+Emitted as a `"""` block with three escapes — and these three are the complete
+set, verified by round-tripping awkward text back through the parser:
+
+| in the text | emitted as | otherwise |
+|---|---|---|
+| `\` | `\\` | escapes the next character |
+| `$` | `\$` | interpolates |
+| `"""` | escaped quotes | closes the block early |
+
+A trailing `"` needs nothing special, because the block always puts a newline
+before the closing fence.
+
+**Not `raw"""`.** It looks like the neat answer for text full of `$` and `\`, but
+the parser treats a raw string literal above a definition as a `macrocall`, not a
+`doc` — `@doc` then returns `nothing` and the documentation is silently lost.
+
+### All-or-nothing per file
+
+If any row targeting a file cannot be located — a stale index, a file edited since
+extraction — that file is left **completely untouched** and reported `ERROR`. A
+half-patched source is worse than an unpatched one, and the fix is to re-extract,
+so partial application would only hide the staleness. Matching is on the exact
+`(symbol_name, line_range)` pair the extractor emitted, which is why both scripts
+share `julia/defs.jl`: two copies of "what is a definition and what is it called"
+drifting apart would make the patcher miss silently instead of failing loudly.
+
+Writes go through a temp file in the same directory, `chmod`-ed to match, then
+renamed over the original, so a crash mid-write cannot truncate a source file.
+`dry_run` computes the whole patch and reports what *would* change without writing
+(`dn_dry_run` records it in the summary metadata).
+
+`file_path` in the index is **relative** to the root it was extracted from, so the
+patcher needs that root: `--root=` first, then the index's own `dn_root` metadata,
+then the working directory. A relative index with no root available is refused
+rather than guessed at — guessing means patching the wrong tree.
+
 ## AST Extract node (`AstExtractNode`, backend-only)
 
 Indexes every function and macro definition in a Julia source tree and emits the
