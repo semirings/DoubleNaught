@@ -119,13 +119,28 @@ def save_aa_json(aa: AssocArray, filename: str) -> Path:
     return out_path
 
 
-#: Column that marks an AA as pre-formatted JSONL lines.
+#: The unified column name for pre-formatted JSONL lines.
 JSONL_COLUMN = "json_line"
+
+#: The deprecated AA2JSONL node's column. Read, never written — an AA saved from an
+#: older workflow still saves correctly.
+JSONL_COLUMN_LEGACY = "jsonl_line"
+
+#: Both spellings, unified first.
+JSONL_COLUMNS = (JSONL_COLUMN, JSONL_COLUMN_LEGACY)
+
+
+def jsonl_column_of(aa: AssocArray) -> Optional[str]:
+    """Which JSONL column *aa* carries, preferring the unified name, else None."""
+    for candidate in JSONL_COLUMNS:
+        if candidate in aa.cols:
+            return candidate
+    return None
 
 
 def aa_has_jsonl(aa: AssocArray) -> bool:
-    """Whether *aa* carries a ``json_line`` column, i.e. is ready to write as JSONL."""
-    return JSONL_COLUMN in aa.cols
+    """Whether *aa* is ready to write as JSONL (either column spelling)."""
+    return jsonl_column_of(aa) is not None
 
 
 def save_aa_jsonl(aa: AssocArray, filename: str) -> Path:
@@ -138,6 +153,9 @@ def save_aa_jsonl(aa: AssocArray, filename: str) -> Path:
     is a sequence, and sorting keys lexically would interleave ``line:10`` before
     ``line:2``. (:func:`save_aa_csv` sorts, which is fine for a matrix and wrong
     here.)
+
+    Accepts the deprecated AA2JSONL node's ``jsonl_line`` spelling as a fallback, so
+    an AA produced by an older workflow still saves.
 
     Args:
         aa: An AA carrying a ``json_line`` column, e.g. from JsonlFormatterNode.
@@ -153,15 +171,21 @@ def save_aa_jsonl(aa: AssocArray, filename: str) -> Path:
     filename_clean = filename.removesuffix(".jsonl")
     out_path = storage_out_dir() / f"{filename_clean}.jsonl"
 
-    lines = [
-        str(val)
-        for row, col, val in zip(aa.rows, aa.cols, aa.vals)
-        if col == JSONL_COLUMN
-    ]
-    if not lines:
+    column = jsonl_column_of(aa)
+    if column is None:
         raise ValueError(
             "cannot write JSONL: the AA has no 'json_line' column "
             f"(columns present: {sorted(set(aa.cols))})"
+        )
+
+    lines = [
+        str(val)
+        for row, col, val in zip(aa.rows, aa.cols, aa.vals)
+        if col == column and str(val) != ""
+    ]
+    if not lines:
+        raise ValueError(
+            f"cannot write JSONL: every '{column}' entry is empty"
         )
 
     for index, line in enumerate(lines):

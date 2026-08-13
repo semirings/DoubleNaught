@@ -457,10 +457,143 @@ there is no honest completion fraction.
 with `stream: false` and the body is read incrementally. Token-level SSE would
 mean implementing four different event dialects and is deliberately out of scope.
 
+## Deleting a workflow
+
+`DELETE /workflows/{workflow_id}` in `workflows_router.py`, `WorkflowApi` on the
+Dart side, and the trash icon on each entry of the Workflows menu.
+
+Saved workflows are JSON files under `storage/workflows/<id>.json`. The Flutter
+`WorkflowStore` writes them and the backend deletes them — both address the same
+directory on the same machine, and the backend's `workflow_id` **is** the store's
+`slug`. `$DN_STORAGE_DIR` overrides the root on both sides.
+
+### The endpoint
+
+| Status | Meaning |
+|---|---|
+| 200 | `{"status": "SUCCESS", "workflowId": …}` — definition removed, cached execution state purged |
+| 404 | no such workflow, **or** an id that could never name one |
+| 409 | the execution registry reports tasks in flight |
+
+A malformed id is not distinguished from a missing one: both mean "nothing here to
+delete", and separating them would only describe the filesystem to a caller with no
+business knowing it. 404 also takes precedence over 409 — a workflow that does not
+exist cannot be busy.
+
+The response key is `workflowId`, not `workflow_id`: camelCase on the wire is the
+binding convention in this document. The Dart client reads either.
+
+### `workflow_id` becomes a filename
+
+This is the part to be careful with. The id arrives from the URL, so it is matched
+against a strict pattern (`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`) **and** the resolved
+path is checked to still sit inside the workflows directory. The pattern stops the
+obvious `../`; the containment check catches whatever a symlink or an odd encoding
+gets past it. Without both, `DELETE /workflows/..%2F..%2Fsomething` would remove
+arbitrary files.
+
+A delete also removes the workflow's sidecar artefact directory, if it has one, so
+run output does not outlive the definition.
+
+### The 409 guard exists before the engine does
+
+Execution is driven from the canvas today, so nothing marks a workflow as running.
+`ExecutionRegistry` is the seam a server-side runner would call (`begin` / `end`,
+counted so concurrent runs cannot clear the flag early), and the route already
+refuses while it reports work in flight. The guard is in place before the first bad
+delete rather than after it.
+
+### What the client does with each answer
+
+Two of the backend's answers are **not** refusals, and fall back to deleting from
+the local store:
+
+* **unreachable** — workflows are local files and the app works with no backend
+  running; a dead server must not make them undeletable.
+* **404** — the backend is not holding this file, and the user still asked for it to
+  go.
+
+**409 never falls back.** Deleting a workflow the server just said is running is
+exactly what that status exists to prevent. A 5xx does not fall back either — that
+is an unknown state, not a known absence.
+
+On success the entry leaves the list, a SnackBar confirms, and if the deleted
+workflow was the one open on the canvas the graph is **reset** — otherwise Save
+would happily recreate it under the name that was just deleted.
+
+### Testing note
+
+`WorkflowPage` takes an injectable `workflowStore` and `workflowApi`. The store's
+default points at the real `storage/workflows`, so a delete test that skipped the
+injection would remove the user's own files. The widget tests use an in-memory
+store subclass rather than a temp directory: real file I/O inside `testWidgets`
+runs in a fake-async zone where the future never completes, and `pumpAndSettle`
+then waits out its full ten-minute timeout.
+
+## Node Catalog
+
+The palette of node primitives, in `node_catalog_widget.dart`. A search field, a
+row of category chips, and collapsible category accordions — because a flat list of
+~30 entries is a scroll-and-squint exercise.
+
+### Taxonomy
+
+Every registry entry carries a `NodeCategory`, and it is a **required** field: a
+node without one would never be rendered, so it cannot be an optional annotation.
+
+| Category | Chip | Holds |
+|---|---|---|
+| Data & Ingestion | Data | sources, sinks, and the inspection nodes |
+| AST & Code Analysis | Code | *(empty — see below)* |
+| Formatting & Serialization | Formatting | JSONL Formatter, Chunk, Tokenizer |
+| AI & Teacher Models | AI/LLM | Remote Service, Secure Settings, prompts, classifiers |
+| Execution & Compute | Compute | Polyglot Exec, D4M, Start |
+| Training & Fine-Tuning | Training | Split, Review, model builders and local runners |
+
+Entries also carry a one-line `description` (shown under the name) and `tags` —
+search terms that are **never displayed**, so a node can be findable by a word that
+would clutter its card (`gemini`, `parquet`, `tiktoken`, `holdout`).
+
+`AST & Code Analysis` is empty on purpose: Extract AST and Patch Docstrings are
+backend-only, with no canvas widgets. The category and its chip exist so the
+taxonomy is visible where it is not yet populated; selecting it shows the empty
+state.
+
+### Behaviour worth knowing
+
+* **Categories start expanded.** A palette hidden behind six closed headers is
+  worse than a long list — grouping is there to give the eye somewhere to land, not
+  to hide things.
+* **A search overrides collapse**, so a match can never sit unseen inside a shut
+  section. Clearing the query restores whatever was collapsed by hand.
+* **Header counts are post-filter** — `Data & Ingestion (2)` means two nodes are on
+  screen, not two in the registry.
+* **Empty categories are not rendered** as headers; a `(0)` header invites a click
+  that does nothing.
+* **The empty state distinguishes its two causes.** A query that matches nothing
+  says `No nodes match "kubernetes"`; an unpopulated category says
+  `No nodes in AST & Code Analysis yet`, because quoting a blank query would be
+  nonsense.
+* **Chips are additive with search.** Picking `Data` then typing `jsonl` finds Save
+  File (by tag) and not JSONL Formatter (wrong category).
+
+### Why a dialog, and why not a lazy list
+
+The catalog opens as a **panel anchored under the header**, not a
+`PopupMenuButton`: it needs a focused search field and tappable chips, and a menu
+route closes on the first tap inside it. Closing it hands keyboard focus back to
+the canvas (`onCatalogClosed`), so Delete and ⌘G keep working afterwards.
+
+The list is a `Column` in a `SingleChildScrollView` rather than a `ListView`. With
+~30 items laziness buys nothing, and a lazy list leaves off-screen tiles **unbuilt**
+— invisible to `ensureVisible` and to anything else that expects the whole palette
+to exist once it is open. That was a real failure: switching to a `ListView` broke
+29 tests that reach for a node by name.
+
 ## JSONL Formatter node (`jsonlFormatterNode`)
 
-Turns the documented AST index into ChatML training examples for a Phi-4 LoRA
-fine-tune: `jsonl_formatter_node.py`, the `JsonlFormatterNodeWidget`, and routes
+**The** JSONL node: every training line in this app is built here.
+`jsonl_formatter_node.py`, the `JsonlFormatterNodeWidget`, and routes
 `POST /jsonl/format` (Arrow) / `POST /jsonl/format/aa` (wire AA).
 
     extract_ast → teacher node → JSONL Formatter → Save File (.jsonl)
@@ -470,11 +603,41 @@ fine-tune: `jsonl_formatter_node.py`, the `JsonlFormatterNodeWidget`, and routes
 | | |
 |---|---|
 | Type | `jsonlFormatterNode` |
-| Input port | `in_aa` (idx 0) — the 7-column documented index |
+| Input port | `in_aa` (idx 0) — any AA; what is read depends on the mode |
 | Output port | `out_aa` (idx 0) — 2 columns: `json_line`, `symbol_name` |
 
-`symbol_name` travels beside its line so a bad training example can be traced back
-to the definition that produced it without re-parsing the JSON.
+`json_line` is the **one** output column name, in every mode. `symbol_name` travels
+beside it so a bad training example can be traced back to the row that produced it
+without re-parsing the JSON; when the source AA names no symbol, the row's position
+is used so the key is never empty.
+
+### Format modes
+
+| `format_mode` | Reads | Emits |
+|---|---|---|
+| `chatml` (default) | `raw_code`, `better_docstring` | 3-message ChatML example |
+| `prompt_completion` | `prompt`\|`input`\|`source`, `completion`\|`target`\|`output` | `{"prompt", "completion"}` |
+| `passthrough` (alias `row_dict`) | every non-empty cell | one object per row |
+| `instruction_completion`, `continuation` | *legacy* | the deprecated AA2JSONL formats |
+
+Names are normalised (`row-dict`, `ChatML`, `promptCompletion` all resolve), because
+they travel through a URL, a JSON body and a Dart enum.
+
+The two legacy formats are modes here rather than a separate code path — that is
+what consolidating the logic *means*. `instruction_completion` is
+`prompt_completion` with a constant prompt, which is exactly what AA2JSONL's
+lambda did.
+
+Validation is **per mode**. `chatml` requires the code and docstring columns;
+`prompt_completion` requires some completion column; `passthrough` takes anything
+with a column in it. One global schema check would either reject valid passage AAs
+or wave through an index the ChatML path cannot use.
+
+The widget's readiness count is mode-aware for the same reason: a payload with no
+`better_docstring` is useless to ChatML but perfectly formattable as passthrough,
+so a single definition of "ready" would grey out the button on valid input.
+Switching mode re-counts and **discards the previous result** — those lines were
+built by a different mode.
 
 ### One example, one line
 
@@ -529,11 +692,25 @@ here produces a corrupt training file: an AA with no `json_line` column is refus
 and so is a line containing a literal newline (it would split one example across two
 records).
 
-> **Naming hazard.** The pre-existing `AA2JSONLNode` (`/aa2jsonl`) emits a
-> `jsonl_line` column — one letter from this node's `json_line`. They are different
-> nodes for different corpora: that one formats chunked *prose* passages and writes
-> the file itself; this one formats *code and docstrings* and hands the lines to
-> Save File. Worth renaming one of them.
+### The deprecated AA2JSONL node
+
+`AA2JSONLNode` is **gone from the Node Catalog** and its widget is marked
+deprecated. Two things were deliberately *not* deleted:
+
+* **`POST /aa2jsonl` still works**, rather than redirecting to `/jsonl/format`. It
+  writes the file itself, sorts by `position`, and returns per-chunk provenance plus
+  stats — none of which the unified route does, and all of which its callers expect.
+  A redirect would change the response shape underneath them. Its **line
+  construction** now goes through `JsonlFormatterNode`, so there is one
+  implementation of each format; only the file-writing and provenance are local. The
+  route is flagged `deprecated` in OpenAPI.
+* **The `aa2jsonl` builder case in `workflow_page.dart`**, so a workflow saved before
+  the consolidation still opens. Removing it from the catalogue stops it being
+  *placed*; removing the case would stop it being *loaded*.
+
+`save_aa_jsonl` reads the unified `json_line` and falls back to the legacy
+`jsonl_line`, preferring the former when both are present — so old payloads still
+save, and nothing writes `jsonl_line` any more.
 
 ## Patch Docstrings node (`PatchDocstringsNode`, backend-only)
 

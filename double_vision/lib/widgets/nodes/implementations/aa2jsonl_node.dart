@@ -9,6 +9,10 @@ import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
 
+/// **Deprecated** — superseded by `JsonlFormatterNodeWidget`, which formats every
+/// JSONL flavour and emits the unified `json_line` column. Removed from the Node
+/// Catalog; this widget remains only so workflows saved before the
+/// consolidation still open.
 /// A workflow **terminal processing node** (AA-in → AA-out, per `DESIGN.md`): it
 /// consumes the passage D4M/AA payload emitted by an upstream [ChunkNode] and
 /// writes it as a JSONL file formatted for Phi-4 fine-tuning. It emits a

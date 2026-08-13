@@ -7,49 +7,103 @@ import '../../../services/infobus/output_port.dart';
 import '../../../services/jsonl_formatter_api.dart';
 import '../base/base_node_widget.dart';
 
-/// What the incoming index looks like, before anything is formatted.
+/// How a row becomes a JSONL line. Mirrors the backend's `format_mode`.
+///
+/// [wire] is the canonical name the backend expects; [reads] are the columns that
+/// make a row usable in this mode, which is what the card counts to decide whether
+/// Format can do anything.
+enum JsonlFormatMode {
+  chatml(
+    'ChatML (Code/Doc)',
+    'chatml',
+    ['better_docstring'],
+    'No rows carry a better_docstring yet — run the teacher node first',
+  ),
+  promptCompletion(
+    'Prompt / Completion',
+    'prompt_completion',
+    ['completion', 'target', 'output', 'text', 'raw_text'],
+    'No rows carry a completion column (completion / target / output / text)',
+  ),
+  passthrough(
+    'Row Passthrough',
+    'passthrough',
+    // Any non-empty cell will do — every column is data in this mode.
+    [],
+    'Every row is empty — nothing to write',
+  );
+
+  const JsonlFormatMode(this.label, this.wire, this.reads, this.emptyHint);
+
+  final String label;
+  final String wire;
+  final List<String> reads;
+
+  /// Shown when the payload has no row this mode can use.
+  final String emptyHint;
+
+  static JsonlFormatMode byWire(String? wire) => values.firstWhere(
+        (m) => m.wire == wire,
+        orElse: () => JsonlFormatMode.chatml,
+      );
+}
+
+/// What the incoming payload looks like, before anything is formatted.
 ///
 /// Counted on the client so the card can say what a run *would* produce before
-/// you ask for it — the backend is the authority on the actual result.
+/// you ask for it — the backend remains the authority on the actual result.
+///
+/// The count is **mode-dependent**: a payload with no `better_docstring` is
+/// useless to ChatML but perfectly formattable as passthrough, so a single
+/// definition of "ready" would disable the button on valid input.
 class IndexTally {
-  /// Distinct definitions on the wire.
+  /// Distinct rows on the wire.
   final int rows;
 
-  /// Definitions carrying a non-empty `better_docstring`.
-  final int documented;
+  /// Rows carrying what the chosen mode reads.
+  final int ready;
 
-  const IndexTally({this.rows = 0, this.documented = 0});
+  const IndexTally({this.rows = 0, this.ready = 0});
 
-  int get undocumented => rows - documented;
+  int get pending => rows - ready;
   bool get isEmpty => rows == 0;
 
-  /// Group the sparse triples by row key and count the documented ones.
+  /// Group the sparse triples by row key and count the rows [mode] can use.
   ///
   /// Column names are matched in both snake_case and camelCase: the backend
-  /// speaks the former and the wire the latter, and an index can reach the canvas
+  /// speaks the former and the wire the latter, and a payload can reach the canvas
   /// either way.
-  static IndexTally of(AaPayload payload) {
+  static IndexTally of(AaPayload payload, [JsonlFormatMode mode = JsonlFormatMode.chatml]) {
     final aa = payload.toSparse();
-    final documented = <String, bool>{};
+    final wanted = {
+      for (final name in mode.reads) name.replaceAll('_', ''),
+    };
+    final usable = <String, bool>{};
+
     for (var i = 0; i < aa.cols.length; i++) {
       if (i >= aa.rows.length || i >= aa.vals.length) break;
       final row = aa.rows[i];
-      documented.putIfAbsent(row, () => false);
-      final column = aa.cols[i].replaceAll('-', '_').toLowerCase();
-      if (column == 'better_docstring' || column == 'betterdocstring') {
-        final value = '${aa.vals[i]}';
-        if (value.trim().isNotEmpty) documented[row] = true;
-      }
+      usable.putIfAbsent(row, () => false);
+      final column =
+          aa.cols[i].replaceAll('-', '').replaceAll('_', '').toLowerCase();
+      final filled = '${aa.vals[i]}'.trim().isNotEmpty;
+      if (!filled) continue;
+      // Passthrough reads everything, so any filled cell makes the row usable.
+      if (wanted.isEmpty || wanted.contains(column)) usable[row] = true;
     }
+
     return IndexTally(
-      rows: documented.length,
-      documented: documented.values.where((v) => v).length,
+      rows: usable.length,
+      ready: usable.values.where((v) => v).length,
     );
   }
 }
 
-/// Formats a documented AST index into ChatML JSONL for LoRA fine-tuning — see
-/// `DESIGN.md` → "JSONL Formatter node".
+/// The canvas's only JSONL formatter — see `DESIGN.md` → "JSONL Formatter node".
+///
+/// Formats an AA into training lines: ChatML from code and docstrings,
+/// prompt/completion pairs, or one object per row. It replaces the deprecated
+/// `Aa2JsonlNode`, which is no longer in the Node Catalog.
 ///
 /// Ports: `in_aa` (idx 0) is the 7-column documented index, `out_aa` (idx 0) is
 /// the 2-column result (`json_line`, `symbol_name`) — wire it into a Save File
@@ -92,6 +146,7 @@ class _JsonlFormatterNodeWidgetState
   final OutputPort _out = OutputPort('out_aa');
 
   AaPayload? _incoming;
+  JsonlFormatMode _mode = JsonlFormatMode.chatml;
   IndexTally _tally = const IndexTally();
   JsonlFormatResult? _result;
   bool _busy = false;
@@ -103,6 +158,7 @@ class _JsonlFormatterNodeWidgetState
   void initState() {
     super.initState();
     _api = widget.api ?? const JsonlFormatterApi();
+    _mode = JsonlFormatMode.byWire(widget.initialParams?['formatMode']);
     _in = InputPort('in_aa');
     initInputPort(_in, _onIngress);
     initOutputPort(_out);
@@ -119,14 +175,27 @@ class _JsonlFormatterNodeWidgetState
     if (!mounted) return;
     setState(() {
       _incoming = payload;
-      _tally = IndexTally.of(payload);
-      // A new index invalidates the previous run's output.
+      _tally = IndexTally.of(payload, _mode);
+      // A new payload invalidates the previous run's output.
       _result = null;
     });
     setIdle();
   }
 
-  bool get _canFormat => !_busy && _tally.documented > 0;
+  bool get _canFormat => !_busy && _tally.ready > 0;
+
+  /// Switching mode re-counts what is usable and drops the previous result: the
+  /// lines it produced were built by a different mode.
+  void _onModeChanged(JsonlFormatMode mode) {
+    setState(() {
+      _mode = mode;
+      _result = null;
+      final payload = _incoming;
+      if (payload != null) _tally = IndexTally.of(payload, mode);
+    });
+    saveParams({'formatMode': mode.wire});
+    setIdle();
+  }
 
   Future<void> _format() async {
     final payload = _incoming;
@@ -137,7 +206,7 @@ class _JsonlFormatterNodeWidgetState
 
     JsonlFormatResult result;
     try {
-      result = await _api.format(payload);
+      result = await _api.format(payload, formatMode: _mode.wire);
     } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);
@@ -152,9 +221,9 @@ class _JsonlFormatterNodeWidgetState
     });
 
     if (result.lineCount == 0) {
-      // Not an error — an index whose teacher node has not run yet formats to
+      // Not an error — a payload whose teacher node has not run yet formats to
       // nothing, and saying so is more useful than an empty success.
-      setError('No documented rows to format');
+      setError('No usable rows to format');
       return;
     }
     setComplete(detail: '${result.lineCount} lines');
@@ -201,6 +270,19 @@ class _JsonlFormatterNodeWidgetState
         SizedBox(height: BaseNodeState.portLaneClearance(1)),
         _tallyRow(theme, scheme),
         const SizedBox(height: 10),
+        DropdownMenu<JsonlFormatMode>(
+          enableSearch: false,
+          expandedInsets: EdgeInsets.zero,
+          enabled: !_busy,
+          label: const Text('Format Mode'),
+          initialSelection: _mode,
+          onSelected: (m) => m == null ? null : _onModeChanged(m),
+          dropdownMenuEntries: [
+            for (final m in JsonlFormatMode.values)
+              DropdownMenuEntry(value: m, label: m.label),
+          ],
+        ),
+        const SizedBox(height: 10),
         SizedBox(
           height: 38,
           child: FilledButton.icon(
@@ -222,10 +304,10 @@ class _JsonlFormatterNodeWidgetState
             style: theme.textTheme.labelSmall
                 ?.copyWith(color: scheme.onSurfaceVariant),
           ),
-        ] else if (_tally.documented == 0) ...[
+        ] else if (_tally.ready == 0) ...[
           const SizedBox(height: 6),
           Text(
-            'No rows carry a better_docstring yet — run the teacher node first',
+            _mode.emptyHint,
             style: theme.textTheme.labelSmall?.copyWith(color: scheme.error),
           ),
         ],
@@ -259,8 +341,8 @@ class _JsonlFormatterNodeWidgetState
         const SizedBox(width: 6),
         Expanded(
           child: Text(
-            '${_tally.rows} definitions · ${_tally.documented} documented'
-            '${_tally.undocumented > 0 ? ' · ${_tally.undocumented} pending' : ''}',
+            '${_tally.rows} rows · ${_tally.ready} ready'
+            '${_tally.pending > 0 ? ' · ${_tally.pending} pending' : ''}',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: theme.textTheme.labelSmall
@@ -277,6 +359,7 @@ class _JsonlFormatterNodeWidgetState
       '${result.lineCount} training lines',
       if (result.skippedNoDoc > 0) '${result.skippedNoDoc} undocumented',
       if (result.skippedNoCode > 0) '${result.skippedNoCode} without code',
+      if (result.skippedIncomplete > 0) '${result.skippedIncomplete} incomplete',
     ];
     return Text(
       parts.join(' · '),

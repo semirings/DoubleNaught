@@ -581,36 +581,6 @@ class SplitResponse(CamelModel):
     total_count: int
 
 
-# --- AA Binary Normalizer node (AaBinaryNormalizerNode) ----------------------
-# A processing node: ingests raw files (.txt, .jsonl, .csv, .parquet, .arrow),
-# normalises them to the canonical AA Arrow schema, writes a persistent binary
-# cache, and emits an AA of normalization metadata for downstream nodes.
-
-
-class AaBinaryNormalizeRequest(CamelModel):
-    # Absolute path to the source file.
-    file_path: str
-    # Directory where the normalised .arrow cache will be written.
-    output_directory: str
-    # Dataset split key written into the output filename (default "train").
-    split_name: str = "train"
-    # When True, load into Python heap instead of memory-mapping.
-    keep_in_memory: bool = False
-
-
-class AaBinaryNormalizeResponse(CamelModel):
-    # Metadata AA: row = bookId, cols = arrowFilePath/rowCount/… (see below).
-    aa: AssocArray
-    # Absolute path of the generated .arrow binary cache.
-    arrow_file_path: str
-    # Total record count.
-    row_count: int
-    # Map of canonical field name → Arrow type string.
-    column_schema: dict[str, str]
-    # True when the backing Dataset was memory-mapped (keep_in_memory=False).
-    is_memory_mapped: bool
-
-
 # --- Load File node (LoadFileNode) -------------------------------------------
 # A source node: loads files (.parquet, .arrow, .json, .csv, .txt) from disk
 # and auto-detects Associative Arrays based on schema metadata or column patterns.
@@ -718,16 +688,35 @@ class AstExtractRequest(CamelModel):
 
 
 class JsonlFormatRequest(CamelModel):
-    # The documented 7-column index, in wire (sparse triple) form.
+    # The source AA in wire (sparse triple) form: the documented index for
+    # "chatml", passages for "prompt_completion", anything for "passthrough".
     aa: AssocArray
+    # "chatml" (default) | "prompt_completion" | "passthrough" (alias "row_dict").
+    format_mode: str = "chatml"
 
 
 class JsonlFormatResponse(CamelModel):
     # 2-column result: `json_line` and `symbol_name`, one row per example.
     aa: AssocArray
+    # The mode that produced it, canonicalised.
+    format_mode: str
     # Examples written.
     line_count: int
-    # Rows dropped for having no generated docstring yet.
+    # "chatml": rows dropped for having no generated docstring yet.
     skipped_no_doc: int
-    # Rows dropped for having no source code to learn from.
+    # "chatml": rows dropped for having no source code to learn from.
     skipped_no_code: int
+    # Other modes: rows dropped for lacking the fields the mode reads.
+    skipped_incomplete: int = 0
+
+
+# --- Workflow CRUD (workflows_router) ----------------------------------------
+# Saved workflow definitions under storage/workflows/. `workflowId` is the file
+# stem — the same value the Flutter WorkflowStore calls a `slug`.
+
+
+class WorkflowDeleteResponse(CamelModel):
+    # "SUCCESS" on a completed delete; failures are HTTP errors, not statuses.
+    status: str
+    # Echoed back so a caller batching deletes can match up responses.
+    workflow_id: str

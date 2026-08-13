@@ -41,8 +41,6 @@ from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cx
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
 from .models import (
-    AaBinaryNormalizeRequest,
-    AaBinaryNormalizeResponse,
     D4mExecRequest,
     D4mExecResponse,
     D4mIngestRequest,
@@ -125,8 +123,14 @@ from .ast_extract import (
     to_arrow_bytes,
 )
 from .patch_docstrings import PatchDocstringsError, PatchDocstringsNode
-from .jsonl_formatter_node import JsonlFormatError, JsonlFormatterNode, aa_from_table
+from .jsonl_formatter_node import (
+    LEGACY_INSTRUCTION_PROMPT,
+    JsonlFormatError,
+    JsonlFormatterNode,
+    aa_from_table,
+)
 from .polyglot_exec_node import ExecInput, PolyglotExecNode
+from .workflows_router import router as workflows_router
 
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
@@ -172,6 +176,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Workflow CRUD lives in its own router module.
+app.include_router(workflows_router)
 
 store = SessionStore()
 engine: InferenceEngine = StubInferenceEngine()
@@ -688,36 +695,57 @@ async def chunk_text(request: ChunkRequest) -> ChunkResponse:
 
 # --- AA→JSONL node (AA2JSONLNode) -------------------------------------------
 
-# Phi-4 fine-tuning line formatters, keyed by the selectable format id. Add a
-# new entry here to support another format — the route needs no other change.
-_JSONL_FORMATTERS = {
-    "instruction-completion": lambda text: {
-        "prompt": "Write in the GCC voice:",
-        "completion": text,
-    },
-    "continuation": lambda text: {"text": text},
+# DEPRECATED. The legacy AA2JSONL format ids, mapped onto JsonlFormatterNode's
+# modes. Line construction lives in `jsonl_formatter_node.py` — this table only
+# says which mode each legacy id means, so the two nodes cannot drift apart.
+#
+# "instruction-completion" is `prompt_completion` with a constant prompt, which is
+# exactly what the old lambda did.
+_LEGACY_FORMAT_MODES = {
+    "instruction-completion": "instruction_completion",
+    "continuation": "continuation",
 }
+
+
+def _legacy_formatter(format_id: str) -> JsonlFormatterNode:
+    """The unified formatter configured to reproduce a legacy format byte for byte."""
+    return JsonlFormatterNode(
+        format_mode=_LEGACY_FORMAT_MODES[format_id],
+        default_prompt=LEGACY_INSTRUCTION_PROMPT,
+    )
 
 # Output AA columns, in order (all string-valued).
 _AA2JSONL_COLUMNS = ["jsonl_line", "format", "output_file", "write_timestamp", "status"]
 
 
-@app.post("/aa2jsonl", response_model=Aa2JsonlResponse)
+@app.post("/aa2jsonl", response_model=Aa2JsonlResponse, deprecated=True)
 async def aa_to_jsonl(request: Aa2JsonlRequest) -> Aa2JsonlResponse:
-    """Write an AA of passages to a JSONL file formatted for Phi-4 fine-tuning.
+    """**Deprecated** — use `/jsonl/format/aa` with `formatMode`.
+
+    Kept working rather than redirected: this route *writes the file itself*, sorts
+    by `position`, and returns per-chunk provenance plus stats, none of which the
+    unified route does. A redirect would change the response shape under existing
+    callers. Its **line construction** now goes through `JsonlFormatterNode`, so
+    there is one implementation of each format; only the file-writing and
+    provenance below are specific to this endpoint.
+
+    New work should emit lines with `/jsonl/format/aa` (`formatMode`:
+    `prompt_completion`) and write them with the Save File node.
+
+    Writes an AA of passages to a JSONL file formatted for Phi-4 fine-tuning.
 
     Iterates rows in ``position`` order, formats each chunk's text per the
     selected format, validates each line is valid JSON, and writes one object
     per line. Emits a provenance AA — one row per source chunk, keyed by the
     original chunkID — recording the line written and its status.
     """
-    formatter = _JSONL_FORMATTERS.get(request.format)
-    if formatter is None:
+    if request.format not in _LEGACY_FORMAT_MODES:
         raise HTTPException(
             status_code=422,
             detail=f"unknown format {request.format!r}; "
-            f"known formats: {sorted(_JSONL_FORMATTERS)}",
+            f"known formats: {sorted(_LEGACY_FORMAT_MODES)}",
         )
+    formatter = _legacy_formatter(request.format)
     output_file = request.output_file.strip()
     if not output_file:
         raise HTTPException(status_code=422, detail="outputFile must not be empty")
@@ -755,8 +783,12 @@ async def aa_to_jsonl(request: Aa2JsonlRequest) -> Aa2JsonlResponse:
             skipped += 1
         else:
             try:
-                jsonl_line = json.dumps(formatter(text), ensure_ascii=False)
-                json.loads(jsonl_line)  # validate before accepting the line
+                # One implementation of every format: JsonlFormatterNode builds it.
+                built = formatter.line_for({text_col: text})
+                if built is None:
+                    raise ValueError("mode produced no line")
+                json.loads(built)  # validate before accepting the line
+                jsonl_line = built
                 lines.append(jsonl_line)
             except (TypeError, ValueError):
                 jsonl_line = ""
@@ -1236,7 +1268,10 @@ async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
 # --- JSONL Formatter node (JsonlFormatterNode) --------------------------------
 
 @app.post("/jsonl/format")
-async def jsonl_format_arrow(request: Request) -> Response:
+async def jsonl_format_arrow(
+    request: Request,
+    format_mode: str = "chatml",
+) -> Response:
     """Format a documented index into ChatML JSONL — Arrow in, Arrow out.
 
     The pipeline path: the request body is the 7-column index as Arrow IPC bytes and
@@ -1256,7 +1291,7 @@ async def jsonl_format_arrow(request: Request) -> Response:
 
     try:
         table = read_arrow_table(body)
-        result = JsonlFormatterNode().format_table(table)
+        result = JsonlFormatterNode(format_mode=format_mode).format_table(table)
     except (AstExtractError, JsonlFormatError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -1265,9 +1300,11 @@ async def jsonl_format_arrow(request: Request) -> Response:
         media_type="application/vnd.apache.arrow.file",
         headers={
             "X-Dn-Line-Count": str(result.line_count),
+            "X-Dn-Format-Mode": result.mode,
             "X-Dn-Skipped-No-Doc": str(result.skipped_no_doc),
             "X-Dn-Skipped-No-Code": str(result.skipped_no_code),
-            "X-Dn-Schema": "jsonl_chatml_v1",
+            "X-Dn-Skipped-Incomplete": str(result.skipped_incomplete),
+            "X-Dn-Schema": "jsonl_lines_v1",
         },
     )
 
@@ -1281,15 +1318,17 @@ async def jsonl_format_aa(request: JsonlFormatRequest) -> JsonlFormatResponse:
     Both call the same formatter; only the envelope differs.
     """
     try:
-        result = JsonlFormatterNode().format_aa(request.aa)
+        result = JsonlFormatterNode(format_mode=request.format_mode).format_aa(request.aa)
     except JsonlFormatError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
     return JsonlFormatResponse(
         aa=aa_from_table(result.table),
+        format_mode=result.mode,
         line_count=result.line_count,
         skipped_no_doc=result.skipped_no_doc,
         skipped_no_code=result.skipped_no_code,
+        skipped_incomplete=result.skipped_incomplete,
     )
 
 
@@ -1458,50 +1497,3 @@ async def save_file(request: SaveFileRequest) -> SaveFileResponse:
     )
 
 
-# --- AA Binary Normalizer node (AaBinaryNormalizerNode) ----------------------
-
-@app.post("/normalize", response_model=AaBinaryNormalizeResponse)
-async def aaBinaryNormalize(
-    request: AaBinaryNormalizeRequest,
-) -> AaBinaryNormalizeResponse:
-    from .aa_binary_normalizer import AABinaryNormalizer
-    try:
-        aaOut = await run_in_threadpool(
-            AABinaryNormalizer().normalize,
-            {
-                "filePath":        request.file_path,
-                "outputDirectory": request.output_directory,
-                "splitName":       request.split_name,
-                "keepInMemory":    request.keep_in_memory,
-            },
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-    import os as _os
-    bookId = _os.path.splitext(_os.path.basename(aaOut["arrowFilePath"]))[0]
-    rows: list[str] = []
-    cols: list[str] = []
-    vals: list = []
-
-    def _add(col: str, val) -> None:
-        rows.append(bookId)
-        cols.append(col)
-        vals.append(val)
-
-    _add("arrowFilePath",  aaOut["arrowFilePath"])
-    _add("rowCount",       aaOut["rowCount"])
-    _add("splitName",      request.split_name)
-    _add("isMemoryMapped", str(aaOut["isMemoryMapped"]))
-    for fieldName, arrowType in aaOut["columnSchema"].items():
-        _add(f"schema:{fieldName}", arrowType)
-
-    return AaBinaryNormalizeResponse(
-        aa=AssocArray(rows=rows, cols=cols, vals=vals),
-        arrow_file_path=aaOut["arrowFilePath"],
-        row_count=aaOut["rowCount"],
-        column_schema=aaOut["columnSchema"],
-        is_memory_mapped=aaOut["isMemoryMapped"],
-    )

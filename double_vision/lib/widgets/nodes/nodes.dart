@@ -13,7 +13,6 @@ export 'base/output_connector.dart';
 
 // Concrete canvas node widgets (and the SAM3 node's supporting panel/model).
 export 'implementations/aa2jsonl_node.dart';
-export 'implementations/aa_binary_normalizer_node.dart';
 export 'implementations/categories_node.dart';
 export 'implementations/chunk_node.dart';
 export 'implementations/d4m_node.dart';

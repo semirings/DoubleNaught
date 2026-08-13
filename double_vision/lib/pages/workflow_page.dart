@@ -11,8 +11,10 @@ import '../services/infobus/output_port.dart';
 import '../models/node_group.dart';
 import '../models/workflow.dart';
 import '../services/canvas/grouping.dart';
+import '../services/workflow_api.dart';
 import '../services/workflow_store.dart';
 import '../widgets/focus_panel.dart';
+import '../widgets/node_catalog_widget.dart';
 import '../widgets/nodes/nodes.dart';
 
 /// Default node width — used both for layout and to anchor edge endpoints.
@@ -52,7 +54,15 @@ const double _kPortY = 40;
 /// A minimal workflow editor: a thin header to instantiate and save nodes, a
 /// draggable-node canvas, and connector-to-connector edge creation.
 class WorkflowPage extends StatefulWidget {
-  const WorkflowPage({super.key});
+  /// Workflow CRUD backend. Injected in tests; defaults to the local service.
+  final WorkflowApi? workflowApi;
+
+  /// Saved-workflow storage. **Injected in tests** — the default points at the
+  /// real `storage/workflows`, so a test that deletes without overriding this
+  /// would remove the user's own files.
+  final WorkflowStore? workflowStore;
+
+  const WorkflowPage({super.key, this.workflowApi, this.workflowStore});
 
   @override
   State<WorkflowPage> createState() => _WorkflowPageState();
@@ -61,6 +71,12 @@ class WorkflowPage extends StatefulWidget {
 class _WorkflowPageState extends State<WorkflowPage>
     with SingleTickerProviderStateMixin {
   static const _version = '0.1.0';
+
+  /// Saved-workflow storage — the injected one, or the default local store.
+  WorkflowStore get _store => widget.workflowStore ?? WorkflowStore();
+
+  /// Workflow CRUD client — the injected one, or the default local backend.
+  WorkflowApi get _workflowApi => widget.workflowApi ?? const WorkflowApi();
 
   final List<WorkflowNode> _nodes = [];
   final List<WorkflowEdge> _edges = [];
@@ -1464,7 +1480,7 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   Future<void> _refreshSavedWorkflows() async {
     try {
-      final list = await WorkflowStore().list();
+      final list = await _store.list();
       if (mounted) setState(() => _savedWorkflows = list);
     } catch (_) {
       // Listing is best-effort; a storage error just leaves the menu empty.
@@ -1487,7 +1503,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     final name = await _promptWorkflowName(initial: _currentWorkflowName);
     if (name == null) return; // cancelled
     final slug = WorkflowStore.slugify(name);
-    if (slug != _currentWorkflowSlug && await WorkflowStore().exists(slug)) {
+    if (slug != _currentWorkflowSlug && await _store.exists(slug)) {
       final overwrite = await _confirm(
         title: 'Name in use',
         message: 'A workflow named "$name" already exists. Overwrite it?',
@@ -1512,7 +1528,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     final workflow = Workflow(version: _version, nodes: nodes, edges: _edges);
     String message;
     try {
-      await WorkflowStore().write(slug, name, workflow);
+      await _store.write(slug, name, workflow);
       message =
           'Saved "$name" — ${_nodes.length} node(s), '
           '${_edges.length} edge(s)';
@@ -1539,7 +1555,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     }
     Workflow? loaded;
     try {
-      loaded = await WorkflowStore().read(meta.slug);
+      loaded = await _store.read(meta.slug);
     } catch (e) {
       _showMessage('Could not open "${meta.name}": $e');
       return;
@@ -1576,26 +1592,58 @@ class _WorkflowPageState extends State<WorkflowPage>
     _showMessage('Loaded "${meta.name}"');
   }
 
+  /// Delete a saved workflow, after confirmation.
+  ///
+  /// The backend owns the delete (`DELETE /workflows/{id}`) so it can refuse while
+  /// the workflow is executing. Two of its answers are **not** refusals and fall
+  /// back to the local store:
+  ///
+  ///  * `unreachable` — workflows are local files and the app works without the
+  ///    backend, so a dead server must not make them undeletable.
+  ///  * `404` — the backend is not holding this file; the user still asked for it
+  ///    to go.
+  ///
+  /// A `409` never falls back: deleting a workflow the server just said is running
+  /// is precisely what that status exists to prevent.
   Future<void> _deleteWorkflow(WorkflowMeta meta) async {
     final ok = await _confirm(
-      title: 'Delete workflow',
-      message: 'Delete saved workflow "${meta.name}"? This cannot be undone.',
+      title: 'Delete Workflow',
+      message: 'Are you sure you want to delete \'${meta.name}\'? '
+          'This action cannot be undone.',
       confirmLabel: 'Delete',
       destructive: true,
     );
     if (!ok) return;
+
+    var deleted = false;
     try {
-      await WorkflowStore().delete(meta.slug);
-    } catch (e) {
-      _showMessage('Delete failed: $e');
-      return;
+      deleted = await _workflowApi.deleteWorkflow(meta.slug);
+    } on WorkflowDeleteException catch (e) {
+      if (e.reason == WorkflowDeleteFailure.conflict) {
+        _showMessage('Cannot delete "${meta.name}": ${e.message}');
+        return;
+      }
+      if (e.reason != WorkflowDeleteFailure.unreachable &&
+          e.reason != WorkflowDeleteFailure.notFound) {
+        _showMessage('Delete failed: ${e.message}');
+        return;
+      }
+      // Fall through to the local store.
     }
-    if (_currentWorkflowSlug == meta.slug) {
-      setState(() {
-        _currentWorkflowSlug = null;
-        _currentWorkflowName = null;
-      });
+
+    if (!deleted) {
+      try {
+        await _store.delete(meta.slug);
+      } catch (e) {
+        _showMessage('Delete failed: $e');
+        return;
+      }
     }
+
+    // The open workflow just went: reset the canvas rather than leaving an
+    // orphaned graph that Save would recreate under the deleted name.
+    if (_currentWorkflowSlug == meta.slug) _clear();
+
     await _refreshSavedWorkflows();
     _showMessage('Deleted "${meta.name}"');
   }
@@ -1722,6 +1770,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           const _LogoBanner(),
           _Header(
             onAdd: _addNode,
+            onCatalogClosed: () => _canvasFocus.requestFocus(),
             onRun: _nodes.isEmpty ? null : _runWorkflow,
             running: _isRunning,
             onSave: _save,
@@ -2225,6 +2274,8 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
+      // DEPRECATED — not in the Node Catalog. Kept so a workflow saved before the
+      // JSONL consolidation still opens; use `jsonlFormatterNode` for new work.
       case 'aa2jsonl':
         return Aa2JsonlNode(
           node: node,
@@ -2433,17 +2484,6 @@ class _WorkflowPageState extends State<WorkflowPage>
               (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
           onValOutputPort: (port) =>
               (_aaMultiOutputPorts[node.id] ??= {})[1] = port,
-          connectedOutputs: _connectedOutputs(node.id),
-        );
-      case 'aa_binary_normalizer':
-        return AaBinaryNormalizerNode(
-          node: node,
-          initialParams: _nodeParams[node.id],
-          onParams: (p) => _nodeParams[node.id] = p,
-          inputConnected: _hasIncomingEdge(node.id),
-          onInputConnect: (source) => _connect(source, node.id),
-          onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       default:
@@ -2770,6 +2810,10 @@ class _Header extends StatelessWidget {
   /// Clear the workflow; null disables the button (nothing to clear).
   final VoidCallback? onClear;
 
+  /// Called after the Node Catalog closes, selection or not — the page uses it to
+  /// pull keyboard focus back to the canvas.
+  final VoidCallback? onCatalogClosed;
+
   /// Saved workflows for the Workflows dropdown, and the active one's name.
   final List<WorkflowMeta> savedWorkflows;
   final String? currentWorkflowName;
@@ -2788,6 +2832,7 @@ class _Header extends StatelessWidget {
     this.onRun,
     this.running = false,
     this.onClear,
+    this.onCatalogClosed,
   });
 
   // Reference style: dark fill, coloured border + content, rounded corners.
@@ -2833,22 +2878,28 @@ class _Header extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Node Catalog — the palette of node primitives to place on canvas.
-          PopupMenuButton<NodeType>(
-            tooltip: 'Add a node from the catalog',
-            onSelected: onAdd,
-            itemBuilder: (context) => [
-              for (final type in nodeTypes)
-                PopupMenuItem(value: type, child: Text(type.name)),
-            ],
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.widgets_outlined, size: 18),
-                const SizedBox(width: 6),
-                Text('Node Catalog', style: theme.textTheme.titleSmall),
-                const Icon(Icons.arrow_drop_down),
-              ],
+          // Node Catalog — the searchable palette of node primitives. A panel
+          // rather than a menu: it carries a search field and filter chips, and a
+          // menu route would close on the first tap inside it.
+          InkWell(
+            onTap: () async {
+              final chosen = await showNodeCatalog(context);
+              if (chosen != null) onAdd(chosen);
+              // Hand focus back to the canvas either way, so Delete and Cmd-G
+              // keep working after the palette closes.
+              onCatalogClosed?.call();
+            },
+            child: Tooltip(
+              message: 'Add a node from the catalog',
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.widgets_outlined, size: 18),
+                  const SizedBox(width: 6),
+                  Text('Node Catalog', style: theme.textTheme.titleSmall),
+                  const Icon(Icons.arrow_drop_down),
+                ],
+              ),
             ),
           ),
           const SizedBox(width: 12),

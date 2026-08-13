@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:double_vision/models/aa_payload.dart';
 import 'package:double_vision/models/workflow.dart';
+import 'package:double_vision/config/node_registry.dart';
 import 'package:double_vision/pages/workflow_page.dart';
 import 'package:double_vision/services/infobus/input_port.dart';
 import 'package:double_vision/services/infobus/output_port.dart';
@@ -18,6 +19,7 @@ JsonlFormatterApi _api({
   int skippedNoDoc = 0,
   int skippedNoCode = 0,
   int httpStatus = 200,
+  String mode = 'chatml',
   String firstLine = '{"messages":[{"role":"system","content":"You are…"}]}',
   void Function(Map<String, dynamic> body)? onRequest,
 }) {
@@ -39,6 +41,7 @@ JsonlFormatterApi _api({
       return http.Response(
         jsonEncode({
           'aa': {'rows': rows, 'cols': cols, 'vals': vals},
+          'formatMode': mode,
           'lineCount': lineCount,
           'skippedNoDoc': skippedNoDoc,
           'skippedNoCode': skippedNoCode,
@@ -68,6 +71,8 @@ Future<({InputPort input, List<AaPayload> emitted})> _pump(
   WidgetTester tester, {
   JsonlFormatterApi? api,
   Future<void> Function(String)? onCopy,
+  void Function(Map<String, String>)? onParams,
+  Map<String, String>? initialParams,
 }) async {
   InputPort? port;
   final emitted = <AaPayload>[];
@@ -79,6 +84,8 @@ Future<({InputPort input, List<AaPayload> emitted})> _pump(
           child: JsonlFormatterNodeWidget(
             node: const WorkflowNode(id: 1, type: 'jsonlFormatterNode'),
             api: api ?? _api(),
+            initialParams: initialParams,
+            onParams: onParams,
             onCopy: onCopy,
             onInputPort: (p) => port = p,
             onOutputPort: (p) => p.connect(emitted.add, emitCurrentState: false),
@@ -97,12 +104,14 @@ Future<void> _send(WidgetTester tester, InputPort port, AaPayload aa) async {
 }
 
 void main() {
+  _modeTests();
+
   group('IndexTally', () {
     test('counts definitions and how many are documented', () {
       final tally = IndexTally.of(_index(rows: 5, documented: 2));
       expect(tally.rows, 5);
-      expect(tally.documented, 2);
-      expect(tally.undocumented, 3);
+      expect(tally.ready, 2);
+      expect(tally.pending, 3);
     });
 
     test('whitespace-only docstrings do not count as documented', () {
@@ -111,7 +120,7 @@ void main() {
         cols: ['raw_code', 'better_docstring'],
         vals: ['f(x) = x', '   \n '],
       );
-      expect(IndexTally.of(aa).documented, 0);
+      expect(IndexTally.of(aa).ready, 0);
       expect(IndexTally.of(aa).rows, 1);
     });
 
@@ -121,7 +130,7 @@ void main() {
         cols: ['betterDocstring'],
         vals: ['Docs.'],
       );
-      expect(IndexTally.of(aa).documented, 1);
+      expect(IndexTally.of(aa).ready, 1);
     });
 
     test('an empty payload tallies to nothing', () {
@@ -147,8 +156,8 @@ void main() {
       final h = await _pump(tester);
       await _send(tester, h.input, _index(rows: 5, documented: 2));
 
-      expect(find.textContaining('5 definitions'), findsOneWidget);
-      expect(find.textContaining('2 documented'), findsOneWidget);
+      expect(find.textContaining('5 rows'), findsOneWidget);
+      expect(find.textContaining('2 ready'), findsOneWidget);
       expect(find.textContaining('3 pending'), findsOneWidget);
       expect(
         tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
@@ -240,7 +249,7 @@ void main() {
       await tester.tap(find.text('Format ChatML'));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('No documented rows'), findsOneWidget);
+      expect(find.textContaining('No usable rows'), findsOneWidget);
       expect(h.emitted, isEmpty,
           reason: 'nothing useful to send downstream');
     });
@@ -284,7 +293,7 @@ void main() {
       await _send(tester, h.input, _index(rows: 4, documented: 1));
 
       expect(find.text('First line'), findsNothing);
-      expect(find.textContaining('4 definitions'), findsOneWidget);
+      expect(find.textContaining('4 rows'), findsOneWidget);
     });
 
     testWidgets('the Node Catalog instantiates it onto the canvas',
@@ -301,6 +310,192 @@ void main() {
 
       expect(find.byType(JsonlFormatterNodeWidget), findsOneWidget);
       expect(find.textContaining('Waiting for in_aa'), findsOneWidget);
+    });
+  });
+}
+
+/// Mode-specific behaviour of the consolidated node.
+void _modeTests() {
+  group('format modes', () {
+    test('the dropdown offers exactly the three public modes', () {
+      expect(
+        JsonlFormatMode.values.map((m) => m.label),
+        ['ChatML (Code/Doc)', 'Prompt / Completion', 'Row Passthrough'],
+      );
+      expect(
+        JsonlFormatMode.values.map((m) => m.wire),
+        ['chatml', 'prompt_completion', 'passthrough'],
+      );
+    });
+
+    test('an unknown wire name falls back to ChatML', () {
+      expect(JsonlFormatMode.byWire('nonsense'), JsonlFormatMode.chatml);
+      expect(JsonlFormatMode.byWire(null), JsonlFormatMode.chatml);
+      expect(
+        JsonlFormatMode.byWire('prompt_completion'),
+        JsonlFormatMode.promptCompletion,
+      );
+    });
+
+    test('readiness is counted per mode, not once', () {
+      // Passages: a completion column, no better_docstring.
+      const passages = AaPayload(
+        rows: ['p1', 'p1', 'p2', 'p2'],
+        cols: ['prompt', 'completion', 'prompt', 'completion'],
+        vals: ['Ask:', 'Answer.', 'Ask:', 'Answer.'],
+      );
+
+      // Useless to ChatML…
+      expect(IndexTally.of(passages, JsonlFormatMode.chatml).ready, 0);
+      // …but perfectly formattable the other two ways.
+      expect(IndexTally.of(passages, JsonlFormatMode.promptCompletion).ready, 2);
+      expect(IndexTally.of(passages, JsonlFormatMode.passthrough).ready, 2);
+    });
+
+    test('passthrough counts any filled cell, and no empty row', () {
+      const sparse = AaPayload(
+        rows: ['a', 'b'],
+        cols: ['whatever', 'whatever'],
+        vals: ['filled', '  '],
+      );
+      final tally = IndexTally.of(sparse, JsonlFormatMode.passthrough);
+      expect(tally.rows, 2);
+      expect(tally.ready, 1);
+    });
+  });
+
+  group('mode selection in the widget', () {
+    testWidgets('defaults to ChatML and sends that mode', (tester) async {
+      Map<String, dynamic>? sent;
+      final h = await _pump(tester, api: _api(onRequest: (b) => sent = b));
+      await _send(tester, h.input, _index());
+
+      expect(find.text('ChatML (Code/Doc)'), findsOneWidget);
+      await tester.tap(find.text('Format ChatML'));
+      await tester.pumpAndSettle();
+
+      expect(sent!['formatMode'], 'chatml');
+    });
+
+    testWidgets('choosing a mode sends it and persists it', (tester) async {
+      Map<String, dynamic>? sent;
+      Map<String, String>? saved;
+      final h = await _pump(
+        tester,
+        api: _api(mode: 'passthrough', onRequest: (b) => sent = b),
+        onParams: (p) => saved = p,
+      );
+      // Mount first, then deliver: `initInputPort` calls `onInputPort` before it
+      // subscribes, so connecting in that callback drops the replayed payload.
+      await _send(tester, h.input, _index());
+
+      await tester.tap(find.ancestor(
+        of: find.text('Format Mode'),
+        matching: find.byType(TextField),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Row Passthrough').last);
+      await tester.pumpAndSettle();
+
+      expect(saved!['formatMode'], 'passthrough');
+
+      await tester.tap(find.text('Format ChatML'));
+      await tester.pumpAndSettle();
+      expect(sent!['formatMode'], 'passthrough');
+    });
+
+    testWidgets('the saved mode is restored', (tester) async {
+      await _pump(tester, initialParams: const {'formatMode': 'prompt_completion'});
+      expect(find.text('Prompt / Completion'), findsOneWidget);
+    });
+
+    testWidgets('switching mode re-enables Format for a passage payload',
+        (tester) async {
+      final h = await _pump(tester, api: _api(mode: 'prompt_completion'));
+      // Passages: nothing ChatML can use.
+      await _send(
+        tester,
+        h.input,
+        const AaPayload(
+          rows: ['p1', 'p1'],
+          cols: ['prompt', 'completion'],
+          vals: ['Ask:', 'Answer.'],
+        ),
+      );
+
+      expect(
+        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+        isNull,
+        reason: 'ChatML cannot use a passage payload',
+      );
+
+      await tester.tap(find.ancestor(
+        of: find.text('Format Mode'),
+        matching: find.byType(TextField),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Prompt / Completion').last);
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+        isNotNull,
+        reason: 'prompt_completion can',
+      );
+    });
+
+    testWidgets('switching mode discards the previous result', (tester) async {
+      final h = await _pump(tester);
+      await _send(tester, h.input, _index());
+      await tester.tap(find.text('Format ChatML'));
+      await tester.pumpAndSettle();
+      expect(find.text('First line'), findsOneWidget);
+
+      await tester.tap(find.ancestor(
+        of: find.text('Format Mode'),
+        matching: find.byType(TextField),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Row Passthrough').last);
+      await tester.pumpAndSettle();
+
+      // Lines built by another mode must not linger as if they were current.
+      expect(find.text('First line'), findsNothing);
+    });
+
+    testWidgets('incomplete rows are reported for non-ChatML modes',
+        (tester) async {
+      final h = await _pump(
+        tester,
+        api: _api(lineCount: 1, mode: 'passthrough', skippedNoDoc: 0),
+      );
+      await _send(tester, h.input, _index());
+      await tester.tap(find.text('Format ChatML'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('1 training lines'), findsOneWidget);
+    });
+  });
+
+  group('catalog consolidation', () {
+    testWidgets('AA → JSONL is gone from the Node Catalog', (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: WorkflowPage()));
+      await tester.tap(find.text('Node Catalog'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('AA → JSONL'), findsNothing);
+      // And the survivor is there.
+      expect(find.text('JSONL Formatter'), findsWidgets);
+    });
+
+    testWidgets('a workflow saved with an aa2jsonl node still builds',
+        (tester) async {
+      // The builder case is retained deliberately; losing it would break loading.
+      expect(
+        nodeTypes.map((t) => t.type).contains('aa2jsonl'),
+        isFalse,
+        reason: 'not offered for new work',
+      );
     });
   });
 }

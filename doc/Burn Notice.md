@@ -31,7 +31,7 @@ No billable hours.
 
 No way to show your portfolio when everything you have ever done is locked away in some agency's github account.
   
-You’re stuck with whatever technology you’ve accumulated over the years, a suspicious number of unfinished software projects.…
+You’re stuck with whatever technology you’ve accumulated over the years. You have a suspicious number of unfinished software projects.…
 
 
 …and a YouTube channel.

@@ -12,11 +12,13 @@ from double_touch.app import app
 from double_touch.ast_extract import read_arrow_table, to_arrow_bytes
 from double_touch.jsonl_formatter_node import (
     INPUT_COLUMNS,
+    LEGACY_INSTRUCTION_PROMPT,
     OUTPUT_COLUMNS,
     SYSTEM_PROMPT,
     JsonlFormatError,
     JsonlFormatterNode,
     aa_from_table,
+    normalise_mode,
     table_from_aa,
     to_json_line,
 )
@@ -141,8 +143,8 @@ def test_an_empty_index_yields_an_empty_table_with_the_schema():
     assert tuple(result.table.column_names) == OUTPUT_COLUMNS
 
 
-def test_a_table_missing_columns_is_refused():
-    with pytest.raises(JsonlFormatError, match="missing"):
+def test_chatml_refuses_a_table_without_code_and_docstring_columns():
+    with pytest.raises(JsonlFormatError, match="chatml mode is missing"):
         JsonlFormatterNode().format_table(pa.table({"symbol_name": ["f"]}))
 
 
@@ -169,7 +171,8 @@ def test_metadata_records_the_counts():
     result = JsonlFormatterNode().format_table(index_table(rows))
     metadata = {k.decode(): v.decode() for k, v in result.table.schema.metadata.items()}
 
-    assert metadata["dn_schema"] == "jsonl_chatml_v1"
+    assert metadata["dn_schema"] == "jsonl_lines_v1"
+    assert metadata["dn_format_mode"] == "chatml"
     assert metadata["dn_line_count"] == "1"
     assert metadata["dn_skipped_no_doc"] == "1"
 
@@ -207,11 +210,20 @@ def test_table_from_aa_regroups_triples_into_records():
     )
     table = table_from_aa(aa)
 
-    assert tuple(table.column_names) == INPUT_COLUMNS
+    # Whatever the payload carries, in first-appearance order — the node now takes
+    # passage AAs and arbitrary rows too, so a fixed schema would drop their data.
+    assert tuple(table.column_names) == ("symbol_name", "raw_code", "better_docstring")
     assert table.num_rows == 2
     assert table.column("symbol_name").to_pylist() == ["f", "g"]
+
+
+def test_table_from_aa_can_be_pinned_to_a_column_set():
+    aa = AssocArray(rows=["r1"], cols=["raw_code"], vals=["f(x) = x"])
+    table = table_from_aa(aa, columns=INPUT_COLUMNS)
+
+    assert tuple(table.column_names) == INPUT_COLUMNS
     # Absent columns are filled with empty strings, not nulls.
-    assert table.column("file_path").to_pylist() == ["", ""]
+    assert table.column("file_path").to_pylist() == [""]
 
 
 def test_aa_from_table_pads_row_keys_so_lexical_order_matches_line_order():
@@ -405,3 +417,273 @@ def test_aa_route_on_an_undocumented_index_returns_zero_lines_not_an_error():
     )
     assert response.status_code == 200
     assert response.json()["lineCount"] == 0
+
+
+# --- Format modes ------------------------------------------------------------
+
+
+def test_mode_defaults_to_chatml_and_is_recorded():
+    result = JsonlFormatterNode().format_table(index_table(ONE_ROW))
+    assert result.mode == "chatml"
+
+
+@pytest.mark.parametrize(
+    "spelling,expected",
+    [
+        ("chatml", "chatml"),
+        ("ChatML", "chatml"),
+        ("prompt_completion", "prompt_completion"),
+        ("prompt-completion", "prompt_completion"),
+        ("passthrough", "passthrough"),
+        ("row_dict", "passthrough"),
+        ("row-dict", "passthrough"),
+        ("", "chatml"),
+        (None, "chatml"),
+    ],
+)
+def test_mode_aliases_normalise(spelling, expected):
+    assert normalise_mode(spelling) == expected
+
+
+def test_an_unknown_mode_names_the_known_ones():
+    with pytest.raises(JsonlFormatError, match="unknown format_mode"):
+        normalise_mode("yaml")
+
+
+def test_prompt_completion_reads_prompt_and_completion_columns():
+    table = pa.table(
+        {
+            "prompt": ["Explain this:"],
+            "completion": ["It adds one."],
+            "symbol_name": ["add_one"],
+        }
+    )
+    result = JsonlFormatterNode(format_mode="prompt_completion").format_table(table)
+
+    assert result.line_count == 1
+    assert json.loads(result.table.column("json_line")[0].as_py()) == {
+        "prompt": "Explain this:",
+        "completion": "It adds one.",
+    }
+    # The symbol still travels beside its line.
+    assert result.table.column("symbol_name").to_pylist() == ["add_one"]
+
+
+@pytest.mark.parametrize(
+    "prompt_col,completion_col",
+    [("input", "target"), ("source", "output"), ("instruction", "text")],
+)
+def test_prompt_completion_accepts_the_documented_aliases(prompt_col, completion_col):
+    table = pa.table({prompt_col: ["P"], completion_col: ["C"]})
+    result = JsonlFormatterNode(format_mode="prompt_completion").format_table(table)
+    assert json.loads(result.table.column("json_line")[0].as_py()) == {
+        "prompt": "P",
+        "completion": "C",
+    }
+
+
+def test_prompt_completion_skips_rows_missing_a_side():
+    table = pa.table({"prompt": ["P", "", "P2"], "completion": ["C", "C2", ""]})
+    result = JsonlFormatterNode(format_mode="prompt_completion").format_table(table)
+
+    assert result.line_count == 1
+    assert result.skipped_incomplete == 2
+    assert result.skipped_total == 2
+
+
+def test_prompt_completion_refuses_a_table_with_no_completion_column():
+    with pytest.raises(JsonlFormatError, match="no completion column"):
+        JsonlFormatterNode(format_mode="prompt_completion").format_table(
+            pa.table({"prompt": ["P"]})
+        )
+
+
+def test_passthrough_turns_each_row_into_one_object():
+    table = pa.table(
+        {
+            "symbol_name": ["f"],
+            "kind": ["function"],
+            "line_range": ["1:2"],
+        }
+    )
+    result = JsonlFormatterNode(format_mode="passthrough").format_table(table)
+
+    assert json.loads(result.table.column("json_line")[0].as_py()) == {
+        "symbol_name": "f",
+        "kind": "function",
+        "line_range": "1:2",
+    }
+
+
+def test_passthrough_drops_empty_cells_rather_than_emitting_nulls():
+    """A sparse AA would otherwise produce lines full of placeholders."""
+    table = pa.table({"a": ["1"], "b": [""], "c": [None]})
+    result = JsonlFormatterNode(format_mode="passthrough").format_table(table)
+
+    assert json.loads(result.table.column("json_line")[0].as_py()) == {"a": "1"}
+
+
+def test_passthrough_skips_a_wholly_empty_row():
+    table = pa.table({"a": ["1", ""], "b": ["2", ""]})
+    result = JsonlFormatterNode(format_mode="passthrough").format_table(table)
+    assert result.line_count == 1
+    assert result.skipped_incomplete == 1
+
+
+def test_every_mode_emits_the_unified_column_name():
+    """The whole point of the consolidation: one output schema."""
+    cases = [
+        ("chatml", index_table(ONE_ROW)),
+        ("prompt_completion", pa.table({"prompt": ["P"], "completion": ["C"]})),
+        ("passthrough", pa.table({"a": ["1"]})),
+    ]
+    for mode, table in cases:
+        result = JsonlFormatterNode(format_mode=mode).format_table(table)
+        assert tuple(result.table.column_names) == OUTPUT_COLUMNS, mode
+        assert "jsonl_line" not in result.table.column_names, mode
+
+
+def test_every_mode_produces_single_line_json():
+    multiline = "first\nsecond\nthird"
+    cases = [
+        ("chatml", index_table([dict(ONE_ROW[0], better_docstring=multiline)])),
+        ("prompt_completion", pa.table({"prompt": [multiline], "completion": [multiline]})),
+        ("passthrough", pa.table({"a": [multiline]})),
+    ]
+    for mode, table in cases:
+        result = JsonlFormatterNode(format_mode=mode).format_table(table)
+        line = result.table.column("json_line")[0].as_py()
+        assert "\n" not in line, mode
+        assert json.loads(line), mode
+
+
+def test_symbol_name_falls_back_to_the_row_position():
+    """Modes over AAs with no symbol column still keep a traceable key."""
+    table = pa.table({"prompt": ["P", "P"], "completion": ["C1", "C2"]})
+    result = JsonlFormatterNode(format_mode="prompt_completion").format_table(table)
+    assert result.table.column("symbol_name").to_pylist() == ["0", "1"]
+
+
+# --- Legacy formats, via the unified node ------------------------------------
+
+
+def test_legacy_instruction_completion_is_prompt_completion_with_a_fixed_prompt():
+    node = JsonlFormatterNode(
+        format_mode="instruction_completion",
+        default_prompt=LEGACY_INSTRUCTION_PROMPT,
+    )
+    line = node.line_for({"text": "A passage."})
+    assert json.loads(line) == {
+        "prompt": LEGACY_INSTRUCTION_PROMPT,
+        "completion": "A passage.",
+    }
+
+
+def test_legacy_continuation_emits_a_bare_text_object():
+    node = JsonlFormatterNode(format_mode="continuation")
+    assert json.loads(node.line_for({"text": "A passage."})) == {"text": "A passage."}
+
+
+def test_line_for_returns_none_when_the_row_is_unusable():
+    node = JsonlFormatterNode(format_mode="continuation")
+    assert node.line_for({"text": "   "}) is None
+
+
+# --- Route: modes ------------------------------------------------------------
+
+
+def test_aa_route_honours_the_format_mode():
+    response = client.post(
+        "/jsonl/format/aa",
+        json={
+            "aa": {
+                "rows": ["r1", "r1"],
+                "cols": ["prompt", "completion"],
+                "vals": ["Explain:", "It adds one."],
+            },
+            "formatMode": "prompt_completion",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["formatMode"] == "prompt_completion"
+    assert body["lineCount"] == 1
+    line = body["aa"]["vals"][body["aa"]["cols"].index("json_line")]
+    assert json.loads(line) == {"prompt": "Explain:", "completion": "It adds one."}
+
+
+def test_aa_route_rejects_an_unknown_mode():
+    response = client.post(
+        "/jsonl/format/aa",
+        json={"aa": {"rows": ["r"], "cols": ["a"], "vals": ["b"]}, "formatMode": "yaml"},
+    )
+    assert response.status_code == 422
+    assert "unknown format_mode" in response.json()["detail"]
+
+
+def test_arrow_route_honours_the_format_mode():
+    body = to_arrow_bytes(pa.table({"prompt": ["P"], "completion": ["C"]}))
+    response = client.post(
+        "/jsonl/format?format_mode=prompt_completion",
+        content=body,
+        headers={"Content-Type": "application/vnd.apache.arrow.file"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["X-Dn-Format-Mode"] == "prompt_completion"
+    assert response.headers["X-Dn-Line-Count"] == "1"
+    assert read_arrow_table(response.content).column_names == list(OUTPUT_COLUMNS)
+
+
+def test_the_deprecated_route_still_works_and_is_marked_deprecated(tmp_path):
+    """It writes the file itself and returns provenance, so it is kept, not redirected."""
+    out = tmp_path / "legacy.jsonl"
+    response = client.post(
+        "/aa2jsonl",
+        json={
+            "aa": {
+                "rows": ["c1", "c1"],
+                "cols": ["text", "position"],
+                "vals": ["A passage.", 0],
+            },
+            "outputFile": str(out),
+            "format": "instruction-completion",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["stats"]["linesWritten"] == 1
+    assert out.is_file()
+    assert json.loads(out.read_text().strip()) == {
+        "prompt": LEGACY_INSTRUCTION_PROMPT,
+        "completion": "A passage.",
+    }
+    # And OpenAPI advertises the deprecation.
+    schema = client.get("/openapi.json").json()
+    assert schema["paths"]["/aa2jsonl"]["post"]["deprecated"] is True
+
+
+def test_save_accepts_the_legacy_jsonl_line_column(tmp_path, monkeypatch):
+    """An AA from an older workflow still saves."""
+    monkeypatch.setattr("double_touch.save_file.storage_out_dir", lambda: tmp_path)
+    aa = AssocArray(
+        rows=["c1", "c2"],
+        cols=["jsonl_line", "jsonl_line"],
+        vals=['{"a":1}', '{"b":2}'],
+    )
+
+    out = save_aa_jsonl(aa, "legacy")
+    assert out.read_text() == '{"a":1}\n{"b":2}\n'
+
+
+def test_the_unified_column_wins_when_both_are_present(tmp_path, monkeypatch):
+    monkeypatch.setattr("double_touch.save_file.storage_out_dir", lambda: tmp_path)
+    aa = AssocArray(
+        rows=["c1", "c1"],
+        cols=["json_line", "jsonl_line"],
+        vals=['{"new":true}', '{"old":true}'],
+    )
+
+    out = save_aa_jsonl(aa, "both")
+    assert out.read_text() == '{"new":true}\n'
