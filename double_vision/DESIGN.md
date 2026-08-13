@@ -457,6 +457,84 @@ there is no honest completion fraction.
 with `stream: false` and the body is read incrementally. Token-level SSE would
 mean implementing four different event dialects and is deliberately out of scope.
 
+## JSONL Formatter node (`jsonlFormatterNode`)
+
+Turns the documented AST index into ChatML training examples for a Phi-4 LoRA
+fine-tune: `jsonl_formatter_node.py`, the `JsonlFormatterNodeWidget`, and routes
+`POST /jsonl/format` (Arrow) / `POST /jsonl/format/aa` (wire AA).
+
+    extract_ast → teacher node → JSONL Formatter → Save File (.jsonl)
+
+### Node contract
+
+| | |
+|---|---|
+| Type | `jsonlFormatterNode` |
+| Input port | `in_aa` (idx 0) — the 7-column documented index |
+| Output port | `out_aa` (idx 0) — 2 columns: `json_line`, `symbol_name` |
+
+`symbol_name` travels beside its line so a bad training example can be traced back
+to the definition that produced it without re-parsing the JSON.
+
+### One example, one line
+
+Each row becomes a three-message ChatML object — system, user (the code in a
+```julia fence), assistant (the docstring, a blank line, then the code) —
+serialised with `json.dumps`, which escapes every internal newline as `\n`. That
+escaping *is* the format: a JSONL line must contain no literal newline, and the
+tests assert it on every emitted line.
+
+`ensure_ascii=False`, deliberately: Julia code is full of unicode operators
+(`∘`, `≈`, `∈`), and `\uXXXX`-escaping them would train the model on text that
+does not look like the corpus.
+
+### What gets dropped
+
+Rows whose `better_docstring` is null, empty **or whitespace** are skipped — an
+index fresh from the extractor is entirely empty in that column, and a teacher node
+fills it a few symbols at a time, so this is the normal case rather than an error.
+
+Rows with a docstring but **no `raw_code`** are also skipped, which is not in the
+original contract: the user turn would be an empty code fence, which teaches
+nothing. Both counts are reported separately (`skipped_no_doc`, `skipped_no_code`)
+in the result, the response, the `X-Dn-*` headers and the card, so nothing vanishes
+quietly.
+
+A formatting pass that yields **zero** lines is surfaced on the card as an error
+rather than an empty success, and emits nothing — there is no useful payload to
+send downstream.
+
+### Row order is meaningful
+
+A JSONL file is a sequence, unlike every other AA in this app. Row keys are
+zero-padded (`line:0007`) so a consumer that sorts keys lexically still gets the
+lines in order rather than `1, 10, 11, 2` — and `save_aa_jsonl` uses **appearance
+order** in the triples rather than sorted keys for the same reason. (`save_aa_csv`
+sorts, which is right for a matrix and would be wrong here.)
+
+### Two routes, one formatter
+
+`/jsonl/format` is Arrow in / Arrow out for the backend pipeline.
+`/jsonl/format/aa` takes and returns the wire AA, because the canvas transports
+JSON triples and Dart has no Arrow reader. Both call the same code; only the
+envelope differs. This is the JSON/Arrow boundary noted under the AST Extract node,
+drawn explicitly rather than left implicit.
+
+### Save File extension
+
+`Save File` writes `.jsonl` when the format says so **or** when a `.jsonl` filename
+arrives on an AA that actually carries a `json_line` column; the Dart node
+auto-selects JSONL on seeing that column. Two guards, because a silent wrong write
+here produces a corrupt training file: an AA with no `json_line` column is refused,
+and so is a line containing a literal newline (it would split one example across two
+records).
+
+> **Naming hazard.** The pre-existing `AA2JSONLNode` (`/aa2jsonl`) emits a
+> `jsonl_line` column — one letter from this node's `json_line`. They are different
+> nodes for different corpora: that one formats chunked *prose* passages and writes
+> the file itself; this one formats *code and docstrings* and hands the lines to
+> Save File. Worth renaming one of them.
+
 ## Patch Docstrings node (`PatchDocstringsNode`, backend-only)
 
 The write side of the docstring loop: takes the 7-column Arrow index enriched with

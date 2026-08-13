@@ -26,6 +26,8 @@ const List<NodeType> nodeTypes = [
   NodeType(name: 'File Source', type: 'file_source'),
   NodeType(name: 'Image Display', type: 'image_display'),
   NodeType(name: 'Inventory', type: 'inventory'),
+  // Camel-case type per the JSONL Formatter spec in DESIGN.md.
+  NodeType(name: 'JSONL Formatter', type: 'jsonlFormatterNode'),
   NodeType(name: 'Load File', type: 'load_file'),
   NodeType(name: 'Load Model', type: 'load_model'),
   NodeType(name: 'Model Builder', type: 'model_builder'),

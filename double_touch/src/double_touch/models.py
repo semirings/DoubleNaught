@@ -710,3 +710,24 @@ class AstExtractRequest(CamelModel):
     # Wall-clock budget for the Julia run. Cold Julia plus Arrow.jl is a couple of
     # seconds before parsing begins, so this is generous by default.
     timeout_s: float = 180.0
+
+
+# --- JSONL Formatter node (JsonlFormatterNode) --------------------------------
+# A formatting node: it turns the documented 7-column index into ChatML training
+# examples, one JSON object per line, and emits a 2-column AA.
+
+
+class JsonlFormatRequest(CamelModel):
+    # The documented 7-column index, in wire (sparse triple) form.
+    aa: AssocArray
+
+
+class JsonlFormatResponse(CamelModel):
+    # 2-column result: `json_line` and `symbol_name`, one row per example.
+    aa: AssocArray
+    # Examples written.
+    line_count: int
+    # Rows dropped for having no generated docstring yet.
+    skipped_no_doc: int
+    # Rows dropped for having no source code to learn from.
+    skipped_no_code: int

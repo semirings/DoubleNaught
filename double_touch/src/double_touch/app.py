@@ -79,6 +79,8 @@ from .models import (
     ReviewStartRequest,
     LoadFileRequest,
     AstExtractRequest,
+    JsonlFormatRequest,
+    JsonlFormatResponse,
     PolyglotExecRequest,
     PolyglotExecResponse,
     LoadFileResponse,
@@ -116,8 +118,14 @@ from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
 from .save_file import execute_save
 from .load_file import load_file
-from .ast_extract import AstExtractError, AstExtractNode, to_arrow_bytes
+from .ast_extract import (
+    AstExtractError,
+    AstExtractNode,
+    read_arrow_table,
+    to_arrow_bytes,
+)
 from .patch_docstrings import PatchDocstringsError, PatchDocstringsNode
+from .jsonl_formatter_node import JsonlFormatError, JsonlFormatterNode, aa_from_table
 from .polyglot_exec_node import ExecInput, PolyglotExecNode
 
 DEFAULT_WIDTH = 1024
@@ -1222,6 +1230,66 @@ async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
         data=data or {},
         payload_type=payload_type,
         message=f"Loaded {payload_type} from {Path(request.file_path).name}",
+    )
+
+
+# --- JSONL Formatter node (JsonlFormatterNode) --------------------------------
+
+@app.post("/jsonl/format")
+async def jsonl_format_arrow(request: Request) -> Response:
+    """Format a documented index into ChatML JSONL — Arrow in, Arrow out.
+
+    The pipeline path: the request body is the 7-column index as Arrow IPC bytes and
+    the response is the 2-column result (`json_line`, `symbol_name`) as Arrow IPC
+    bytes. Counts are in the `X-Dn-*` headers and the result's schema metadata.
+
+    Rows with no `better_docstring` are dropped, not an error: an index is
+    documented a few symbols at a time.
+    """
+    body = await request.body()
+    if not body:
+        raise HTTPException(
+            status_code=422,
+            detail="empty body: POST the index as Arrow IPC bytes "
+            "(application/vnd.apache.arrow.file)",
+        )
+
+    try:
+        table = read_arrow_table(body)
+        result = JsonlFormatterNode().format_table(table)
+    except (AstExtractError, JsonlFormatError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return Response(
+        content=to_arrow_bytes(result.table),
+        media_type="application/vnd.apache.arrow.file",
+        headers={
+            "X-Dn-Line-Count": str(result.line_count),
+            "X-Dn-Skipped-No-Doc": str(result.skipped_no_doc),
+            "X-Dn-Skipped-No-Code": str(result.skipped_no_code),
+            "X-Dn-Schema": "jsonl_chatml_v1",
+        },
+    )
+
+
+@app.post("/jsonl/format/aa", response_model=JsonlFormatResponse)
+async def jsonl_format_aa(request: JsonlFormatRequest) -> JsonlFormatResponse:
+    """Same formatting, over the wire AA the canvas speaks.
+
+    The canvas transports AAs as JSON triples and Dart cannot read Arrow, so the
+    node widget uses this route while the Arrow-native pipeline uses `/jsonl/format`.
+    Both call the same formatter; only the envelope differs.
+    """
+    try:
+        result = JsonlFormatterNode().format_aa(request.aa)
+    except JsonlFormatError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return JsonlFormatResponse(
+        aa=aa_from_table(result.table),
+        line_count=result.line_count,
+        skipped_no_doc=result.skipped_no_doc,
+        skipped_no_code=result.skipped_no_code,
     )
 
 
