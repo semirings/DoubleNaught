@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../config/env.dart';
 import '../models/aa_payload.dart';
 import '../models/workflow.dart';
 import 'aa_file.dart';
@@ -44,7 +45,7 @@ class WorkflowMeta {
 /// signatures are meant to survive that swap; only the bodies change. dart:io
 /// makes this unavailable on Flutter web.
 class WorkflowStore {
-  static const _storageDir = String.fromEnvironment(
+  static String get _storageDir => getEnvVar(
     'DN_STORAGE_DIR',
     defaultValue: '/Users/gcr/populi.Wk/DoubleNaught/storage',
   );

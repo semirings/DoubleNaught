@@ -37,6 +37,7 @@ double _nodeWidthFor(String type) {
   if (type == NodeGroup.type) { return 260; }
   if (type == 'polyglotExecNode') { return 320; }
   if (type == 'jsonlFormatterNode') { return 320; }
+  if (type == 'astExtractNode') { return 320; }
   if (type == 'inventory' ||
       type == 'review' ||
       type == 'load_model' ||
@@ -45,6 +46,37 @@ double _nodeWidthFor(String type) {
       type == 'text_prompt' ||
       type == 'text_inference') { return _kWideNodeWidth; }
   return _kNodeWidth;
+}
+
+/// Re-point Load File edges saved against the removed `contents` port.
+///
+/// Load File used to expose `contents` at idx 0 and `aa` at idx 1; it now has only
+/// `aa`, at idx 0. Workflows saved before that carry `fromIdx: 1`, which would
+/// resolve to no registered port — the wire would draw a lane too low and carry
+/// nothing. Both old indices mean the same port now, so both map to 0.
+///
+/// Only edges leaving a `load_file` / `file_source` node are touched: idx 1 is a
+/// real second output elsewhere (Split's `val`, for one). Idempotent, and the
+/// corrected edges are written back on the next save.
+///
+/// Top-level and public so it can be tested as the pure function it is.
+List<WorkflowEdge> migrateLoadFilePorts(
+  List<WorkflowNode> nodes,
+  List<WorkflowEdge> edges,
+) {
+  final loaders = {
+    for (final n in nodes)
+      if (n.type == 'load_file' || n.type == 'file_source') n.id,
+  };
+  if (loaders.isEmpty) return edges;
+
+  return [
+    for (final e in edges)
+      if (loaders.contains(e.from.nodeId) && e.from.idx != 0)
+        e.copyWith(from: PortRef(nodeId: e.from.nodeId, idx: 0))
+      else
+        e,
+  ];
 }
 
 /// Vertical offset (from a node's top) at which edges attach. Approximate; the
@@ -359,6 +391,10 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'jsonlFormatterNode':
       case 'jsonl_formatter': // tolerate a snake_case spelling in saved workflows
         // One input: `in_aa` (AA, idx 0).
+        return const [0];
+      case 'astExtractNode':
+      case 'ast_extract': // tolerate a snake_case spelling in saved workflows
+        // One input: `in_aa` (AA, idx 0) — supplies the path to parse.
         return const [0];
       case 'text_model_loader':
         // One optional input: `trigger` (AA, idx 0).
@@ -1569,7 +1605,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     setState(() {
       _resetCanvasState();
       _nodes.addAll(wf.nodes);
-      _edges.addAll(wf.edges);
+      _edges.addAll(migrateLoadFilePorts(wf.nodes, wf.edges));
       // Restore each node's saved settings so its widget can re-read them.
       for (final n in wf.nodes) {
         if (n.params.isNotEmpty) _nodeParams[n.id] = Map.of(n.params);
@@ -2158,14 +2194,12 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // `aa` is also the node's headline output (Focus Panel edits re-emit
-          // on it); both ports additionally register by index so _bindAaPorts
-          // can tell a `contents` wire from an `aa` wire.
+          // One output, `aa`, at idx 0. Registered both flat (the headline output
+          // the Focus Panel re-emits on) and by index, so an edge drawn from the
+          // port resolves the same way multi-output nodes do.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
-          onContentsOutputPort: (port) =>
-              (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
           onAaOutputPort: (port) =>
-              (_aaMultiOutputPorts[node.id] ??= {})[1] = port,
+              (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'image_display':
@@ -2336,6 +2370,20 @@ class _WorkflowPageState extends State<WorkflowPage>
           onAuthConnect: (source) => _connectAt(source, node.id, 1),
           onAuthInputPort: (port) => _registerAaInput(node.id, 1, port),
           // `dataOutput` (AA, idx 0) — the result matrix.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'astExtractNode':
+      case 'ast_extract': // tolerate a snake_case spelling in saved workflows
+        return AstExtractNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `in_aa` (AA, idx 0) — carries the path to parse.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `out_aa` (AA, idx 0) — the 7-column definition index.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );

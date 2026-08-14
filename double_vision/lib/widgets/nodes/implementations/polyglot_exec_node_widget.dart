@@ -183,6 +183,11 @@ class _PolyglotExecNodeWidgetState
   late TextEditingController _timeout;
 
   ExecSource _source = const ExecSource();
+
+  /// The payload exactly as it arrived. Kept whole, not just parsed: it is sent
+  /// with the run so the backend can merge the result into it rather than
+  /// replacing it, which is what keeps `text` alive on `out_aa`.
+  AaPayload? _incomingAa;
   ExecLanguage _override = ExecLanguage.auto;
   bool _consoleOpen = true;
   bool _running = false;
@@ -220,6 +225,7 @@ class _PolyglotExecNodeWidgetState
   void _onIngress(AaPayload payload) {
     if (!mounted) return;
     setState(() {
+      _incomingAa = payload;
       _source = ExecSource.fromAa(payload);
       _transportError = null;
     });
@@ -256,7 +262,11 @@ class _PolyglotExecNodeWidgetState
 
     PolyglotExecResult? result;
     try {
+      // The payload goes too, not just the code: the backend merges the result
+      // into it so `out_aa` keeps the incoming columns and row keys. Without the
+      // AA there is nothing to merge with and the output collapses to metadata.
       result = await _api.run(
+        aa: _incomingAa,
         code: _source.code,
         language: _override.wire,
         filePath: _source.filePath,

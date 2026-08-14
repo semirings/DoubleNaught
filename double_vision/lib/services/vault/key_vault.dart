@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 
+import '../../config/env.dart';
 import '../../models/auth_profile.dart';
 import 'encrypted_file_vault_store.dart';
 import 'encrypted_idb_vault_store.dart';
@@ -24,8 +25,7 @@ class KeyVault {
 
   /// Which desktop backing to use, from `--dart-define=DN_VAULT=...`:
   /// `file` (default) or `keychain`.
-  static const String _backing =
-      String.fromEnvironment('DN_VAULT', defaultValue: 'file');
+  static String get _backing => getEnvVar('DN_VAULT', defaultValue: 'file');
 
   /// Whether the persistent backing is the OS keychain.
   static bool get usesKeychain => !kIsWeb && _backing == 'keychain';

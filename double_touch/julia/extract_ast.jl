@@ -85,8 +85,13 @@ function index_file!(rows, path, root)
     return nothing
 end
 
-"""Every `.jl` file under `root`, skipping dotted and excluded directories."""
+"""Every `.jl` file under `root`, skipping dotted and excluded directories.
+
+`root` may also be a single `.jl` file, which indexes just that file — the canvas
+hands over the file a `Load File` node opened, not the tree around it.
+"""
 function julia_files(root)
+    isfile(root) && return endswith(root, ".jl") ? [root] : String[]
     found = String[]
     for (dir, subdirs, files) in walkdir(root)
         # Prune in place so `walkdir` does not descend at all.
@@ -98,14 +103,19 @@ function julia_files(root)
     return sort!(found)
 end
 
-"""Index `root` and return `(columns, errors, file_count)`."""
+"""Index `root` — a directory tree or a single `.jl` file.
+
+Returns `(columns, errors, file_count)`. `file_path` is relative to the directory:
+for a single file that is its own parent, so the column holds the bare filename.
+"""
 function extract(root)
-    isdir(root) || error("not a directory: $root")
+    isdir(root) || isfile(root) || error("no such file or directory: $root")
+    base = isdir(root) ? root : dirname(root)
     rows = NamedTuple[]
     errors = String[]
     files = julia_files(root)
     for path in files
-        message = index_file!(rows, path, root)
+        message = index_file!(rows, path, base)
         message === nothing || push!(errors, message)
     end
 

@@ -44,3 +44,4 @@ export 'implementations/tokenizer_node.dart';
 export 'implementations/url_source_node.dart';
 export 'implementations/polyglot_exec_node_widget.dart';
 export 'implementations/jsonl_formatter_node_widget.dart';
+export 'implementations/ast_extract_node_widget.dart';

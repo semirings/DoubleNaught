@@ -44,7 +44,11 @@ class LoadFileResponse {
   /// The loaded AA (if detected), or null.
   final AaPayload? aa;
 
-  /// Raw data representation (dict/table).
+  /// The raw file string, when the file has one — feeds the `contents` port.
+  final String? contents;
+
+  /// Raw data representation (dict/table). For a text file this is
+  /// `{"text": contents}`; kept for tabular files, which have no raw string.
   final Map<String, dynamic> data;
 
   /// Detected payload type: "associative_array", "table", "text", "unknown".
@@ -55,6 +59,7 @@ class LoadFileResponse {
 
   LoadFileResponse({
     this.aa,
+    this.contents,
     required this.data,
     required this.payloadType,
     required this.message,
@@ -68,6 +73,7 @@ class LoadFileResponse {
 
     return LoadFileResponse(
       aa: aa,
+      contents: json['contents'] as String?,
       data: (json['data'] as Map<String, dynamic>?) ?? {},
       payloadType: json['payloadType'] as String? ?? json['payload_type'] as String? ?? 'unknown',
       message: json['message'] as String? ?? '',

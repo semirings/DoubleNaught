@@ -177,6 +177,39 @@ def to_arrow_bytes(table: pa.Table) -> bytes:
     return sink.getvalue().to_pybytes()
 
 
+def aa_from_table(table: pa.Table) -> "AssocArray":
+    """The 7-column index as a wire AA (sparse triples), for the canvas.
+
+    Row keys are ``<file_path>:<line_range>`` — informative, and unique because the
+    walk never descends into a definition's body, so two definitions cannot share a
+    file and a line span. A ``#n`` suffix is appended if one ever does, because a
+    duplicate row key would silently merge two definitions into one row.
+
+    Dart has no Arrow reader, which is the whole reason this exists; the Arrow route
+    stays the canonical one for the backend pipeline.
+    """
+    from .models import AssocArray  # local: avoids a cycle at module import
+
+    records = table.select(list(SCHEMA_COLUMNS)).to_pylist()
+    rows: list[str] = []
+    cols: list[str] = []
+    vals: list[object] = []
+    seen: dict[str, int] = {}
+
+    for record in records:
+        key = f"{record.get('file_path') or '?'}:{record.get('line_range') or '?'}"
+        count = seen.get(key, 0)
+        seen[key] = count + 1
+        if count:
+            key = f"{key}#{count}"
+        for column in SCHEMA_COLUMNS:
+            rows.append(key)
+            cols.append(column)
+            vals.append(record.get(column) or "")
+
+    return AssocArray(rows=rows, cols=cols, vals=vals)
+
+
 class AstExtractNode:
     """Node wrapper around ``extract_ast.jl``.
 
@@ -217,8 +250,10 @@ class AstExtractNode:
                 not the agreed schema.
         """
         source_root = Path(root).expanduser()
-        if not source_root.is_dir():
-            raise AstExtractError(f"not a directory: {source_root}")
+        # A single `.jl` file is a valid root: the canvas extracts the file a
+        # `Load File` node opened, not the tree around it.
+        if not source_root.is_dir() and not source_root.is_file():
+            raise AstExtractError(f"no such file or directory: {source_root}")
         if not self.script.is_file():
             raise AstExtractError(
                 f"extraction script not found at {self.script} "

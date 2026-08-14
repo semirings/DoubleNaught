@@ -457,6 +457,28 @@ there is no honest completion fraction.
 with `stream: false` and the body is read incrementally. Token-level SSE would
 mean implementing four different event dialects and is deliberately out of scope.
 
+## Load File output ports
+
+**One output: `aa` (idx 0).**
+
+`contents` used to sit at idx 0, carrying the file's raw representation while `aa`
+carried a reconstructed AA at idx 1. It is gone. For a source file the two were the
+same payload, and `aa` was silent — which read as a node that had loaded nothing. The
+backend now builds the AA for text as well (a single `text` cell), so one port
+carries it in every case.
+
+Nothing consumed `contents`: of the saved workflows on disk, every Load File edge
+was drawn from idx 1.
+
+**Saved workflows are migrated on load.** `migrateLoadFilePorts` re-points edges
+leaving a `load_file` / `file_source` node from any non-zero index to 0, and the
+corrected edges are written back on the next save. It is deliberately scoped to that
+node type — idx 1 is a genuine second output elsewhere, and rewriting Split's `val`
+would silently swap a validation set for a training set. This matters because the
+node wrapper positions port dots by **list order** while the edge painter uses
+`PortRef.idx`: an un-migrated edge would both draw to an empty lane and bind to no
+port.
+
 ## Deleting a workflow
 
 `DELETE /workflows/{workflow_id}` in `workflows_router.py`, `WorkflowApi` on the
@@ -780,7 +802,41 @@ patcher needs that root: `--root=` first, then the index's own `dn_root` metadat
 then the working directory. A relative index with no root available is refused
 rather than guessed at — guessing means patching the wrong tree.
 
-## AST Extract node (`AstExtractNode`, backend-only)
+## AST Extract node (`astExtractNode`)
+
+The canvas front end for the extractor below: point it at a Julia file or tree and
+it emits the 7-column definition index — every function and macro, with its
+docstring and source.
+
+| | |
+|---|---|
+| Type | `astExtractNode` |
+| Input port | `in_aa` (idx 0) — supplies the **path**; a `Load File` payload's `file_path` |
+| Output port | `out_aa` (idx 0) — the 7-column index, one row per definition |
+| Backend | `POST /ast/extract/aa` (JSON AA) — the canvas twin of the Arrow route |
+
+**It parses; it does not run.** `Polyglot Exec` executes a file and reports
+stdout/exit code; this reads one and answers "what does it define?". Confusing the
+two is easy and cost a debugging round: a file of definitions executes to *no
+output*, which looks like a node that did nothing.
+
+**Only a path crosses the wire, never the source.** The extractor parses files on
+disk, so handing it text would mean writing a temp file to read straight back.
+`Load File` therefore publishes `file_path` alongside a source file's `text`, which
+is also what lets `Polyglot Exec` infer the language from an extension. A typed path
+overrides the upstream one, so the node works with nothing wired in.
+
+Row keys are `<file_path>:<line_range>` — informative, and unique because the walk
+never descends into a definition's body, so two definitions cannot share a file and
+a line span. A `#n` suffix is appended if one ever does; a duplicate key would
+silently merge two definitions into one row.
+
+The card shows the count on its status row and the **breakdown by kind** beneath
+(`150 function · 5 macro`), which answers "did it see my macros?" without opening
+the panel. An index of zero definitions is reported as an error and **not** emitted:
+an empty AA downstream reads as a successful extraction of nothing.
+
+## AST Extract engine (`AstExtractNode`, Python)
 
 Indexes every function and macro definition in a Julia source tree and emits the
 result as an **Apache Arrow table**. Backend-only for now: `julia/extract_ast.jl`
@@ -862,7 +918,7 @@ do something with it": `Load File` → **Polyglot Exec** → Preview / Remote Se
 | | |
 |---|---|
 | Type | `polyglotExecNode` |
-| Input port (left edge) | `in_aa` (idx 0) — an AA carrying code, e.g. a `Load File` `contents` output |
+| Input port (left edge) | `in_aa` (idx 0) — an AA carrying code, e.g. a `Load File` `aa` output |
 | Output port (right edge) | `out_aa` (idx 0) — the 1×8 result matrix |
 | Backend | `POST /exec` → `PolyglotExecNode` in `polyglot_exec_node.py` |
 
@@ -905,6 +961,43 @@ disabled rather than guessing at an interpreter.
 `bash -c CODE a b` binds `a` to `$0`, not `$1`, so a placeholder argv0 is
 inserted for bash alone — making `$1` the first user argument, as it is in every
 other language here.
+
+### The output merges into the input
+
+`out_aa` **extends** `in_aa`; it does not replace it. Every incoming column and row
+key survives, and the execution metadata is appended to the row the code was read
+from — so a downstream node still finds `text` where it left it, alongside `status`,
+`stdout` and the rest.
+
+It used to answer with metadata only, which dropped the caller's payload: a
+`Remote Service` reading `text` found nothing, because the schema had been
+overwritten rather than extended.
+
+Row keys are the input's own, which is what lets a downstream node line results up
+against the rows it sent. A request with no `aa` (a direct `code=` call) has nothing
+to merge with and still gets the standalone `exec:<hex>` metadata row.
+
+One value per cell: where a metadata name collides with an input column on that row,
+the fresh value **replaces** it rather than adding a second triple, since two triples
+for one `(row, col)` is not a cell a reader can resolve.
+
+### Where stdout goes
+
+`stdoutMode` decides what happens to a script that writes transformed code or an AST
+dump to stdout:
+
+| mode | effect |
+|---|---|
+| `column` (default) | into `transformed_text` (`stdoutColumn` to rename), input untouched |
+| `replace` | over the column the code came from, so a node reading `text` sees the transformed text; the pre-execution source stays reachable as `code` |
+| `none` | nowhere — stdout remains only in the `stdout` metadata column |
+
+Empty or whitespace stdout adds no column at all.
+
+**The widget must send the payload, not just the code.** `_incomingAa` is kept whole
+and posted with the run; without it the backend has nothing to merge into and the
+output collapses to metadata — which is how the original bug reached the canvas even
+though the merge is a backend concern.
 
 ### Failure is data, not an exception
 

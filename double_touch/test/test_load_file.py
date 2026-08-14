@@ -110,22 +110,35 @@ def test_camel_case_wire_modes_are_honoured(tmp_path, mode, expect_aa):
 # ── Plain text (.txt / .jl / .md) ────────────────────────────────────────────
 
 @pytest.mark.parametrize("name", ["notes.txt", "model.jl", "README.md"])
-def test_text_files_come_back_verbatim_with_no_aa(tmp_path, name):
+def test_text_files_come_back_verbatim_as_a_single_cell_aa(tmp_path, name):
     body = "module M\n  f(x) = x + 1\nend\n"
     path = _write(tmp_path, name, body)
 
     aa, data = load_file(path, "auto")
 
-    # Source and prose are content, not a table: text through, no invented AA.
-    assert aa is None
+    # The text goes through untouched on both routes: raw on `data`, and as one
+    # AA cell so the `aa` port has the data contract downstream nodes expect.
     assert data == {"text": body}
+    assert aa is not None
+    # The text, plus the path so a downstream node knows what it is reading.
+    assert aa.cols == ["text", "file_path"]
+    assert aa.vals[0] == body
+    assert aa.vals[1].endswith(name)
+    assert set(aa.rows) == {"0"}, "one logical row"
 
 
-def test_text_ignores_schema_mode(tmp_path):
+def test_text_honours_schema_mode(tmp_path):
     path = _write(tmp_path, "model.jl", "x = 1\n")
-    # force_aa has nothing to force — it must not raise for a text input.
-    assert load_file(path, "force_aa")[1] == {"text": "x = 1\n"}
-    assert load_file(path, "raw_table")[1] == {"text": "x = 1\n"}
+
+    # auto / force_aa build the single-cell AA…
+    assert load_file(path, "auto")[0] is not None
+    assert load_file(path, "force_aa")[0] is not None
+    # …raw_table withholds it: the bytes, nothing inferred.
+    assert load_file(path, "raw_table")[0] is None
+
+    # The raw representation is identical in every mode.
+    for mode in ("auto", "force_aa", "raw_table"):
+        assert load_file(path, mode)[1] == {"text": "x = 1\n"}
 
 
 def test_the_loader_accepts_everything_the_picker_allows(tmp_path):
@@ -147,8 +160,11 @@ def test_load_route_returns_text_for_a_julia_file(tmp_path):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["aa"] is None
-    assert body["data"]["text"] == "greet() = println(\"hi\")\n"
+    source = "greet() = println(\"hi\")\n"
+    # Both ports are fed: raw string on `contents`, one-cell AA on `aa`.
+    assert body["contents"] == source
+    assert body["aa"]["vals"][0] == source
+    assert body["data"]["text"] == source
 
 
 # ── JSON / missing file ──────────────────────────────────────────────────────
@@ -182,3 +198,63 @@ def test_load_route_404s_on_a_missing_file(tmp_path):
         "/load", json={"filePath": str(tmp_path / "nope.csv"), "schemaMode": "auto"}
     )
     assert response.status_code == 404
+
+
+def test_a_source_file_is_labelled_text_not_table(tmp_path):
+    """`payloadType` describes the file, not whether an AA came back."""
+    src = tmp_path / "selectors.jl"
+    src.write_text("sw_str(s) = StartsWith(s)\n")
+
+    body = client.post("/load", json={"filePath": str(src)}).json()
+
+    assert body["payloadType"] == "text"
+    assert "text" in body["message"]
+
+
+def test_a_source_file_feeds_both_ports(tmp_path):
+    """`contents` gets the raw string, `aa` gets the single-cell AA."""
+    src = tmp_path / "selectors.jl"
+    src.write_text("sw_str(s) = StartsWith(s)\n")
+
+    body = client.post("/load", json={"filePath": str(src)}).json()
+
+    # contents -> raw file string.
+    assert body["contents"] == "sw_str(s) = StartsWith(s)\n"
+    # aa -> a one-cell AA carrying the same text, in the shape Polyglot Exec and
+    # Prompt Node already read (a `text` column).
+    assert body["aa"]["cols"] == ["text", "file_path"]
+    assert body["aa"]["vals"][0] == "sw_str(s) = StartsWith(s)\n"
+    assert body["aa"]["vals"][1].endswith("selectors.jl")
+    # `data` still carries the legacy raw representation.
+    assert body["data"] == {"text": "sw_str(s) = StartsWith(s)\n"}
+
+
+def test_raw_table_mode_withholds_the_text_aa(tmp_path):
+    """A caller that wants the bytes and nothing inferred can say so."""
+    src = tmp_path / "notes.md"
+    src.write_text("# just prose\n")
+
+    body = client.post(
+        "/load", json={"filePath": str(src), "schemaMode": "rawTable"}
+    ).json()
+
+    assert body["aa"] is None
+    assert body["contents"] == "# just prose\n"
+
+
+def test_a_tabular_file_has_no_raw_string(tmp_path):
+    """`contents` is None for Parquet/Arrow/CSV — there is no raw text form."""
+    csv = tmp_path / "t.csv"
+    csv.write_text("a,b\n1,2\n")
+
+    body = client.post("/load", json={"filePath": str(csv)}).json()
+
+    assert body["contents"] is None
+    assert body["data"], "the table view still comes back on `data`"
+
+
+def test_a_real_table_is_still_labelled_table(tmp_path):
+    csv = tmp_path / "t.csv"
+    csv.write_text("a,b\n1,2\n")
+    body = client.post("/load", json={"filePath": str(csv), "schemaMode": "raw_table"}).json()
+    assert body["payloadType"] == "table"

@@ -37,7 +37,6 @@ class LoadFileNode extends BaseNodeWidget {
   /// Per-port registration. The canvas keys these by output index so a wire off
   /// `contents` binds to `contents` and not to whichever port registered last
   /// (see `_aaMultiOutputPorts` in `workflow_page.dart`).
-  final void Function(OutputPort port)? onContentsOutputPort;
   final void Function(OutputPort port)? onAaOutputPort;
 
   /// File-dialog seam. Defaults to `file_selector`'s [openFile]; overridden by
@@ -50,7 +49,6 @@ class LoadFileNode extends BaseNodeWidget {
     super.initialParams,
     super.onParams,
     this.onAaLoaded,
-    this.onContentsOutputPort,
     this.onAaOutputPort,
     this.pickFile,
     super.onOutputPort,
@@ -168,14 +166,12 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   @override String   get nodeTitle => 'Load File';
   @override IconData get nodeIcon  => Icons.upload_file_outlined;
 
-  final OutputPort _contentsOut = OutputPort('contents');
   final OutputPort _aaOut = OutputPort('aa');
   final LoadFileApi _api = const LoadFileApi();
 
   late TextEditingController _filePathController;
   _SchemaMode _schemaMode = _SchemaMode.auto;
   AaPayload? _aa;
-  AaPayload? _contents;
   bool _isLoading = false;
   String? _errorMessage;
   String? _statusMessage;
@@ -191,7 +187,6 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
     // the port the Focus Panel re-emits an edited AA on); the indexed callbacks
     // below are what wires actually bind to.
     initOutputPort(_aaOut);
-    widget.onContentsOutputPort?.call(_contentsOut);
     widget.onAaOutputPort?.call(_aaOut);
 
     _filePathController = TextEditingController(
@@ -211,7 +206,6 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   @override
   void dispose() {
     _filePathController.dispose();
-    _contentsOut.dispose();
     _aaOut.dispose();
     super.dispose();
   }
@@ -283,21 +277,34 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
 
       if (!mounted) return;
 
-      final contents = LoadFileNode.contentsToAa(response.data);
+      // Two ports, two payloads:
+      //
+      //  * `contents` — the raw file. A text file's own string when the backend
+      //    sends one, else the unparsed table view.
+      //  * `aa` — the AA data contract. The backend's reconstructed AA for a
+      //    tabular file, and for a source file the single-cell `text` AA it now
+      //    builds. The `?? contents` fallback keeps this port populated against an
+      //    older backend that returns no AA for text.
+      //
+      // Both are AaPayloads because the info bus carries nothing else; "raw text"
+      // on the bus means a 1x1 AA whose one cell is the file.
+      // One output: the AA. The backend sends it for tabular files and for source
+      // files alike (a single `text` cell); `contentsToAa` is the fallback for an
+      // older backend that returns none, so the port cannot go silent.
+      final parsed = response.aa ??
+          (response.contents != null
+              ? LoadFileNode.contentsToAa({'text': response.contents})
+              : LoadFileNode.contentsToAa(response.data));
       setState(() {
-        _aa = response.aa;
-        _contents = contents;
-        _statusMessage = response.message;
+        _aa = parsed;
+        _statusMessage = parsed == null
+            ? '${response.message} · nothing to emit'
+            : '${response.message} · emitted on aa';
         _errorMessage = null;
       });
 
-      // Raw file view on `contents`, plus the reconstructed AA on `aa` when the
-      // backend detected one.
-      if (contents != null) {
-        _contentsOut.emit(contents);
-      }
-      if (response.aa != null) {
-        _aaOut.emit(response.aa!);
+      if (parsed != null) {
+        _aaOut.emit(parsed);
       }
 
       // Save params for persistence.
@@ -323,17 +330,15 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
 
   @override
   List<Widget> buildOutputConnectors(BuildContext context) => [
-        OutputConnector(
-          label: 'contents',
-          idx: 0,
-          active: _contents != null || widget.connectedOutputs.contains(0),
-          dragData: PortRef(nodeId: widget.node.id, idx: 0),
-        ),
+        // Single output at idx 0. `contents` was removed: it duplicated this
+        // payload for text files and had no consumer. Workflows saved while it
+        // existed wired idx 1, and are migrated on load — see
+        // `_migrateLoadFilePorts`.
         OutputConnector(
           label: 'aa',
-          idx: 1,
-          active: _aa != null || widget.connectedOutputs.contains(1),
-          dragData: PortRef(nodeId: widget.node.id, idx: 1),
+          idx: 0,
+          active: _aa != null || widget.connectedOutputs.contains(0),
+          dragData: PortRef(nodeId: widget.node.id, idx: 0),
         ),
       ];
 

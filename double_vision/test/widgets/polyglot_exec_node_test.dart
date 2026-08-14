@@ -21,6 +21,7 @@ PolyglotExecApi _api({
   double ms = 12.5,
   String language = 'python',
   int httpStatus = 200,
+  Map<String, dynamic>? mergedAa,
   void Function(Map<String, dynamic> body)? onRequest,
 }) {
   return PolyglotExecApi(
@@ -39,7 +40,8 @@ PolyglotExecApi _api({
           'executionTimeMs': ms,
           'code': 'x',
           'filePath': '',
-          'aa': {
+          'aa': mergedAa ??
+              {
             'rows': List.filled(8, 'exec:1'),
             'cols': const [
               'status',
@@ -52,7 +54,7 @@ PolyglotExecApi _api({
               'file_path',
             ],
             'vals': [status, language, stdout, stderr, exitCode, ms, 'x', ''],
-          },
+              },
         }),
         200,
         headers: {'content-type': 'application/json'},
@@ -117,6 +119,8 @@ Future<void> _chooseLanguage(WidgetTester tester, String label) async {
 }
 
 void main() {
+  _passThroughTests();
+
   group('ExecSource.fromAa', () {
     test('reads a Load File contents payload', () {
       final s = ExecSource.fromAa(_loadFileContents('print(1)'));
@@ -445,4 +449,73 @@ void main() {
     // Wired: the card is live, waiting on its input port.
     expect(find.textContaining('Waiting for in_aa'), findsOneWidget);
   });
+}
+
+/// Schema pass-through: the node must send the incoming AA so the backend can
+/// merge into it. Without that, `out_aa` collapses to execution metadata and a
+/// downstream Remote Service finds no `text`.
+void _passThroughTests() {
+  group('schema pass-through', () {
+    testWidgets('the incoming AA is sent with the run', (tester) async {
+      Map<String, dynamic>? sent;
+      final h = await _pump(tester, api: _api(onRequest: (b) => sent = b));
+
+      await _send(
+        tester,
+        h.input,
+        // A file path so the language resolves; Run is disabled otherwise.
+        const AaPayload(
+          rows: ['r1', 'r1', 'r1'],
+          cols: ['text', 'author', 'file_path'],
+          vals: ["print('hi')", 'gcr', 'a.py'],
+        ),
+      );
+      await tester.tap(find.text('Run'));
+      await tester.pumpAndSettle();
+
+      // Not just `code`: the whole payload, so the merge has something to keep.
+      final aa = sent!['aa'] as Map<String, dynamic>;
+      expect(aa['cols'], containsAll(['text', 'author', 'file_path']));
+      expect(aa['rows'], ['r1', 'r1', 'r1']);
+      expect(sent!['code'], "print('hi')");
+    });
+
+    testWidgets('a merged result flows downstream with its original columns',
+        (tester) async {
+      // What the merging backend answers: input columns plus metadata, on the
+      // input's own row key.
+      final merged = JsonlLikeAa();
+      final h = await _pump(tester, api: _api(mergedAa: merged.json));
+
+      await _send(
+        tester,
+        h.input,
+        const AaPayload(
+          rows: ['r1', 'r1'],
+          cols: ['text', 'file_path'],
+          vals: ["print('hi')", 'a.py'],
+        ),
+      );
+      await tester.tap(find.text('Run'));
+      await tester.pumpAndSettle();
+
+      expect(h.emitted, hasLength(1));
+      final out = h.emitted.single;
+      // The downstream contract: `text` is still there, alongside the results.
+      expect(out.cols, contains('text'));
+      expect(out.cols, contains('status'));
+      expect(out.value('text'), "print('hi')");
+      expect(out.value('status'), 'SUCCESS');
+      expect(out.distinctRows(), ['r1'], reason: 'the input row key is kept');
+    });
+  });
+}
+
+/// A merged output AA, as the backend now returns it.
+class JsonlLikeAa {
+  Map<String, dynamic> get json => {
+        'rows': ['r1', 'r1', 'r1'],
+        'cols': ['text', 'status', 'transformed_text'],
+        'vals': ["print('hi')", 'SUCCESS', 'hi\n'],
+      };
 }

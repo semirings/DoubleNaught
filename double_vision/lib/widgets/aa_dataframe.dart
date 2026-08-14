@@ -35,6 +35,56 @@ class _AaDataFrameState extends State<AaDataFrame> {
     super.dispose();
   }
 
+  /// Whether this AA is one cell whose value is prose or source rather than a
+  /// datum — multi-line, or long enough that a table cell would clip it.
+  static bool _isSingleTextCell(
+    List<String> rowKeys,
+    List<String> colKeys,
+    Map<String, String> cellOf,
+  ) {
+    if (rowKeys.length != 1 || colKeys.length != 1 || cellOf.length != 1) {
+      return false;
+    }
+    final value = cellOf.values.first;
+    return value.contains('\n') || value.length > 120;
+  }
+
+  /// The one-cell view: a caption naming the `(row, col)` it came from, then the
+  /// whole value, scrollable and selectable.
+  Widget _singleCellText(
+    ThemeData theme,
+    String rowKey,
+    String colKey,
+    String value,
+  ) {
+    final lines = value.split('\n').length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+            '$rowKey · $colKey — ${value.length} chars, $lines lines',
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ),
+        Expanded(
+          child: Scrollbar(
+            controller: _vController,
+            child: SingleChildScrollView(
+              controller: _vController,
+              child: SelectableText(
+                value,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -75,6 +125,19 @@ class _AaDataFrameState extends State<AaDataFrame> {
       if (rowSet.contains(r) && colSet.contains(c)) {
         cellOf['$r$sep$c'] = widget.aa.vals[i].toString();
       }
+    }
+
+    // A whole file in one cell is not a table. A `Load File` source payload is a
+    // single `text` triple holding thousands of characters, and a DataCell clips
+    // at six lines — which reads exactly like a truncated load. Render it as the
+    // text it is: complete, scrollable, selectable.
+    if (_isSingleTextCell(rowKeys, colKeys, cellOf)) {
+      return _singleCellText(
+        theme,
+        rowKeys.first,
+        colKeys.first,
+        cellOf.values.first,
+      );
     }
 
     return Scrollbar(

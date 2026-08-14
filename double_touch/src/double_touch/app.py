@@ -8,11 +8,25 @@ to a pluggable :class:`InferenceEngine` (default: the deterministic stub).
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# 1. Define paths to local and global env files
+local_env = Path(".env")
+global_env = Path.home() / ".gemini" / ".env"
+
+# 2. Load global env first, then override with local env if present
+if global_env.exists():
+    load_dotenv(dotenv_path=global_env)
+
+if local_env.exists():
+    load_dotenv(dotenv_path=local_env, override=True)
+
 import json
 import re
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
@@ -76,6 +90,7 @@ from .models import (
     ReviewSessionResponse,
     ReviewStartRequest,
     LoadFileRequest,
+    AstExtractAaResponse,
     AstExtractRequest,
     JsonlFormatRequest,
     JsonlFormatResponse,
@@ -119,6 +134,7 @@ from .load_file import load_file
 from .ast_extract import (
     AstExtractError,
     AstExtractNode,
+    aa_from_table as ast_aa_from_table,
     read_arrow_table,
     to_arrow_bytes,
 )
@@ -129,7 +145,7 @@ from .jsonl_formatter_node import (
     JsonlFormatterNode,
     aa_from_table,
 )
-from .polyglot_exec_node import ExecInput, PolyglotExecNode
+from .polyglot_exec_node import ExecInput, PolyglotExecNode, merge_result_aa
 from .workflows_router import router as workflows_router
 
 DEFAULT_WIDTH = 1024
@@ -1256,9 +1272,19 @@ async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    payload_type = "associative_array" if aa is not None else "table"
+    # `payload_type` describes the *file*, not whether an AA came back: a source
+    # file is "text" even though it now also yields a single-cell AA. Checked
+    # before the AA branch for exactly that reason.
+    raw_text = data.get("text") if data else None
+    if isinstance(raw_text, str) and set(data) == {"text"}:
+        payload_type = "text"
+    elif aa is not None:
+        payload_type = "associative_array"
+    else:
+        payload_type = "table"
     return LoadFileResponse(
         aa=aa,
+        contents=raw_text if isinstance(raw_text, str) else None,
         data=data or {},
         payload_type=payload_type,
         message=f"Loaded {payload_type} from {Path(request.file_path).name}",
@@ -1370,6 +1396,32 @@ async def ast_extract_endpoint(request: AstExtractRequest) -> Response:
     )
 
 
+@app.post("/ast/extract/aa", response_model=AstExtractAaResponse)
+async def ast_extract_aa_endpoint(request: AstExtractRequest) -> AstExtractAaResponse:
+    """The same extraction, returned as a wire AA instead of Arrow bytes.
+
+    The canvas transport: Dart has no Arrow reader, so the node widget uses this
+    while the backend pipeline uses `/ast/extract`. Both run the same script; only
+    the envelope differs.
+
+    `rootPath` may be a directory or a single `.jl` file.
+    """
+    try:
+        index = await AstExtractNode(timeout_s=request.timeout_s).extract(
+            request.root_path
+        )
+    except AstExtractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return AstExtractAaResponse(
+        aa=ast_aa_from_table(index.table),
+        definition_count=index.definition_count,
+        files_scanned=index.files_scanned,
+        errors=index.errors,
+        root=index.root,
+    )
+
+
 @app.post("/ast/patch")
 async def ast_patch_endpoint(
     request: Request,
@@ -1432,6 +1484,11 @@ async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
     fields win over anything read off the AA, so the node's dropdown and timeout
     box override what the upstream node happened to say.
 
+    The response AA **merges** into the request's: every incoming column and row key
+    survives, and the execution metadata is appended to the row the code was read
+    from. `stdoutMode` decides where stdout goes — a new `transformed_text` column
+    by default, over the source column with `"replace"`, or nowhere with `"none"`.
+
     A failing snippet is **not** an HTTP error: a non-zero exit, a timeout and a
     missing interpreter all return 200 with a ``status`` of ``FAILED`` /
     ``TIMEOUT``, because the result AA is how a downstream node sees the failure.
@@ -1466,10 +1523,21 @@ async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
     node = PolyglotExecNode(timeout_s=request.timeout_s)
     try:
         result = await node.run(payload, override_language=request.language)
+        # Merge, never replace: the incoming payload's columns and row keys survive
+        # and the execution metadata is appended to the row the code came from, so
+        # a downstream node still finds `text` where it left it.
+        aa = merge_result_aa(
+            request.aa,
+            result,
+            row_key=payload.row_key,
+            source_column=payload.source_column,
+            stdout_mode=request.stdout_mode,
+            stdout_column=request.stdout_column,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    return PolyglotExecResponse(aa=PolyglotExecNode.to_aa(result), **result)
+    return PolyglotExecResponse(aa=aa, **result)
 
 
 # --- Save File node (SaveFileNode) -------------------------------------------

@@ -41,8 +41,7 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
 
     Args:
         file_path: Absolute or relative path to the file.
-        schema_mode: "auto" (default), "force_aa", or "raw_table". Ignored for
-                     plain-text inputs, which have no AA to detect.
+        schema_mode: "auto" (default), "force_aa", or "raw_table".
                      - "auto": detect based on metadata or column names
                      - "force_aa": force reconstruction as AA even if not tagged
                      - "raw_table": return raw table/dict representation
@@ -71,12 +70,39 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
     elif suffix == ".csv":
         return _load_csv(path, schema_mode)
     elif suffix in TEXT_SUFFIXES:
-        # Source and prose files are content, not tables: hand back the text and
-        # let the graph decide what to do with it. No AA — a Julia file has no
-        # rows and columns, and inventing some would only obscure it.
-        return None, {"text": path.read_text()}
+        return _load_text(path, schema_mode)
     else:
         raise ValueError(f"Unsupported file format: {suffix}")
+
+
+def _load_text(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Optional[dict]]:
+    """Load a source or prose file as a single-cell AA plus its raw string.
+
+    A ``.jl`` file has no rows and columns of its own, so the AA is one cell:
+    ``rows=["0"]``, ``cols=["text"]``, the whole file as the value. That is
+    deliberately the same shape the Flutter side used to build client-side, so the
+    nodes that read it — Polyglot Exec, Prompt Node — need no change; they already
+    look for a ``text`` column.
+
+    Under ``raw_table`` the AA is withheld and only the raw string comes back, for a
+    caller that wants the bytes and nothing inferred.
+    """
+    text = path.read_text()
+    raw = {"text": text}
+    if schema_mode == "raw_table":
+        return None, raw
+    # `file_path` travels with the text: a downstream node needs it to know what it
+    # is looking at — AST Extract to know which file to parse, Polyglot Exec to
+    # infer the language from the extension. Only for text; adding it to a real
+    # table's schema would pollute it.
+    return (
+        AssocArray(
+            rows=["0", "0"],
+            cols=["text", "file_path"],
+            vals=[text, str(path)],
+        ),
+        raw,
+    )
 
 
 def _load_parquet(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Optional[dict]]:

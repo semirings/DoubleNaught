@@ -148,6 +148,15 @@ const List<NodeType> nodeTypes = [
     tags: ['inspect', 'view', 'picture', 'output'],
   ),
 
+  // ── AST & Code Analysis ────────────────────────────────────────────────────
+  NodeType(
+    name: 'AST Extract',
+    type: 'astExtractNode',
+    category: NodeCategory.code,
+    description: 'Index every function and macro in a Julia file or tree.',
+    tags: ['ast', 'parse', 'julia', 'definitions', 'macro', 'docstring', 'symbols'],
+  ),
+
   // ── Formatting & Serialization ─────────────────────────────────────────────
   NodeType(
     name: 'JSONL Formatter',

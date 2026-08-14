@@ -594,9 +594,14 @@ class LoadFileRequest(CamelModel):
 
 
 class LoadFileResponse(CamelModel):
-    # The loaded AA (if detected/requested), else None.
+    # Feeds the node's `aa` output port: the AA for this file — reconstructed from
+    # a tabular file, or the single-cell text AA for a source/prose file.
     aa: Optional[AssocArray] = None
-    # The raw data representation (dict/table).
+    # Feeds the node's `contents` output port: the raw file string, when the file
+    # has one. Named for the port so the two contracts line up.
+    contents: Optional[str] = None
+    # The raw data representation (dict/table). Retained for callers that predate
+    # `contents`; for a text file it is `{"text": <contents>}`.
     data: dict = {}
     # Detected payload type: "associative_array", "table", "text", "unknown".
     payload_type: str = "unknown"
@@ -651,6 +656,12 @@ class PolyglotExecRequest(CamelModel):
     args: list[str] = []
     # Wall-clock budget in seconds.
     timeout_s: float = 30.0
+    # Where a script's stdout lands in the merged output AA:
+    # "column" (default) -> `stdoutColumn`, "replace" -> the column the code came
+    # from, "none" -> only the `stdout` metadata column.
+    stdout_mode: str = "column"
+    # Column for "column" mode.
+    stdout_column: str = "transformed_text"
 
 
 class PolyglotExecResponse(CamelModel):
@@ -672,8 +683,22 @@ class PolyglotExecResponse(CamelModel):
 # and returns the 7-column definition index as Arrow IPC bytes (never JSON).
 
 
+class AstExtractAaResponse(CamelModel):
+    # The 7-column index in wire (sparse triple) form — the canvas transport.
+    aa: AssocArray
+    # Definitions found.
+    definition_count: int
+    # `.jl` files walked.
+    files_scanned: int
+    # Files the walk skipped, one message each; never fatal.
+    errors: list[str] = []
+    # The root as the extractor resolved it.
+    root: str = ""
+
+
 class AstExtractRequest(CamelModel):
-    # Directory to index, recursively. Hidden directories and `deps` are skipped.
+    # Directory to index recursively, or a single `.jl` file. Hidden directories
+    # and `deps` are skipped when walking a tree.
     root_path: str
     # Keep the Arrow artifact at this path instead of a temporary file.
     out_path: Optional[str] = None
