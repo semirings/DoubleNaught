@@ -1025,8 +1025,8 @@ class _WorkflowPageState extends State<WorkflowPage>
         WorkflowNode(
           id: _nextId++,
           type: type.type,
-          x: canvasPos.dx.clamp(0, 4000),
-          y: canvasPos.dy.clamp(_kPortY, 4000),
+          x: canvasPos.dx.clamp(-50000.0, 50000.0),
+          y: canvasPos.dy.clamp(-50000.0, 50000.0),
         ),
       );
     });
@@ -1195,7 +1195,40 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// neighbours kept going, shearing the arrangement apart. Here the first node
   /// to reach a bound stops the entire selection, so relative positions survive
   /// any drag.
-  void _moveNode(int id, Offset delta) {
+  void _moveNode(int id, Offset delta, {Offset? globalPosition}) {
+    // Smooth auto-panning when dragging nodes near screen boundaries
+    if (globalPosition != null) {
+      final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+      if (box != null) {
+        final localCursor = box.globalToLocal(globalPosition);
+        final size = box.size;
+
+        double panDx = 0;
+        double panDy = 0;
+
+        const edgeThreshold = 100.0;
+        const panSpeed = 15.0;
+
+        if (localCursor.dx < edgeThreshold) {
+          panDx = panSpeed;
+        } else if (localCursor.dx > size.width - edgeThreshold) {
+          panDx = -panSpeed;
+        }
+
+        if (localCursor.dy < edgeThreshold) {
+          panDy = panSpeed;
+        } else if (localCursor.dy > size.height - edgeThreshold) {
+          panDy = -panSpeed;
+        }
+
+        if (panDx != 0 || panDy != 0) {
+          _panBy(Offset(panDx, panDy));
+          // Adjust drag delta by the zoom factor so the node stays locked with the cursor
+          delta = delta - Offset(panDx, panDy) / _zoom;
+        }
+      }
+    }
+
     final moving = (_selectedNodeIds.length > 1 && _selectedNodeIds.contains(id))
         ? _selectedNodeIds
         : {id};
@@ -1204,8 +1237,8 @@ class _WorkflowPageState extends State<WorkflowPage>
     var dy = delta.dy;
     for (final n in _nodes) {
       if (!moving.contains(n.id)) continue;
-      dx = dx.clamp(-n.x, 4000 - n.x);
-      dy = dy.clamp(_kPortY - n.y, 4000 - n.y);
+      dx = dx.clamp(-50000.0 - n.x, 50000.0 - n.x);
+      dy = dy.clamp(-50000.0 - n.y, 50000.0 - n.y);
     }
     if (dx == 0 && dy == 0) return;
 
@@ -2089,7 +2122,7 @@ class _WorkflowPageState extends State<WorkflowPage>
                   onPanStart: (_) => _bringToFront(node.id),
                   onPanUpdate: (d) {
                     _draggedSincePress = true;
-                    _moveNode(node.id, d.delta);
+                    _moveNode(node.id, d.delta, globalPosition: d.globalPosition);
                   },
                 ),
               ),
