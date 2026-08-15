@@ -152,6 +152,18 @@ class AssocArray(CamelModel):
     cols: list[str]
     vals: list[Union[str, int, float]]
 
+    def to_dict(self) -> dict:
+        """Convert AssocArray into a {column: [values]} lookup dict."""
+        from .aa_utils import aa_rows
+        records = aa_rows(self)
+        text_list = []
+        for r_key, rec in records:
+            if "text" in rec:
+                text_list.append(rec["text"])
+            elif "raw_text" in rec:
+                text_list.append(rec["raw_text"])
+        return {"text": text_list if text_list else [None]}
+
 
 class UrlPayloadResponse(CamelModel):
     node_id: str
@@ -704,6 +716,8 @@ class AstExtractRequest(CamelModel):
     out_path: Optional[str] = None
     # Optional multi-file payload from Load File
     parsed_payload: Optional[AssocArray] = None
+    codebase_path: Optional[AssocArray] = None
+    aa: Optional[AssocArray] = None
     # Wall-clock budget for the Julia run. Cold Julia plus Arrow.jl is a couple of
     # seconds before parsing begins, so this is generous by default.
     timeout_s: float = 180.0

@@ -96,10 +96,12 @@ class _AaDataFrameState extends State<AaDataFrame> {
       );
     }
 
+    final aa = widget.aa.toSparse();
+
     // Row keys in first-appearance order; column keys likewise.
-    final allRowKeys = widget.aa.distinctRows();
+    final allRowKeys = aa.distinctRows();
     final allColKeys = <String>[];
-    for (final c in widget.aa.cols) {
+    for (final c in aa.cols) {
       if (!allColKeys.contains(c)) allColKeys.add(c);
     }
 
@@ -117,11 +119,11 @@ class _AaDataFrameState extends State<AaDataFrame> {
     final colSet = colKeys.toSet();
     const sep = '\x00';
     final cellOf = <String, String>{};
-    for (var i = 0; i < widget.aa.cols.length; i++) {
-      final r = widget.aa.rows[i];
-      final c = widget.aa.cols[i];
+    for (var i = 0; i < aa.cols.length; i++) {
+      final r = aa.rows[i];
+      final c = aa.cols[i];
       if (rowSet.contains(r) && colSet.contains(c)) {
-        cellOf['$r$sep$c'] = widget.aa.vals[i].toString();
+        cellOf['$r$sep$c'] = aa.vals[i].toString();
       }
     }
 

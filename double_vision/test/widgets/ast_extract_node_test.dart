@@ -77,6 +77,7 @@ Future<({InputPort input, List<AaPayload> emitted})> _pump(
   WidgetTester tester, {
   AstExtractApi? api,
   Map<String, String>? params,
+  bool inputConnected = false,
 }) async {
   InputPort? port;
   final emitted = <AaPayload>[];
@@ -88,6 +89,7 @@ Future<({InputPort input, List<AaPayload> emitted})> _pump(
             node: const WorkflowNode(id: 1, type: 'astExtractNode'),
             initialParams: params,
             api: api ?? _api().api,
+            inputConnected: inputConnected,
             onInputPort: (p) => port = p,
             onOutputPort: (p) => p.connect(emitted.add, emitCurrentState: false),
           ),
@@ -155,6 +157,21 @@ void main() {
         tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNotNull,
       );
+    });
+
+    testWidgets('automatically executes and hides manual TextField when connected', (tester) async {
+      final backend = _api(definitions: const [('test_func', 'function')]);
+      final h = await _pump(tester, api: backend.api, inputConnected: true);
+
+      // The manual text field is hidden and replaced with the linked status badge
+      expect(find.byType(TextField), findsNothing);
+      expect(find.textContaining('Bound: parsedPayload'), findsOneWidget);
+
+      await _send(tester, h.input, _loadFileAa('/tmp/src/model.jl'));
+
+      // It automatically triggers the execution and outputs the definitions!
+      expect(h.emitted, hasLength(1));
+      expect(find.textContaining('complete · 1 definitions'), findsOneWidget);
     });
 
     testWidgets('a typed path wins over the upstream one', (tester) async {

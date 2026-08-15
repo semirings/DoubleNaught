@@ -440,8 +440,13 @@ def test_aa_from_table_emits_one_row_per_definition():
     aa = ast_aa_from_table(table)
 
     cells = {}
-    for row, col, val in zip(aa.rows, aa.cols, aa.vals):
-        cells.setdefault(row, {})[col] = val
+    if len(aa.vals) == len(aa.rows) * len(aa.cols):
+        for i, row in enumerate(aa.rows):
+            for j, col in enumerate(aa.cols):
+                cells.setdefault(row, {})[col] = aa.vals[i * len(aa.cols) + j]
+    else:
+        for row, col, val in zip(aa.rows, aa.cols, aa.vals):
+            cells.setdefault(row, {})[col] = val
 
     assert len(cells) == 2
     assert set(next(iter(cells.values()))) == set(SCHEMA_COLUMNS)
@@ -486,8 +491,13 @@ def test_aa_route_returns_the_index_as_triples(codebase):
 
     cells = {}
     aa = body["astIndex"]
-    for row, col, val in zip(aa["rows"], aa["cols"], aa["vals"]):
-        cells.setdefault(row, {})[col] = val
+    if len(aa["vals"]) == len(aa["rows"]) * len(aa["cols"]):
+        for i, row in enumerate(aa["rows"]):
+            for j, col in enumerate(aa["cols"]):
+                cells.setdefault(row, {})[col] = aa["vals"][i * len(aa["cols"]) + j]
+    else:
+        for row, col, val in zip(aa["rows"], aa["cols"], aa["vals"]):
+            cells.setdefault(row, {})[col] = val
     assert len(cells) == body["definitionCount"]
 
     names = {c["symbol_name"] for c in cells.values()}

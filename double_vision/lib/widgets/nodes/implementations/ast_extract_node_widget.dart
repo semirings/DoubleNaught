@@ -75,7 +75,17 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
     return typed.isNotEmpty ? typed : (_upstreamPath ?? '');
   }
 
-  bool get _canExtract => !_busy && _effectivePath.isNotEmpty;
+  bool get _hasIncomingPath {
+    if (_incomingPayload == null) return false;
+    final aa = _incomingPayload!.toSparse();
+    for (final col in aa.cols) {
+      final normCol = col.replaceAll('-', '_').toLowerCase();
+      if (_pathColumns.contains(normCol)) return true;
+    }
+    return false;
+  }
+
+  bool get _canExtract => !_busy && (_effectivePath.isNotEmpty || _hasIncomingPath);
 
   @override
   void initState() {
@@ -102,12 +112,14 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
   /// straight back.
   void _onIngress(AaPayload payload) {
     if (!mounted) return;
-    final aa = payload.toSparse();
+    debugPrint("[DEBUG AST Extract Node] Ingress payload received on codebasePath!");
+    debugPrint("[DEBUG AST Extract Node] Payload dimensions: rows: ${payload.rows.length}, cols: ${payload.cols.length}, vals: ${payload.vals.length}");
+
     String? found;
-    for (var i = 0; i < aa.cols.length && i < aa.vals.length; i++) {
-      final column = aa.cols[i].replaceAll('-', '_').toLowerCase();
+    for (var i = 0; i < payload.cols.length && i < payload.vals.length; i++) {
+      final column = payload.cols[i].replaceAll('-', '_').toLowerCase();
       if (!_pathColumns.contains(column)) continue;
-      final value = '${aa.vals[i]}'.trim();
+      final value = '${payload.vals[i]}'.trim();
       if (value.isNotEmpty) {
         found = value;
         break;
@@ -119,39 +131,61 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
       // A new payload invalidates the previous index.
       _result = null;
     });
-    setIdle();
+
+    // Automatically trigger extraction on incoming port data when connected!
+    // We can auto-extract if there is a path OR if the payload contains text!
+    final hasText = payload.cols.contains('text') || payload.cols.contains('raw_text');
+    final hasPath = found != null;
+    
+    debugPrint("[DEBUG AST Extract] _onIngress triggered. inputConnected=${widget.inputConnected}, hasPath=$hasPath, hasText=$hasText");
+    if (widget.inputConnected && (hasPath || hasText)) {
+      debugPrint("[DEBUG AST Extract] Dispatching to _extract()...");
+      _extract();
+    } else {
+      debugPrint("[DEBUG AST Extract] Skipped _extract(). inputConnected failed or no text/path found.");
+      setIdle();
+    }
   }
 
   Future<void> _extract() async {
-    if (!_canExtract) return;
+    debugPrint("[DEBUG AST Extract] ENTERING _extract()");
+    if (!mounted) return;
+    if (_incomingPayload == null && _upstreamPath == null && _path.text.trim().isEmpty) {
+      debugPrint("[DEBUG AST Extract] Aborting: Both _incomingPayload and _upstreamPath/manual path are empty.");
+      return;
+    }
+
     setState(() => _busy = true);
     setWorking();
 
-    AstExtractResult result;
     try {
-      result = await _api.extract(_effectivePath, parsedPayload: _incomingPayload);
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _busy = false);
-      setError(e);
-      return;
-    }
+      debugPrint("[DEBUG AST Extract] Invoking backend API extract...");
+      final res = await _api.extract(_effectivePath, parsedPayload: _incomingPayload);
 
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _result = result;
-    });
-    saveParams({'rootPath': _path.text.trim()});
-
-    if (result.definitionCount == 0) {
-      // Not an error, but not worth sending on either: an empty index downstream
-      // would look like a successful extraction of nothing.
-      setError('No definitions found in ${_effectivePath.split('/').last}');
-      return;
+      debugPrint("[DEBUG AST Extract] RPC SUCCESS. Extracted ${res.aa.rows.length} rows, ${res.aa.cols.length} cols.");
+      if (mounted) {
+        setState(() {
+          _result = res;
+          _busy = false;
+        });
+        
+        if (res.definitionCount == 0) {
+          setError('No definitions found in ${_effectivePath.split('/').last}');
+        } else {
+          // Explicitly emit the extracted multi-row result downstream
+          _out.emit(res.aa);
+          setComplete(detail: '${res.definitionCount} definitions');
+        }
+        saveParams({'rootPath': _path.text.trim()});
+      }
+    } catch (e, stack) {
+      debugPrint("[ERROR AST Extract] RPC failed inside _extract(): $e\n$stack");
+      if (mounted) {
+        setState(() => _busy = false);
+        setIdle();
+        setError(e);
+      }
     }
-    setComplete(detail: '${result.definitionCount} definitions');
-    _out.emit(result.aa);
   }
 
   // ── Ports ────────────────────────────────────────────────────────────────
@@ -182,21 +216,46 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SizedBox(height: BaseNodeState.portLaneClearance(1)),
-        TextField(
-          controller: _path,
-          enabled: !_busy,
-          onChanged: (_) => setState(() {}),
-          decoration: InputDecoration(
-            labelText: 'File or directory',
-            hintText: _upstreamPath ?? '/path/to/src',
-            helperText: _upstreamPath != null && _path.text.trim().isEmpty
-                ? 'from codebasePath'
-                : null,
-            helperStyle: theme.textTheme.labelSmall?.copyWith(color: scheme.primary),
-            isDense: true,
-            border: const OutlineInputBorder(),
+        if (widget.inputConnected) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: theme.colorScheme.outlineVariant),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.link_rounded, size: 16, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: const Text(
+                    'Bound: parsedPayload',
+                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
+        ] else ...[
+          TextField(
+            controller: _path,
+            enabled: !_busy,
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              labelText: 'File or directory',
+              hintText: _upstreamPath ?? '/path/to/src',
+              helperText: _upstreamPath != null && _path.text.trim().isEmpty
+                  ? 'from codebasePath'
+                  : null,
+              helperStyle: theme.textTheme.labelSmall?.copyWith(color: scheme.primary),
+              isDense: true,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ],
         const SizedBox(height: 10),
         SizedBox(
           height: 38,

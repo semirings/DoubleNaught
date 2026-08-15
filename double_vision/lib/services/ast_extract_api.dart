@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
@@ -51,8 +52,36 @@ class AstExtractApi {
           'Extract failed: ${response.statusCode} - ${response.body}',
         );
       }
-      return AstExtractResult.fromJson(
-        jsonDecode(response.body) as Map<String, dynamic>,
+
+      debugPrint("[DEBUG API] Raw response type: ${response.body.runtimeType}");
+      debugPrint("[DEBUG API] Raw response data: ${response.body}");
+
+      final Map<String, dynamic> body = jsonDecode(response.body) as Map<String, dynamic>;
+
+      // Map any variations of astIndex/ast_index/aa
+      final astIndexMap = (body['astIndex'] ?? body['ast_index'] ?? body['aa'] ?? body) as Map<String, dynamic>;
+
+      // Resolve key variations
+      final rList = List<String>.from(astIndexMap['rowKeys'] ?? astIndexMap['rows'] ?? astIndexMap['row_keys'] ?? const []);
+      final cList = List<String>.from(astIndexMap['colKeys'] ?? astIndexMap['cols'] ?? astIndexMap['col_keys'] ?? const []);
+      final vList = (astIndexMap['values'] ?? astIndexMap['vals'] ?? const []) as List;
+
+      debugPrint("[DEBUG API] Extracted ${rList.length} rows, ${cList.length} cols from JSON.");
+
+      final resultPayload = AaPayload(
+        rows: rList,
+        cols: cList,
+        vals: List<Object>.from(vList),
+      );
+
+      return AstExtractResult(
+        aa: resultPayload,
+        definitionCount: (body['definitionCount'] ?? body['definition_count'] ?? rList.length) as int,
+        filesScanned: (body['filesScanned'] ?? body['files_scanned'] ?? 1) as int,
+        errors: [
+          for (final e in (body['errors'] as List? ?? const [])) '$e',
+        ],
+        root: (body['root'] ?? '') as String,
       );
     } finally {
       own?.close();

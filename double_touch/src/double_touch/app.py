@@ -1411,9 +1411,10 @@ async def ast_extract_aa_endpoint(request: AstExtractRequest) -> AstExtractAaRes
     `rootPath` may be a directory or a single `.jl` file.
     """
     try:
+        payload = request.parsed_payload or request.codebase_path or request.aa
         index = await AstExtractNode(timeout_s=request.timeout_s).extract(
             request.root_path,
-            parsed_payload=request.parsed_payload,
+            parsed_payload=payload,
         )
     except AstExtractError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
