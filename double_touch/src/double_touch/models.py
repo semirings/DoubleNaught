@@ -702,6 +702,8 @@ class AstExtractRequest(CamelModel):
     root_path: str
     # Keep the Arrow artifact at this path instead of a temporary file.
     out_path: Optional[str] = None
+    # Optional multi-file payload from Load File
+    parsed_payload: Optional[AssocArray] = None
     # Wall-clock budget for the Julia run. Cold Julia plus Arrow.jl is a couple of
     # seconds before parsing begins, so this is generous by default.
     timeout_s: float = 180.0

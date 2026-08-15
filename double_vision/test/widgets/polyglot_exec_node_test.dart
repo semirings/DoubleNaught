@@ -40,7 +40,7 @@ PolyglotExecApi _api({
           'executionTimeMs': ms,
           'code': 'x',
           'filePath': '',
-          'aa': mergedAa ??
+          'executionResult': mergedAa ??
               {
             'rows': List.filled(8, 'exec:1'),
             'cols': const [
@@ -474,7 +474,7 @@ void _passThroughTests() {
       await tester.pumpAndSettle();
 
       // Not just `code`: the whole payload, so the merge has something to keep.
-      final aa = sent!['aa'] as Map<String, dynamic>;
+      final aa = sent!['executionPayload'] as Map<String, dynamic>;
       expect(aa['cols'], containsAll(['text', 'author', 'file_path']));
       expect(aa['rows'], ['r1', 'r1', 'r1']);
       expect(sent!['code'], "print('hi')");

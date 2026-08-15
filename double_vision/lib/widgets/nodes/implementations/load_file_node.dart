@@ -214,7 +214,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   /// absolute; the backend accepts that as readily as a `storage/…` relative
   /// path, but only because it is reading its own filesystem — a remote backend
   /// would not see the file, which is why this is hidden on web.
-  Future<void> _onBrowsePressed() async {
+  Future<void> _onBrowseFilePressed() async {
     final picked = await (widget.pickFile ?? _openNativeDialog)();
     if (picked == null || !mounted) return;
 
@@ -228,16 +228,50 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
       return;
     }
 
+    final String pathWithUri;
+    if (picked.path.startsWith('file://')) {
+      pathWithUri = picked.path;
+    } else {
+      pathWithUri = Uri.file(picked.path).toString();
+    }
+
     setState(() {
-      _filePathController.text = picked.path;
+      _filePathController.text = pathWithUri;
       _rejectedFile = null;
       _errorMessage = null;
       _statusMessage = null;
     });
     saveParams({
-      'filePath': picked.path,
+      'filePath': pathWithUri,
       'schemaMode': _schemaMode.name,
     });
+  }
+
+  Future<void> _onBrowseDirectoryPressed() async {
+    try {
+      final String? selectedDirectory = await getDirectoryPath();
+      if (selectedDirectory == null || !mounted) return;
+
+      final String uri;
+      if (selectedDirectory.startsWith('file://')) {
+        uri = selectedDirectory;
+      } else {
+        uri = Uri.file(selectedDirectory).toString();
+      }
+
+      setState(() {
+        _filePathController.text = uri;
+        _rejectedFile = null;
+        _errorMessage = null;
+        _statusMessage = null;
+      });
+      saveParams({
+        'filePath': uri,
+        'schemaMode': _schemaMode.name,
+      });
+    } catch (e) {
+      debugPrint("Warning: Directory picking failed: $e");
+    }
   }
 
   /// Open the dialog with **no type filter**.
@@ -371,13 +405,37 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
             // yields a blob URL, so the field is the only way in.
             if (!kIsWeb) ...[
               const SizedBox(width: 4),
-              IconButton(
-                onPressed: _isLoading ? null : _onBrowsePressed,
+              PopupMenuButton<String>(
+                enabled: !_isLoading,
                 icon: const Icon(Icons.folder_open, size: 18),
                 tooltip: 'Browse…',
-                visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                onSelected: (mode) {
+                  if (mode == 'file') {
+                    _onBrowseFilePressed();
+                  } else {
+                    _onBrowseDirectoryPressed();
+                  }
+                },
+                itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: 'file',
+                    child: ListTile(
+                      leading: Icon(Icons.insert_drive_file_outlined),
+                      title: Text('Select File'),
+                      dense: true,
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'dir',
+                    child: ListTile(
+                      leading: Icon(Icons.folder_outlined),
+                      title: Text('Select Directory'),
+                      dense: true,
+                    ),
+                  ),
+                ],
               ),
             ],
           ],

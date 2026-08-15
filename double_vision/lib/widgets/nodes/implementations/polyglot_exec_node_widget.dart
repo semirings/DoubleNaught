@@ -301,7 +301,7 @@ class _PolyglotExecNodeWidgetState
     }
 
     // Downstream sees every outcome, not just the good ones.
-    _out.emit(result.aa);
+    _out.emit(result.executionResult);
     _persist();
   }
 

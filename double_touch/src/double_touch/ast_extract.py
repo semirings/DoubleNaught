@@ -237,18 +237,63 @@ class AstExtractNode:
         root: Union[str, Path],
         *,
         out_path: Optional[Union[str, Path]] = None,
+        parsed_payload: Optional[AssocArray] = None,
     ) -> AstIndex:
         """Index every function and macro under [root].
 
-        [out_path] keeps the Arrow artifact at a chosen location; by default it
-        goes to a temporary file, which is read and then removed — the table
-        itself lives on in memory.
+        If [parsed_payload] is provided, walks each Julia (.jl) file path present
+        in the multi-row payload and combines all extracted definitions into a
+        single merged AstIndex.
 
         Raises:
-            AstExtractError: the root does not exist, the script is missing, Julia
-                is not installed, the run failed or timed out, or what it wrote is
-                not the agreed schema.
+            AstExtractError: parsing or extraction failure.
         """
+        if parsed_payload is not None:
+            from .aa_utils import aa_rows
+            records = aa_rows(parsed_payload)
+            jl_files = []
+            for row_key, rec in records:
+                ext = rec.get("extension", "").lower()
+                f_path = rec.get("file_path")
+                if ext == ".jl" and f_path:
+                    jl_files.append(f_path)
+
+            if not jl_files:
+                raise AstExtractError("No Julia (.jl) files found in the payload")
+
+            tables = []
+            all_errors = []
+            scanned = 0
+
+            for file_path in jl_files:
+                try:
+                    index = await self._run_extractor(file_path, keep=False)
+                    tables.append(index.table)
+                    all_errors.extend(index.errors)
+                    scanned += index.files_scanned
+                except Exception as exc:
+                    all_errors.append(f"{file_path}: Extraction failed: {exc}")
+
+            if not tables:
+                raise AstExtractError("Could not extract AST from any of the Julia files")
+
+            merged_table = pa.concat_tables(tables)
+            return AstIndex(
+                table=merged_table,
+                errors=all_errors,
+                files_scanned=scanned,
+                root=str(root),
+            )
+
+        return await self._run_extractor(root, keep=(out_path is not None), out_path=out_path)
+
+    async def _run_extractor(
+        self,
+        root: Union[str, Path],
+        *,
+        keep: bool = False,
+        out_path: Optional[Union[str, Path]] = None,
+    ) -> AstIndex:
         source_root = Path(root).expanduser()
         # A single `.jl` file is a valid root: the canvas extracts the file a
         # `Load File` node opened, not the tree around it.
@@ -260,10 +305,9 @@ class AstExtractNode:
                 f"(set ${SCRIPT_ENV_VAR} to relocate it)"
             )
 
-        keep = out_path is not None
         destination = (
             Path(out_path).expanduser()
-            if keep
+            if keep and out_path
             else Path(tempfile.mkdtemp(prefix="dn_ast_")) / "ast_index.arrow"
         )
         destination.parent.mkdir(parents=True, exist_ok=True)

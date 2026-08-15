@@ -104,15 +104,13 @@ class _AaDataFrameState extends State<AaDataFrame> {
     }
 
     // Apply display caps before building any widgets.
-    final rowKeys = allRowKeys.length > _kMaxRows
-        ? allRowKeys.sublist(0, _kMaxRows)
-        : allRowKeys;
-    final colKeys = allColKeys.length > _kMaxCols
-        ? allColKeys.sublist(0, _kMaxCols)
-        : allColKeys;
+    final rowKeys = allRowKeys;
+    final colKeys = allColKeys;
 
-    final rowsClipped = allRowKeys.length > _kMaxRows;
-    final colsClipped = allColKeys.length > _kMaxCols;
+    debugPrint("AaDataFrame Received colKeys (${colKeys.length}): $colKeys");
+
+    final rowsClipped = false;
+    final colsClipped = false;
 
     // (row, col) -> value lookup — only index cells that will be displayed.
     final rowSet = rowKeys.toSet();
@@ -141,29 +139,44 @@ class _AaDataFrameState extends State<AaDataFrame> {
     }
 
     return Scrollbar(
-      controller: _vController,
+      controller: _hController,
+      scrollbarOrientation: ScrollbarOrientation.bottom,
       child: SingleChildScrollView(
-        controller: _vController,
-        scrollDirection: Axis.vertical,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Scrollbar(
-              controller: _hController,
-              child: SingleChildScrollView(
-                controller: _hController,
-                scrollDirection: Axis.horizontal,
-                child: DataTable(
+        controller: _hController,
+        scrollDirection: Axis.horizontal,
+        clipBehavior: Clip.none,
+        child: Scrollbar(
+          controller: _vController,
+          scrollbarOrientation: ScrollbarOrientation.right,
+          child: SingleChildScrollView(
+            controller: _vController,
+            scrollDirection: Axis.vertical,
+            clipBehavior: Clip.none,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DataTable(
                   headingRowHeight: 36,
                   dataRowMinHeight: 28,
                   dataRowMaxHeight: 120,
-                  columnSpacing: 24,
+                  columnSpacing: 16.0,
                   headingTextStyle: theme.textTheme.labelMedium
                       ?.copyWith(fontWeight: FontWeight.w700),
                   columns: [
-                    const DataColumn(label: Text('row')),
-                    for (final c in colKeys) DataColumn(label: Text(c)),
+                    DataColumn(
+                      label: ConstrainedBox(
+                        constraints: BoxConstraints(minWidth: 80),
+                        child: Text('row'),
+                      ),
+                    ),
+                    for (final c in colKeys)
+                      DataColumn(
+                        label: ConstrainedBox(
+                          constraints: const BoxConstraints(minWidth: 80),
+                          child: Text(c),
+                        ),
+                      ),
                   ],
                   rows: [
                     for (final r in rowKeys)
@@ -189,17 +202,17 @@ class _AaDataFrameState extends State<AaDataFrame> {
                       ),
                   ],
                 ),
-              ),
+                if (rowsClipped || colsClipped)
+                  _TruncationBanner(
+                    theme: theme,
+                    totalRows: allRowKeys.length,
+                    shownRows: rowKeys.length,
+                    totalCols: allColKeys.length,
+                    shownCols: colKeys.length,
+                  ),
+              ],
             ),
-            if (rowsClipped || colsClipped)
-              _TruncationBanner(
-                theme: theme,
-                totalRows: allRowKeys.length,
-                shownRows: rowKeys.length,
-                totalCols: allColKeys.length,
-                shownCols: colKeys.length,
-              ),
-          ],
+          ),
         ),
       ),
     );

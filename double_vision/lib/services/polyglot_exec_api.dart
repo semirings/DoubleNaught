@@ -36,7 +36,7 @@ class PolyglotExecApi {
     double timeoutS = 30,
   }) async {
     final body = jsonEncode({
-      if (aa != null) 'aa': aa.toJson(),
+      if (aa != null) 'executionPayload': aa.toJson(),
       if (code != null) 'code': code,
       'language': language,
       if (filePath != null && filePath.isNotEmpty) 'filePath': filePath,
@@ -70,7 +70,7 @@ class PolyglotExecApi {
 /// One execution's outcome, as the backend's `PolyglotExecResponse` describes it.
 class PolyglotExecResult {
   /// The 1×8 result matrix — what goes downstream.
-  final AaPayload aa;
+  final AaPayload executionResult;
 
   /// `SUCCESS` | `FAILED` | `TIMEOUT`.
   final String status;
@@ -81,7 +81,7 @@ class PolyglotExecResult {
   final double executionTimeMs;
 
   const PolyglotExecResult({
-    required this.aa,
+    required this.executionResult,
     required this.status,
     required this.language,
     required this.stdout,
@@ -94,8 +94,8 @@ class PolyglotExecResult {
 
   factory PolyglotExecResult.fromJson(Map<String, dynamic> json) =>
       PolyglotExecResult(
-        aa: AaPayload.fromJson(
-          (json['aa'] as Map<String, dynamic>?) ?? const {},
+        executionResult: AaPayload.fromJson(
+          (json['executionResult'] as Map<String, dynamic>?) ?? const {},
         ),
         status: json['status'] as String? ?? 'FAILED',
         language: json['language'] as String? ?? '',

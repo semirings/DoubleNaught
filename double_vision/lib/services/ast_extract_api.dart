@@ -28,6 +28,7 @@ class AstExtractApi {
   /// couple of seconds before any parsing starts.
   Future<AstExtractResult> extract(
     String rootPath, {
+    AaPayload? parsedPayload,
     double timeoutS = 180,
   }) async {
     final own = client == null ? http.Client() : null;
@@ -37,7 +38,11 @@ class AstExtractApi {
           .post(
             Uri.parse('$baseUrl/ast/extract/aa'),
             headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'rootPath': rootPath, 'timeoutS': timeoutS}),
+            body: jsonEncode({
+              'rootPath': rootPath,
+              'timeoutS': timeoutS,
+              if (parsedPayload != null) 'parsedPayload': parsedPayload.toJson(),
+            }),
           )
           .timeout(Duration(milliseconds: (timeoutS * 1000).round() + 15000));
 

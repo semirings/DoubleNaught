@@ -1272,22 +1272,26 @@ async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    # `payload_type` describes the *file*, not whether an AA came back: a source
-    # file is "text" even though it now also yields a single-cell AA. Checked
-    # before the AA branch for exactly that reason.
     raw_text = data.get("text") if data else None
     if isinstance(raw_text, str) and set(data) == {"text"}:
         payload_type = "text"
+        message = f"Loaded text from {Path(request.file_path).name}"
+    elif data and isinstance(data.get("rows"), list) and data["rows"] and "file_path" in data["rows"][0]:
+        payload_type = "multi_file"
+        message = f"Loaded {len(data['rows'])} files"
     elif aa is not None:
         payload_type = "associative_array"
+        message = f"Loaded associative_array from {Path(request.file_path).name}"
     else:
         payload_type = "table"
+        message = f"Loaded table from {Path(request.file_path).name}"
+
     return LoadFileResponse(
         parsed_payload=aa,
         contents=raw_text if isinstance(raw_text, str) else None,
         data=data or {},
         payload_type=payload_type,
-        message=f"Loaded {payload_type} from {Path(request.file_path).name}",
+        message=message,
     )
 
 
@@ -1408,7 +1412,8 @@ async def ast_extract_aa_endpoint(request: AstExtractRequest) -> AstExtractAaRes
     """
     try:
         index = await AstExtractNode(timeout_s=request.timeout_s).extract(
-            request.root_path
+            request.root_path,
+            parsed_payload=request.parsed_payload,
         )
     except AstExtractError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

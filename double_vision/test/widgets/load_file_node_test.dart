@@ -110,8 +110,10 @@ void main() {
       final browse = find.byTooltip('Browse…');
       await tester.tapAt(tester.getCenter(browse));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
+      await tester.pumpAndSettle();
 
-      expect(_pathField(tester), '/tmp/picked/export.parquet');
+      expect(_pathField(tester), 'file:///tmp/picked/export.parquet');
     });
 
     testWidgets('a cancelled dialog leaves the path untouched', (tester) async {
@@ -125,6 +127,8 @@ void main() {
       ));
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
       await tester.pumpAndSettle();
 
       expect(_pathField(tester), 'storage/out/export.parquet');
@@ -176,8 +180,10 @@ void main() {
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
+      await tester.pumpAndSettle();
 
-      expect(_pathField(tester), '/Users/me/src/model.jl');
+      expect(_pathField(tester), 'file:///Users/me/src/model.jl');
       expect(find.textContaining('Unsupported file type'), findsNothing);
     });
 
@@ -193,6 +199,8 @@ void main() {
       ));
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
       await tester.pumpAndSettle();
 
       // Reported, not thrown — and the previous path is untouched.
@@ -215,6 +223,8 @@ void main() {
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
+      await tester.pumpAndSettle();
 
       expect(find.text('Unsupported file: Makefile'), findsOneWidget);
     });
@@ -230,6 +240,8 @@ void main() {
       ));
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
       await tester.pumpAndSettle();
       expect(find.text('Unsupported file type: .png'), findsOneWidget);
 

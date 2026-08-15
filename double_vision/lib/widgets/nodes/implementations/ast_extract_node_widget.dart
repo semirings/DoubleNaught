@@ -63,6 +63,7 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
   /// Path taken from `codebasePath`, if one arrived. Shown as the placeholder so it is
   /// obvious the node will use it when the box is empty.
   String? _upstreamPath;
+  AaPayload? _incomingPayload;
 
 
   AstExtractResult? _result;
@@ -114,6 +115,7 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
     }
     setState(() {
       _upstreamPath = found;
+      _incomingPayload = payload;
       // A new payload invalidates the previous index.
       _result = null;
     });
@@ -127,7 +129,7 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
 
     AstExtractResult result;
     try {
-      result = await _api.extract(_effectivePath);
+      result = await _api.extract(_effectivePath, parsedPayload: _incomingPayload);
     } catch (e) {
       if (!mounted) return;
       setState(() => _busy = false);

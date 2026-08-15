@@ -41,6 +41,8 @@ def get_slice(handle_id: str, page: int, page_size: int) -> AssocArray | None:
         aa = _store.get(handle_id)
     if aa is None:
         return None
+    if page_size < 0:
+        return aa
     start = page * page_size
     end = start + page_size
     return AssocArray(
