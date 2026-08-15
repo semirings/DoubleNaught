@@ -312,7 +312,7 @@ def test_save_route_writes_jsonl_from_a_formatted_aa(tmp_path, monkeypatch):
     response = client.post(
         "/save",
         json={
-            "aa": {"rows": aa.rows, "cols": aa.cols, "vals": aa.vals},
+            "dataToSave": {"rows": aa.rows, "cols": aa.cols, "vals": aa.vals},
             "filename": "phi4_train",
             "format": "jsonl",
         },
@@ -333,7 +333,7 @@ def test_save_route_infers_jsonl_from_a_filename(tmp_path, monkeypatch):
     response = client.post(
         "/save",
         json={
-            "aa": {"rows": aa.rows, "cols": aa.cols, "vals": aa.vals},
+            "dataToSave": {"rows": aa.rows, "cols": aa.cols, "vals": aa.vals},
             "filename": "inferred.jsonl",
             "format": "parquet",
         },
@@ -385,7 +385,7 @@ def test_aa_route_returns_a_wire_aa_and_counts():
     response = client.post(
         "/jsonl/format/aa",
         json={
-            "aa": {
+            "astIndex": {
                 "rows": ["r1", "r1", "r2", "r2"],
                 "cols": ["raw_code", "better_docstring", "raw_code", "better_docstring"],
                 "vals": ["f(x) = x", "Docs.", "g(y) = y", ""],
@@ -398,9 +398,9 @@ def test_aa_route_returns_a_wire_aa_and_counts():
     assert body["lineCount"] == 1
     assert body["skippedNoDoc"] == 1
     assert body["skippedNoCode"] == 0
-    assert set(body["aa"]["cols"]) == {"json_line", "symbol_name"}
+    assert set(body["jsonlLines"]["cols"]) == {"json_line", "symbol_name"}
     # And the line is real ChatML.
-    line = body["aa"]["vals"][body["aa"]["cols"].index("json_line")]
+    line = body["jsonlLines"]["vals"][body["jsonlLines"]["cols"].index("json_line")]
     assert json.loads(line)["messages"][0]["role"] == "system"
 
 
@@ -408,7 +408,7 @@ def test_aa_route_on_an_undocumented_index_returns_zero_lines_not_an_error():
     response = client.post(
         "/jsonl/format/aa",
         json={
-            "aa": {
+            "astIndex": {
                 "rows": ["r1", "r1"],
                 "cols": ["raw_code", "better_docstring"],
                 "vals": ["f(x) = x", ""],
@@ -596,7 +596,7 @@ def test_aa_route_honours_the_format_mode():
     response = client.post(
         "/jsonl/format/aa",
         json={
-            "aa": {
+            "astIndex": {
                 "rows": ["r1", "r1"],
                 "cols": ["prompt", "completion"],
                 "vals": ["Explain:", "It adds one."],
@@ -609,14 +609,14 @@ def test_aa_route_honours_the_format_mode():
     body = response.json()
     assert body["formatMode"] == "prompt_completion"
     assert body["lineCount"] == 1
-    line = body["aa"]["vals"][body["aa"]["cols"].index("json_line")]
+    line = body["jsonlLines"]["vals"][body["jsonlLines"]["cols"].index("json_line")]
     assert json.loads(line) == {"prompt": "Explain:", "completion": "It adds one."}
 
 
 def test_aa_route_rejects_an_unknown_mode():
     response = client.post(
         "/jsonl/format/aa",
-        json={"aa": {"rows": ["r"], "cols": ["a"], "vals": ["b"]}, "formatMode": "yaml"},
+        json={"astIndex": {"rows": ["r"], "cols": ["a"], "vals": ["b"]}, "formatMode": "yaml"},
     )
     assert response.status_code == 422
     assert "unknown format_mode" in response.json()["detail"]

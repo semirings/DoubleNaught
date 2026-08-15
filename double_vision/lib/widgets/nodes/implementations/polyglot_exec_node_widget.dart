@@ -143,7 +143,7 @@ class ExecSource {
 /// run's stdout / stderr / exit code back on the graph — see `DESIGN.md` →
 /// "Polyglot Exec node".
 ///
-/// Ports: `in_aa` (idx 0) carries the code, `out_aa` (idx 0) carries the 1×8
+/// Ports: `executionPayload` (idx 0) carries the code, `executionResult` (idx 0) carries the 1×8
 /// result matrix. The result is emitted on **every** outcome, so a downstream
 /// node sees a failure rather than silence.
 class PolyglotExecNodeWidget extends BaseNodeWidget {
@@ -178,7 +178,7 @@ class _PolyglotExecNodeWidgetState
 
   late final PolyglotExecApi _api;
   late final InputPort _in;
-  final OutputPort _out = OutputPort('out_aa');
+  final OutputPort _out = OutputPort('executionResult');
 
   late TextEditingController _timeout;
 
@@ -186,7 +186,7 @@ class _PolyglotExecNodeWidgetState
 
   /// The payload exactly as it arrived. Kept whole, not just parsed: it is sent
   /// with the run so the backend can merge the result into it rather than
-  /// replacing it, which is what keeps `text` alive on `out_aa`.
+  /// replacing it, which is what keeps `text` alive on `executionResult`.
   AaPayload? _incomingAa;
   ExecLanguage _override = ExecLanguage.auto;
   bool _consoleOpen = true;
@@ -209,7 +209,7 @@ class _PolyglotExecNodeWidgetState
       text: params?['timeoutS'] ?? '${_defaultTimeout.toInt()}',
     );
 
-    _in = InputPort('in_aa');
+    _in = InputPort('executionPayload');
     initInputPort(_in, _onIngress);
     initOutputPort(_out);
   }
@@ -263,7 +263,7 @@ class _PolyglotExecNodeWidgetState
     PolyglotExecResult? result;
     try {
       // The payload goes too, not just the code: the backend merges the result
-      // into it so `out_aa` keeps the incoming columns and row keys. Without the
+      // into it so `executionResult` keeps the incoming columns and row keys. Without the
       // AA there is nothing to merge with and the output collapses to metadata.
       result = await _api.run(
         aa: _incomingAa,
@@ -309,13 +309,13 @@ class _PolyglotExecNodeWidgetState
 
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
-        singleInputConnector(label: 'in_aa'),
+        singleInputConnector(label: 'executionPayload'),
       ];
 
   @override
   List<Widget> buildOutputConnectors(BuildContext context) => [
         singleOutputConnector(
-          label: 'out_aa',
+          label: 'executionResult',
           idx: 0,
           hasData: _last != null,
         ),
@@ -394,7 +394,7 @@ class _PolyglotExecNodeWidgetState
         if (!_source.hasCode) ...[
           const SizedBox(height: 6),
           Text(
-            'Waiting for in_aa — wire a Load File node',
+            'Waiting for executionPayload — wire a Load File node',
             style: theme.textTheme.labelSmall
                 ?.copyWith(color: scheme.onSurfaceVariant),
           ),
@@ -474,7 +474,7 @@ class _PolyglotExecNodeWidgetState
     );
   }
 
-  /// What arrived on `in_aa`, so the run is predictable before you press Run.
+  /// What arrived on `executionPayload`, so the run is predictable before you press Run.
   Widget _payloadSummary(ThemeData theme, ColorScheme scheme) {
     if (!_source.hasCode && _source.fileName.isEmpty) {
       return Text(

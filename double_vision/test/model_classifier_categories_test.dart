@@ -95,7 +95,7 @@ void main() {
     'categoryIn supplies the classifier labels and rides along to /classify',
     (tester) async {
       final capturedCategories = <AaPayload?>[];
-      late InputPort aaIn;
+      late InputPort documentsIn;
       late InputPort categoryIn;
 
       await tester.pumpWidget(
@@ -115,7 +115,7 @@ void main() {
               ),
               api: _CapturingClassifyApi(capturedCategories),
               modelInput: Stream<String>.value('org/test-model'),
-              onInputPort: (p) => aaIn = p,
+              onInputPort: (p) => documentsIn = p,
               onCategoryPort: (p) => categoryIn = p,
             ),
           ),
@@ -143,9 +143,9 @@ void main() {
         findsOneWidget,
       );
 
-      // Feed a document on aaIn, then classify.
+      // Feed a document on documentsIn, then classify.
       final textOut = OutputPort('aaOut');
-      aaIn.connect(textOut);
+      documentsIn.connect(textOut);
       textOut.emit(
         const AaPayload(
           rows: ['document'],
@@ -170,9 +170,9 @@ void main() {
   );
 
   testWidgets(
-    'aaIn fed an AA without a text column reports the mis-wire',
+    'documentsIn fed an AA without a text column reports the mis-wire',
     (tester) async {
-      late InputPort aaIn;
+      late InputPort documentsIn;
       late InputPort categoryIn;
 
       await tester.pumpWidget(
@@ -189,7 +189,7 @@ void main() {
                 overridePath: '/tmp/dv_nonexistent_models.json',
               ),
               modelInput: Stream<String>.value('org/test-model'),
-              onInputPort: (p) => aaIn = p,
+              onInputPort: (p) => documentsIn = p,
               onCategoryPort: (p) => categoryIn = p,
             ),
           ),
@@ -201,9 +201,9 @@ void main() {
       final categoryOut = OutputPort('categoriesOut');
       categoryIn.connect(categoryOut);
       categoryOut.emit(_categoriesAa);
-      // …but aaIn is (mis)wired to a Load Model `model` AA — no `text` column.
+      // …but documentsIn is (mis)wired to a Load Model `model` AA — no `text` column.
       final modelOut = OutputPort('model');
-      aaIn.connect(modelOut);
+      documentsIn.connect(modelOut);
       modelOut.emit(
         const AaPayload(
           rows: ['model:x', 'model:x'],

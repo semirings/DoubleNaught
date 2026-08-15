@@ -594,7 +594,7 @@ async def classify_documents(request: ClassifyRequest) -> ClassifyResponse:
 
     aa_out = await run_in_threadpool(_run)
     return ClassifyResponse(
-        aa=AssocArray(
+        classification_scores=AssocArray(
             rows=aa_out.get("row", []),
             cols=aa_out.get("col", []),
             vals=aa_out.get("val", []),
@@ -610,13 +610,13 @@ async def fetch_text(request: FetchRequest) -> FetchResponse:
     (``chunk:00000``) carrying the whole cleaned document; ChunkNode later splits
     it into many rows sharing this schema.
     """
-    url = _aa_value(request.aa, "url")
+    url = _aa_value(request.work_metadata, "url")
     if not url:
         raise HTTPException(status_code=422, detail="AA payload missing a 'url' column")
-    author = _aa_value(request.aa, "author") or ""
-    work_title = _aa_value(request.aa, "work_title") or ""
+    author = _aa_value(request.work_metadata, "author") or ""
+    work_title = _aa_value(request.work_metadata, "work_title") or ""
     # Carried through unchanged so ChunkNode can locate the target work.
-    work_selector = _aa_value(request.aa, "work_selector") or ""
+    work_selector = _aa_value(request.work_metadata, "work_selector") or ""
 
     try:
         async with httpx.AsyncClient(
@@ -635,7 +635,7 @@ async def fetch_text(request: FetchRequest) -> FetchResponse:
     cols = ["raw_text", "author", "work_title", "work_selector", "char_count", "fetch_timestamp"]
     vals = [raw_text, author, work_title, work_selector, str(len(raw_text)), fetch_timestamp]
     aa = AssocArray(rows=[_chunk_id(0)] * len(cols), cols=cols, vals=vals)
-    return FetchResponse(aa=aa)
+    return FetchResponse(work_metadata=aa)
 
 
 # --- Chunk node (ChunkNode) -------------------------------------------------
@@ -1283,7 +1283,7 @@ async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
     else:
         payload_type = "table"
     return LoadFileResponse(
-        aa=aa,
+        parsed_payload=aa,
         contents=raw_text if isinstance(raw_text, str) else None,
         data=data or {},
         payload_type=payload_type,
@@ -1344,12 +1344,12 @@ async def jsonl_format_aa(request: JsonlFormatRequest) -> JsonlFormatResponse:
     Both call the same formatter; only the envelope differs.
     """
     try:
-        result = JsonlFormatterNode(format_mode=request.format_mode).format_aa(request.aa)
+        result = JsonlFormatterNode(format_mode=request.format_mode).format_aa(request.ast_index)
     except JsonlFormatError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
     return JsonlFormatResponse(
-        aa=aa_from_table(result.table),
+        jsonl_lines=aa_from_table(result.table),
         format_mode=result.mode,
         line_count=result.line_count,
         skipped_no_doc=result.skipped_no_doc,
@@ -1414,7 +1414,7 @@ async def ast_extract_aa_endpoint(request: AstExtractRequest) -> AstExtractAaRes
         raise HTTPException(status_code=422, detail=str(exc))
 
     return AstExtractAaResponse(
-        aa=ast_aa_from_table(index.table),
+        ast_index=ast_aa_from_table(index.table),
         definition_count=index.definition_count,
         files_scanned=index.files_scanned,
         errors=index.errors,
@@ -1499,8 +1499,8 @@ async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
     ``asyncio`` subprocess and its pipes, which is already non-blocking.
     """
     payload = (
-        PolyglotExecNode.from_aa(request.aa)
-        if request.aa is not None
+        PolyglotExecNode.from_aa(request.execution_payload)
+        if request.execution_payload is not None
         else ExecInput()
     )
     # Explicit request fields beat the payload's own.
@@ -1527,7 +1527,7 @@ async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
         # and the execution metadata is appended to the row the code came from, so
         # a downstream node still finds `text` where it left it.
         aa = merge_result_aa(
-            request.aa,
+            request.execution_payload,
             result,
             row_key=payload.row_key,
             source_column=payload.source_column,
@@ -1537,7 +1537,7 @@ async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    return PolyglotExecResponse(aa=aa, **result)
+    return PolyglotExecResponse(execution_result=aa, **result)
 
 
 # --- Save File node (SaveFileNode) -------------------------------------------
@@ -1547,7 +1547,7 @@ async def save_file(request: SaveFileRequest) -> SaveFileResponse:
     try:
         out_path, bytes_written = await run_in_threadpool(
             execute_save,
-            request.aa,
+            request.data_to_save,
             request.text,
             request.image_base64,
             request.filename,

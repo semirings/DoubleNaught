@@ -166,7 +166,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   @override String   get nodeTitle => 'Load File';
   @override IconData get nodeIcon  => Icons.upload_file_outlined;
 
-  final OutputPort _aaOut = OutputPort('aa');
+  final OutputPort _aaOut = OutputPort('parsedPayload');
   final LoadFileApi _api = const LoadFileApi();
 
   late TextEditingController _filePathController;
@@ -335,7 +335,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
         // existed wired idx 1, and are migrated on load — see
         // `_migrateLoadFilePorts`.
         OutputConnector(
-          label: 'aa',
+          label: 'parsedPayload',
           idx: 0,
           active: _aa != null || widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),

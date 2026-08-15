@@ -485,7 +485,7 @@ def test_aa_route_returns_the_index_as_triples(codebase):
     assert body["errors"] == []
 
     cells = {}
-    aa = body["aa"]
+    aa = body["astIndex"]
     for row, col, val in zip(aa["rows"], aa["cols"], aa["vals"]):
         cells.setdefault(row, {})[col] = val
     assert len(cells) == body["definitionCount"]

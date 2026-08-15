@@ -172,7 +172,7 @@ void main() {
       expect(find.text('Polyglot Exec'), findsOneWidget);
       expect(find.text('Idle'), findsOneWidget);
       expect(find.text('No payload'), findsOneWidget);
-      expect(find.textContaining('Waiting for in_aa'), findsOneWidget);
+      expect(find.textContaining('Waiting for executionPayload'), findsOneWidget);
       expect(
         tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNull,
@@ -447,12 +447,12 @@ void main() {
 
     expect(find.byType(PolyglotExecNodeWidget), findsOneWidget);
     // Wired: the card is live, waiting on its input port.
-    expect(find.textContaining('Waiting for in_aa'), findsOneWidget);
+    expect(find.textContaining('Waiting for executionPayload'), findsOneWidget);
   });
 }
 
 /// Schema pass-through: the node must send the incoming AA so the backend can
-/// merge into it. Without that, `out_aa` collapses to execution metadata and a
+/// merge into it. Without that, `executionResult` collapses to execution metadata and a
 /// downstream Remote Service finds no `text`.
 void _passThroughTests() {
   group('schema pass-through', () {

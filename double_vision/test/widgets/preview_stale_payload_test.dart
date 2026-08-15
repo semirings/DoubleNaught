@@ -80,8 +80,8 @@ void main() {
         home: Scaffold(
           body: PreviewNode(
             node: const WorkflowNode(id: 7, type: 'preview'),
-            aaConnected: true,
-            onAaInputPort: (p) => registered = p,
+            inputConnected: true,
+            onInputPort: (p) => registered = p,
             onContent: (id, FocusContent _) => pushed.add(id),
             onContentCleared: cleared.add,
           ),
@@ -114,8 +114,8 @@ void main() {
         home: Scaffold(
           body: PreviewNode(
             node: const WorkflowNode(id: 7, type: 'preview'),
-            aaConnected: true,
-            onAaInputPort: (p) => registered = p,
+            inputConnected: true,
+            onInputPort: (p) => registered = p,
             onContent: (_, __) {},
             onContentCleared: (_) {},
           ),

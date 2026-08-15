@@ -186,7 +186,7 @@ class ClassifyResponse(CamelModel):
     # Result AA: rows = document id, cols = labels, vals = scores (0..1). When
     # categories carry thresholds, each document also gains a ``passed`` column
     # listing the categories that met their threshold.
-    aa: AssocArray
+    classification_scores: AssocArray
 
 
 # --- Inventory node (InventoryNode) -----------------------------------------
@@ -225,11 +225,11 @@ class InventorySelectResponse(CamelModel):
 
 class FetchRequest(CamelModel):
     # The upstream URLNode associative array (carries url/author/work_title).
-    aa: AssocArray
+    work_metadata: AssocArray
 
 
 class FetchResponse(CamelModel):
-    aa: AssocArray
+    work_metadata: AssocArray
 
 
 # --- Chunk node (ChunkNode) -------------------------------------------------
@@ -596,7 +596,7 @@ class LoadFileRequest(CamelModel):
 class LoadFileResponse(CamelModel):
     # Feeds the node's `aa` output port: the AA for this file — reconstructed from
     # a tabular file, or the single-cell text AA for a source/prose file.
-    aa: Optional[AssocArray] = None
+    parsed_payload: Optional[AssocArray] = None
     # Feeds the node's `contents` output port: the raw file string, when the file
     # has one. Named for the port so the two contracts line up.
     contents: Optional[str] = None
@@ -616,7 +616,7 @@ class LoadFileResponse(CamelModel):
 
 class SaveFileRequest(CamelModel):
     # Data payload: AA for tabular data, text string, or base64-encoded image.
-    aa: Optional[AssocArray] = None
+    data_to_save: Optional[AssocArray] = None
     text: Optional[str] = None
     # Image bytes as base64-encoded string.
     image_base64: Optional[str] = None
@@ -644,7 +644,7 @@ class SaveFileResponse(CamelModel):
 class PolyglotExecRequest(CamelModel):
     # The upstream payload, e.g. a Load File `contents` AA. Either this or `code`
     # must be present; explicit fields below win over anything read out of it.
-    aa: Optional[AssocArray] = None
+    execution_payload: Optional[AssocArray] = None
     # Source to execute, when the caller has it in hand rather than on an AA.
     code: Optional[str] = None
     # Language override. "" or "auto" means infer (payload → extension → shebang).
@@ -666,7 +666,7 @@ class PolyglotExecRequest(CamelModel):
 
 class PolyglotExecResponse(CamelModel):
     # The 1x8 result AA — the payload a downstream node consumes.
-    aa: AssocArray
+    execution_result: AssocArray
     # The same result as flat fields, for a caller that wants them directly.
     status: str
     language: str
@@ -685,7 +685,7 @@ class PolyglotExecResponse(CamelModel):
 
 class AstExtractAaResponse(CamelModel):
     # The 7-column index in wire (sparse triple) form — the canvas transport.
-    aa: AssocArray
+    ast_index: AssocArray
     # Definitions found.
     definition_count: int
     # `.jl` files walked.
@@ -715,14 +715,14 @@ class AstExtractRequest(CamelModel):
 class JsonlFormatRequest(CamelModel):
     # The source AA in wire (sparse triple) form: the documented index for
     # "chatml", passages for "prompt_completion", anything for "passthrough".
-    aa: AssocArray
+    ast_index: AssocArray
     # "chatml" (default) | "prompt_completion" | "passthrough" (alias "row_dict").
     format_mode: str = "chatml"
 
 
 class JsonlFormatResponse(CamelModel):
     # 2-column result: `json_line` and `symbol_name`, one row per example.
-    aa: AssocArray
+    jsonl_lines: AssocArray
     # The mode that produced it, canonicalised.
     format_mode: str
     # Examples written.

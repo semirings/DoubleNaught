@@ -163,7 +163,7 @@ def test_load_route_returns_text_for_a_julia_file(tmp_path):
     source = "greet() = println(\"hi\")\n"
     # Both ports are fed: raw string on `contents`, one-cell AA on `aa`.
     assert body["contents"] == source
-    assert body["aa"]["vals"][0] == source
+    assert body["parsedPayload"]["vals"][0] == source
     assert body["data"]["text"] == source
 
 
@@ -189,7 +189,7 @@ def test_load_route_returns_aa_for_a_csv(tmp_path):
     assert response.status_code == 200
     body = response.json()
     assert body["payloadType"] == "associative_array"
-    assert set(body["aa"]["cols"]) == {"GENDER", "CITY"}
+    assert set(body["parsedPayload"]["cols"]) == {"GENDER", "CITY"}
     assert len(body["data"]["rows"]) == 2
 
 
@@ -222,9 +222,9 @@ def test_a_source_file_feeds_both_ports(tmp_path):
     assert body["contents"] == "sw_str(s) = StartsWith(s)\n"
     # aa -> a one-cell AA carrying the same text, in the shape Polyglot Exec and
     # Prompt Node already read (a `text` column).
-    assert body["aa"]["cols"] == ["text", "file_path"]
-    assert body["aa"]["vals"][0] == "sw_str(s) = StartsWith(s)\n"
-    assert body["aa"]["vals"][1].endswith("selectors.jl")
+    assert body["parsedPayload"]["cols"] == ["text", "file_path"]
+    assert body["parsedPayload"]["vals"][0] == "sw_str(s) = StartsWith(s)\n"
+    assert body["parsedPayload"]["vals"][1].endswith("selectors.jl")
     # `data` still carries the legacy raw representation.
     assert body["data"] == {"text": "sw_str(s) = StartsWith(s)\n"}
 
@@ -238,7 +238,7 @@ def test_raw_table_mode_withholds_the_text_aa(tmp_path):
         "/load", json={"filePath": str(src), "schemaMode": "rawTable"}
     ).json()
 
-    assert body["aa"] is None
+    assert body["parsedPayload"] is None
     assert body["contents"] == "# just prose\n"
 
 

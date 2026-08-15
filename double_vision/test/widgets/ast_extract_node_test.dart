@@ -144,13 +144,13 @@ void main() {
       );
     });
 
-    testWidgets('takes the path from in_aa and enables Extract', (tester) async {
+    testWidgets('takes the path from codebasePath and enables Extract', (tester) async {
       final h = await _pump(tester);
       await _send(tester, h.input, _loadFileAa('/tmp/src/a.jl'));
 
       // Shown as the hint, with a note that it came from upstream.
       expect(find.text('/tmp/src/a.jl'), findsOneWidget);
-      expect(find.text('from in_aa'), findsOneWidget);
+      expect(find.text('from codebasePath'), findsOneWidget);
       expect(
         tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNotNull,

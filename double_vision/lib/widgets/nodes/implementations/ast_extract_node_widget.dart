@@ -9,7 +9,7 @@ import '../base/base_node_widget.dart';
 /// Indexes every function and macro in a Julia source tree — see `DESIGN.md` →
 /// "AST Extract node".
 ///
-/// Ports: `in_aa` (idx 0) supplies the path to parse, `out_aa` (idx 0) carries the
+/// Ports: `codebasePath` (idx 0) supplies the path to parse, `astIndex` (idx 0) carries the
 /// 7-column definition index. The path can also be typed directly, so the node is
 /// usable with nothing wired into it.
 ///
@@ -56,13 +56,14 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
 
   late final AstExtractApi _api;
   late final InputPort _in;
-  final OutputPort _out = OutputPort('out_aa');
+  final OutputPort _out = OutputPort('astIndex');
 
   late TextEditingController _path;
 
-  /// Path taken from `in_aa`, if one arrived. Shown as the placeholder so it is
+  /// Path taken from `codebasePath`, if one arrived. Shown as the placeholder so it is
   /// obvious the node will use it when the box is empty.
   String? _upstreamPath;
+
 
   AstExtractResult? _result;
   bool _busy = false;
@@ -80,7 +81,7 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
     super.initState();
     _api = widget.api ?? const AstExtractApi();
     _path = TextEditingController(text: widget.initialParams?['rootPath'] ?? '');
-    _in = InputPort('in_aa');
+    _in = InputPort('codebasePath');
     initInputPort(_in, _onIngress);
     initOutputPort(_out);
   }
@@ -155,13 +156,13 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
 
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
-        singleInputConnector(label: 'in_aa'),
+        singleInputConnector(label: 'codebasePath'),
       ];
 
   @override
   List<Widget> buildOutputConnectors(BuildContext context) => [
         singleOutputConnector(
-          label: 'out_aa',
+          label: 'astIndex',
           idx: 0,
           hasData: (_result?.definitionCount ?? 0) > 0,
         ),
@@ -187,7 +188,7 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
             labelText: 'File or directory',
             hintText: _upstreamPath ?? '/path/to/src',
             helperText: _upstreamPath != null && _path.text.trim().isEmpty
-                ? 'from in_aa'
+                ? 'from codebasePath'
                 : null,
             helperStyle: theme.textTheme.labelSmall?.copyWith(color: scheme.primary),
             isDense: true,

@@ -357,17 +357,17 @@ class _WorkflowPageState extends State<WorkflowPage>
   Iterable<int> _inputIndicesFor(WorkflowNode n) {
     switch (n.type) {
       case 'preview':
-        // Two inputs: `bytes` (idx 0) and `aa` (idx 1).
-        return const [0, 1];
+        // One input: `previewData` (idx 0).
+        return const [0];
       case 'load_model':
         // Two inputs: `trigger` (AA, idx 0) and `urlIn` (String, idx 1).
         return const [0, 1];
       case 'model_classifier':
-        // Three inputs: `aaIn` (AA, idx 0), `modelIn` (String, idx 1),
+        // Three inputs: `documentsIn` (AA, idx 0), `modelIn` (String, idx 1),
         // `categoryIn` (AA, idx 2).
         return const [0, 1, 2];
       case 'save_file':
-        // Three inputs: `aaIn` (AA, idx 0), `textIn` (String, idx 1),
+        // Three inputs: `dataToSave` (AA, idx 0), `textIn` (String, idx 1),
         // `imageIn` (bytes, idx 2).
         return const [0, 1, 2];
       case NodeGroup.type:
@@ -386,15 +386,15 @@ class _WorkflowPageState extends State<WorkflowPage>
         return const [0, 1];
       case 'polyglotExecNode':
       case 'polyglot_exec': // tolerate a snake_case spelling in saved workflows
-        // One input: `in_aa` (AA, idx 0).
+        // One input: `executionPayload` (AA, idx 0).
         return const [0];
       case 'jsonlFormatterNode':
       case 'jsonl_formatter': // tolerate a snake_case spelling in saved workflows
-        // One input: `in_aa` (AA, idx 0).
+        // One input: `astIndex` (AA, idx 0).
         return const [0];
       case 'astExtractNode':
       case 'ast_extract': // tolerate a snake_case spelling in saved workflows
-        // One input: `in_aa` (AA, idx 0) — supplies the path to parse.
+        // One input: `codebasePath` (AA, idx 0) — supplies the path to parse.
         return const [0];
       case 'text_model_loader':
         // One optional input: `trigger` (AA, idx 0).
@@ -2322,15 +2322,10 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'preview':
         return PreviewNode(
           node: node,
-          // `bytes` input (idx 0) — image/text byte stream.
-          input: _inputForAt(node.id, 0),
           fileName: _fileNameFor(node.id),
-          inputConnected: _hasIncomingEdgeAt(node.id, 0),
-          onConnect: (source) => _connectAt(source, node.id, 0),
-          // `aa` input (idx 1) — an associative array over the port bus.
-          aaConnected: _hasIncomingEdgeAt(node.id, 1),
-          onAaConnect: (source) => _connectAt(source, node.id, 1),
-          onAaInputPort: (port) => _registerAaInput(node.id, 1, port),
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputConnect: (source) => _connect(source, node.id),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
           // Route decoded content to the Focus Panel tab for this node, and
           // retract that tab once the node's inputs go dead.
           onContent: _pushFocusContent,

@@ -346,14 +346,14 @@ def test_exec_route_runs_code_and_returns_both_shapes():
     assert body["exitCode"] == 0
     assert body["executionTimeMs"] > 0
     # …and the same result as an AA.
-    assert body["aa"]["cols"] == list(RESULT_COLUMNS)
+    assert body["executionResult"]["cols"] == list(RESULT_COLUMNS)
 
 
 def test_exec_route_runs_an_upstream_aa_payload():
     response = client.post(
         "/exec",
         json={
-            "aa": {"rows": ["0"], "cols": ["text"], "vals": ["print('from aa')"]},
+            "executionPayload": {"rows": ["0"], "cols": ["text"], "vals": ["print('from aa')"]},
             "language": "python",
         },
     )
@@ -365,7 +365,7 @@ def test_exec_route_request_fields_override_the_payload():
     response = client.post(
         "/exec",
         json={
-            "aa": {
+            "executionPayload": {
                 "rows": ["0", "0"],
                 "cols": ["code", "language"],
                 "vals": ["print('ignored')", "python"],
@@ -584,7 +584,7 @@ def test_route_merges_the_payload_into_the_response_aa():
     response = client.post(
         "/exec",
         json={
-            "aa": {
+            "executionPayload": {
                 "rows": ["r1", "r1", "r2"],
                 "cols": ["text", "author", "text"],
                 "vals": ["print('hello')", "gcr", "untouched"],
@@ -595,7 +595,7 @@ def test_route_merges_the_payload_into_the_response_aa():
 
     assert response.status_code == 200
     cells = {}
-    aa = response.json()["aa"]
+    aa = response.json()["executionResult"]
     for row, col, val in zip(aa["rows"], aa["cols"], aa["vals"]):
         cells.setdefault(row, {})[col] = val
 
@@ -610,13 +610,13 @@ def test_route_honours_replace_mode():
     response = client.post(
         "/exec",
         json={
-            "aa": {"rows": ["r1"], "cols": ["text"], "vals": ["print('new text')"]},
+            "executionPayload": {"rows": ["r1"], "cols": ["text"], "vals": ["print('new text')"]},
             "language": "python",
             "stdoutMode": "replace",
         },
     )
 
-    aa = response.json()["aa"]
+    aa = response.json()["executionResult"]
     cells = dict(zip(aa["cols"], aa["vals"]))
     assert cells["text"] == "new text\n"
     assert cells["code"] == "print('new text')"
@@ -634,4 +634,4 @@ def test_route_rejects_an_unknown_stdout_mode():
 def test_a_code_only_request_still_returns_the_metadata_aa():
     """No AA in, no merge — the old shape, unchanged."""
     body = client.post("/exec", json={"code": "print(1)", "language": "python"}).json()
-    assert body["aa"]["cols"] == list(RESULT_COLUMNS)
+    assert body["executionResult"]["cols"] == list(RESULT_COLUMNS)

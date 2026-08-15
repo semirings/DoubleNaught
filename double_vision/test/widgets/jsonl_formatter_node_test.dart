@@ -145,7 +145,7 @@ void main() {
 
       expect(find.text('JSONL Formatter'), findsOneWidget);
       expect(find.text('No index'), findsOneWidget);
-      expect(find.textContaining('Waiting for in_aa'), findsOneWidget);
+      expect(find.textContaining('Waiting for astIndex'), findsOneWidget);
       expect(
         tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
         isNull,
@@ -309,7 +309,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.byType(JsonlFormatterNodeWidget), findsOneWidget);
-      expect(find.textContaining('Waiting for in_aa'), findsOneWidget);
+      expect(find.textContaining('Waiting for astIndex'), findsOneWidget);
     });
   });
 }

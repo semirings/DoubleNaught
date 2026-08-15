@@ -42,10 +42,10 @@ def _body(labels, docs):
     }
 
 
-def _scores(aa, doc_id):
+def _scores(classificationScores, doc_id):
     return {
         c: v
-        for r, c, v in zip(aa["rows"], aa["cols"], aa["vals"])
+        for r, c, v in zip(classificationScores["rows"], classificationScores["cols"], classificationScores["vals"])
         if r == doc_id
     }
 
@@ -62,13 +62,13 @@ def test_classify_shape_and_content():
         ),
     )
     assert resp.status_code == 200
-    aa = resp.json()["aa"]
+    classificationScores = resp.json()["classificationScores"]
 
     # Original metadata (1 text triple) + 2 score triples per doc × 2 docs = 6.
-    assert len(aa["rows"]) == len(aa["cols"]) == len(aa["vals"]) == 6
-    assert set(aa["cols"]) == {"text", "score:philosophy", "score:sports"}
+    assert len(classificationScores["rows"]) == len(classificationScores["cols"]) == len(classificationScores["vals"]) == 6
+    assert set(classificationScores["cols"]) == {"text", "score:philosophy", "score:sports"}
 
-    s1, s2 = _scores(aa, "doc:1"), _scores(aa, "doc:2")
+    s1, s2 = _scores(classificationScores, "doc:1"), _scores(classificationScores, "doc:2")
     # Score columns form a distribution per document.
     score_vals_1 = [v for k, v in s1.items() if k.startswith("score:")]
     score_vals_2 = [v for k, v in s2.items() if k.startswith("score:")]
@@ -84,7 +84,7 @@ def test_classify_rejects_empty_labels():
     assert resp.status_code == 422
 
 
-def _categories_aa(cats):
+def _categories_classificationScores(cats):
     """A categories AA on the wire: cats = list of (label, template, threshold)."""
     rows, cols, vals = [], [], []
     for i, (label, template, threshold) in enumerate(cats):
@@ -103,7 +103,7 @@ def _categories_aa(cats):
 def test_classify_categories_supersede_labels_and_flag_passed():
     body = _body([], [("doc:1", "A treatise on philosophy and metaphysics.")])
     # Flat labels are ignored; the categories AA supplies the candidate labels.
-    body["categories"] = _categories_aa(
+    body["categories"] = _categories_classificationScores(
         [
             ("philosophy", "This passage is {}", 0.1),
             ("sports", "This passage is {}", 0.9),
@@ -111,9 +111,9 @@ def test_classify_categories_supersede_labels_and_flag_passed():
     )
     resp = client.post("/classify", json=body)
     assert resp.status_code == 200
-    aa = resp.json()["aa"]
+    classificationScores = resp.json()["classificationScores"]
 
-    scores = _scores(aa, "doc:1")
+    scores = _scores(classificationScores, "doc:1")
     # Category `label`s become score: columns; original text is preserved.
     assert {"text", "score:philosophy", "score:sports", "passed"} == set(scores)
     # philosophy clears its low 0.1 threshold; sports cannot clear 0.9.
@@ -121,7 +121,7 @@ def test_classify_categories_supersede_labels_and_flag_passed():
     assert "sports" not in scores["passed"]
 
 
-def test_classify_accepts_dense_categories_aa():
+def test_classify_accepts_dense_categories_classificationScores():
     # The shape of storage/categories/categories.json: rows/cols are the axes
     # and vals is a flattened rows×cols matrix (dense, not sparse triples).
     body = _body([], [("doc:1", "A grandiloquent rhetorical oration.")])
@@ -136,9 +136,9 @@ def test_classify_accepts_dense_categories_aa():
     }
     resp = client.post("/classify", json=body)
     assert resp.status_code == 200
-    aa = resp.json()["aa"]
+    classificationScores = resp.json()["classificationScores"]
 
-    scores = _scores(aa, "doc:1")
+    scores = _scores(classificationScores, "doc:1")
     # All three category labels are recovered as score: columns (spaces → _);
     # original text triple is preserved; passed carries bare label names.
     assert {

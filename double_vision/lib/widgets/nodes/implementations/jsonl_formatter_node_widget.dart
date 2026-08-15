@@ -105,7 +105,7 @@ class IndexTally {
 /// prompt/completion pairs, or one object per row. It replaces the deprecated
 /// `Aa2JsonlNode`, which is no longer in the Node Catalog.
 ///
-/// Ports: `in_aa` (idx 0) is the 7-column documented index, `out_aa` (idx 0) is
+/// Ports: `astIndex` (idx 0) is the 7-column documented index, `jsonlLines` (idx 0) is
 /// the 2-column result (`json_line`, `symbol_name`) — wire it into a Save File
 /// node, which writes `.jsonl` when it sees that column.
 class JsonlFormatterNodeWidget extends BaseNodeWidget {
@@ -143,7 +143,7 @@ class _JsonlFormatterNodeWidgetState
 
   late final JsonlFormatterApi _api;
   late final InputPort _in;
-  final OutputPort _out = OutputPort('out_aa');
+  final OutputPort _out = OutputPort('jsonlLines');
 
   AaPayload? _incoming;
   JsonlFormatMode _mode = JsonlFormatMode.chatml;
@@ -159,7 +159,7 @@ class _JsonlFormatterNodeWidgetState
     super.initState();
     _api = widget.api ?? const JsonlFormatterApi();
     _mode = JsonlFormatMode.byWire(widget.initialParams?['formatMode']);
-    _in = InputPort('in_aa');
+    _in = InputPort('astIndex');
     initInputPort(_in, _onIngress);
     initOutputPort(_out);
   }
@@ -244,13 +244,13 @@ class _JsonlFormatterNodeWidgetState
 
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
-        singleInputConnector(label: 'in_aa'),
+        singleInputConnector(label: 'astIndex'),
       ];
 
   @override
   List<Widget> buildOutputConnectors(BuildContext context) => [
         singleOutputConnector(
-          label: 'out_aa',
+          label: 'jsonlLines',
           idx: 0,
           hasData: (_result?.lineCount ?? 0) > 0,
         ),
@@ -300,7 +300,7 @@ class _JsonlFormatterNodeWidgetState
         if (_incoming == null) ...[
           const SizedBox(height: 6),
           Text(
-            'Waiting for in_aa — wire a documented AST index',
+            'Waiting for astIndex — wire a documented AST index',
             style: theme.textTheme.labelSmall
                 ?.copyWith(color: scheme.onSurfaceVariant),
           ),

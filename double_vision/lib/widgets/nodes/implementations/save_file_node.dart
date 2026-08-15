@@ -103,7 +103,7 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
   @override
   void initState() {
     super.initState();
-    _aaIn = InputPort('aaIn');
+    _aaIn = InputPort('dataToSave');
     initInputPort(_aaIn, _onAaData);
 
     _subscribeText();
@@ -321,7 +321,7 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
         InputConnector(
-          label: 'aaIn',
+          label: 'dataToSave',
           idx: 0,
           active: widget.inputConnected,
           onConnect: widget.onInputConnect,

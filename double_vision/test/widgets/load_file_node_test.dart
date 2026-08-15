@@ -239,7 +239,7 @@ void main() {
     });
   });
 
-  testWidgets('exposes exactly one output port, `aa` at idx 0', (tester) async {
+  testWidgets('exposes exactly one output port, `parsedPayload` at idx 0', (tester) async {
     final ports = <int, OutputPort>{};
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
@@ -250,10 +250,10 @@ void main() {
       ),
     ));
 
-    expect(ports[0]?.id, 'aa');
+    expect(ports[0]?.id, 'parsedPayload');
     // `contents` is gone: one connector, and it is the AA.
     expect(find.text('contents'), findsNothing);
-    expect(find.text('aa'), findsOneWidget);
+    expect(find.text('parsedPayload'), findsOneWidget);
     expect(find.byType(OutputConnector), findsOneWidget);
   });
 }
