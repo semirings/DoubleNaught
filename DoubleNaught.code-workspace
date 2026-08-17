@@ -18,5 +18,9 @@
 		{
 			"path": "../../fhir.Wk/fhir-genalytics.platform/d4m.acc.microservice"
 		}
-	]
+	],
+	"settings": {
+		"cloudcode.project": "doublenaught",
+		"google.cloud.project": "doublenaught"
+	}
 }

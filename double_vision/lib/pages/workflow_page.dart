@@ -514,7 +514,6 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _onCanvasTapUp(TapUpDetails d) {
-    debugPrint('[D4M-diag] _onCanvasTapUp fired');
     _canvasFocus.requestFocus(); // so Delete/Backspace target this canvas
     // Clicking empty canvas selects the edge there (if any) and clears node
     // selection.
@@ -1196,45 +1195,15 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// to reach a bound stops the entire selection, so relative positions survive
   /// any drag.
   void _moveNode(int id, Offset delta, {Offset? globalPosition}) {
-    // Smooth auto-panning when dragging nodes near screen boundaries
-    if (globalPosition != null) {
-      final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
-      if (box != null) {
-        final localCursor = box.globalToLocal(globalPosition);
-        final size = box.size;
-
-        double panDx = 0;
-        double panDy = 0;
-
-        const edgeThreshold = 100.0;
-        const panSpeed = 15.0;
-
-        if (localCursor.dx < edgeThreshold) {
-          panDx = panSpeed;
-        } else if (localCursor.dx > size.width - edgeThreshold) {
-          panDx = -panSpeed;
-        }
-
-        if (localCursor.dy < edgeThreshold) {
-          panDy = panSpeed;
-        } else if (localCursor.dy > size.height - edgeThreshold) {
-          panDy = -panSpeed;
-        }
-
-        if (panDx != 0 || panDy != 0) {
-          _panBy(Offset(panDx, panDy));
-          // Adjust drag delta by the zoom factor so the node stays locked with the cursor
-          delta = delta - Offset(panDx, panDy) / _zoom;
-        }
-      }
-    }
 
     final moving = (_selectedNodeIds.length > 1 && _selectedNodeIds.contains(id))
         ? _selectedNodeIds
         : {id};
 
-    var dx = delta.dx;
-    var dy = delta.dy;
+    // Clamp the delta to prevent huge jumps from runaway feedback loops.
+    // A value like 100 is arbitrary but prevents multi-thousand-pixel jumps.
+    var dx = delta.dx.clamp(-100.0, 100.0);
+    var dy = delta.dy.clamp(-100.0, 100.0);
     for (final n in _nodes) {
       if (!moving.contains(n.id)) continue;
       dx = dx.clamp(-50000.0 - n.x, 50000.0 - n.x);
