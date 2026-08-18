@@ -197,7 +197,7 @@ def aa_from_table(table: pa.Table) -> "AssocArray":
         return out_aa_pydantic
 
     rows: list[str] = []
-    cols: list[str] = list(SCHEMA_COLUMNS) # exactly 7 unique columns
+    cols: list[str] = []
     vals: list[object] = []
     seen: dict[str, int] = {}
 
@@ -207,8 +207,9 @@ def aa_from_table(table: pa.Table) -> "AssocArray":
         seen[key] = count + 1
         if count:
             key = f"{key}#{count}"
-        rows.append(key)
         for column in SCHEMA_COLUMNS:
+            rows.append(key)
+            cols.append(column)
             vals.append(record.get(column) or "")
 
     out_aa_pydantic = AssocArray(rows=rows, cols=cols, vals=vals)
