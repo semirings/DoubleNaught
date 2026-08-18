@@ -1270,6 +1270,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// `categoryIn` at idx 2).
   void _registerAaInput(int nodeId, int idx, InputPort port) {
     (_aaInputPorts[nodeId] ??= <int, InputPort>{})[idx] = port;
+    debugPrint('[BIND-DEBUG] Registered input port: node=$nodeId, idx=$idx');
   }
 
   /// Bind an AA edge on the port bus: the target's InputPort subscribes to the
@@ -1283,7 +1284,13 @@ class _WorkflowPageState extends State<WorkflowPage>
         ? multiPorts[source.idx]
         : _aaOutputPorts[source.nodeId];
     final input = _aaInputPorts[targetId]?[targetIdx];
-    if (out != null && input != null) input.connect(out);
+    debugPrint('[BIND-DEBUG] source=${source.nodeId}.${source.idx} → target=$targetId.$targetIdx | out=$out | input=$input');
+    if (out != null && input != null) {
+      input.connect(out);
+      debugPrint('[BIND-DEBUG] ✓ Connected');
+    } else {
+      debugPrint('[BIND-DEBUG] ✗ Binding failed: out=$out, input=$input');
+    }
   }
 
   /// Unbind [targetId]'s AA InputPort(s) on wire delete / replace / node
@@ -2362,11 +2369,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          // `authInput` (AA, idx 1) — profiles from a Secure Settings node.
-          authConnected: _hasIncomingEdgeAt(node.id, 1),
-          onAuthConnect: (source) => _connectAt(source, node.id, 1),
-          onAuthInputPort: (port) => _registerAaInput(node.id, 1, port),
-          // `dataOutput` (AA, idx 0) — the result matrix.
+          // `enrichedIndex` (AA, idx 0) — the 8-column result with better_docstring.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );

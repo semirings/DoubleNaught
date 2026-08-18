@@ -58,7 +58,7 @@ class ExecSource {
     return cut < 0 ? filePath : filePath.substring(cut + 1);
   }
 
-  static const _codeCols = ['code', 'text', 'content', 'source', 'val'];
+  static const _codeCols = ['code', 'text', 'content', 'source', 'raw_code', 'val'];
   static const _pathCols = ['file_path', 'filepath', 'path', 'file', 'file_name'];
   static const _langCols = ['language', 'lang'];
 
@@ -223,11 +223,13 @@ class _PolyglotExecNodeWidgetState
   }
 
   void _onIngress(AaPayload payload) {
+    debugPrint('[POLYGLOT-DEBUG] _onIngress called! cols=${payload.cols}, mounted=$mounted');
     if (!mounted) return;
     setState(() {
       _incomingAa = payload;
       _source = ExecSource.fromAa(payload);
       _transportError = null;
+      debugPrint('[POLYGLOT-DEBUG] setState completed with ${payload.cols.length} cols');
     });
   }
 

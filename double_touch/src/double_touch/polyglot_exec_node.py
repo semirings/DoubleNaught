@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional, Sequence
 from uuid import uuid4
 
 from .aa_utils import aa_rows
+from .d4m_ops import eval_expression
 from .models import AssocArray
 
 # ---------------------------------------------------------------------------
@@ -546,6 +547,10 @@ def merge_result_aa(
     Row keys are the **input's own**, which is what lets a downstream node line the
     results up against the rows it sent.
 
+    Merge semantics use the right-overwrite semiring (a ⊕ b = b): where the
+    metadata AA (B) and the source AA (A) share a (row, col) key, B's value
+    replaces A's.  This is expressed via D4M.jl's ``right_overwrite(A, B)``.
+
     Args:
         source: The incoming AA. When absent or empty the result is the standalone
             metadata row :meth:`PolyglotExecNode.to_aa` produces — a direct
@@ -570,37 +575,21 @@ def merge_result_aa(
     target = row_key or (source.rows[0] if source.rows else f"exec:{uuid4().hex[:8]}")
     stdout = result.get("stdout") or ""
 
-    # What the metadata will occupy on the target row. Collected first so any
-    # same-named input cell is replaced rather than duplicated: two triples for one
-    # (row, col) is not a cell an AA reader can resolve.
-    appended: dict[str, Any] = {col: result[col] for col in RESULT_COLUMNS}
+    meta: dict[str, Any] = {col: result[col] for col in RESULT_COLUMNS}
     if stdout.strip():
         if stdout_mode == STDOUT_MODE_COLUMN:
-            appended[stdout_column] = stdout
+            meta[stdout_column] = stdout
         elif stdout_mode == STDOUT_MODE_REPLACE and source_column:
-            appended[source_column] = stdout
+            meta[source_column] = stdout
 
-    rows: list[str] = []
-    cols: list[str] = []
-    vals: list[Any] = []
+    meta_cols = list(meta.keys())
+    meta_aa = AssocArray(
+        rows=[target] * len(meta_cols),
+        cols=meta_cols,
+        vals=[meta[c] for c in meta_cols],
+    )
 
-    # Pass 1: every input triple, minus the cells the metadata is about to define.
-    for row, col, val in zip(source.rows, source.cols, source.vals):
-        if row == target and col in appended:
-            continue
-        rows.append(row)
-        cols.append(col)
-        vals.append(val)
-
-    # Pass 2: the metadata, in a stable order — input-shadowing columns first so
-    # `text` keeps roughly its original position, then the contract columns.
-    extra = [c for c in appended if c not in RESULT_COLUMNS]
-    for col in extra + list(RESULT_COLUMNS):
-        rows.append(target)
-        cols.append(col)
-        vals.append(appended[col])
-
-    return AssocArray(rows=rows, cols=cols, vals=vals)
+    return eval_expression({"A": source, "B": meta_aa}, "right_overwrite(A, B)")
 
 
 def _split_args(raw: object) -> list[str]:

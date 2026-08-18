@@ -104,9 +104,51 @@
               "icon": "lucide-file",
               "title": "Gemini models"
             }
+          },
+          {
+            "id": "bc5a99c59eb45f81",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Blender nodes.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Blender nodes"
+            }
+          },
+          {
+            "id": "46fd9c4093852be1",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "UX_UI prompt template.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "UX_UI prompt template"
+            }
+          },
+          {
+            "id": "7bc4652e31c4c7da",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Node Renaming.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Node Renaming"
+            }
           }
         ],
-        "currentTab": 6
+        "currentTab": 9
       }
     ],
     "direction": "vertical"
@@ -270,10 +312,13 @@
       "bases:Create new base": false
     }
   },
-  "active": "e3550eccb000adf6",
+  "active": "7bc4652e31c4c7da",
   "lastOpenFiles": [
-    "Burn Notice.md",
+    "UX_UI prompt template.md",
+    "Node Renaming.md",
+    "Blender nodes.md",
     "Clippings/Gemini models.md",
+    "Burn Notice.md",
     "Treatment 2.md",
     "Clippings/Fine Tuning a VLM.md",
     "Log Line.md",
@@ -296,10 +341,7 @@
     "Clippings/Input port trigger.md",
     "Clippings/D4M in DN.md",
     "Clippings/D4M Eval.md",
-    "Clippings/Claude Distillation Data.md",
-    "Clippings/AgentNode.md",
     "Pasted image 20260618111442.png",
-    "Clippings/YT to Discord Transition.md",
     "Clippings",
     "Untitled.canvas",
     "Untitled.base",

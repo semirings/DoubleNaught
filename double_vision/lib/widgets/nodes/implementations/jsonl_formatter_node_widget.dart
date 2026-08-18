@@ -146,7 +146,7 @@ class _JsonlFormatterNodeWidgetState
   final OutputPort _out = OutputPort('jsonlLines');
 
   AaPayload? _incoming;
-  JsonlFormatMode _mode = JsonlFormatMode.chatml;
+  JsonlFormatMode _mode = JsonlFormatMode.passthrough;
   IndexTally _tally = const IndexTally();
   JsonlFormatResult? _result;
   bool _busy = false;
@@ -294,7 +294,7 @@ class _JsonlFormatterNodeWidgetState
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : const Icon(Icons.format_align_left_rounded, size: 18),
-            label: Text(_busy ? 'Formatting…' : 'Format ChatML'),
+            label: Text(_busy ? 'Formatting…' : 'Format'),
           ),
         ),
         if (_incoming == null) ...[

@@ -92,6 +92,8 @@ from .models import (
     LoadFileRequest,
     AstExtractAaResponse,
     AstExtractRequest,
+    LlmBetterDocRequest,
+    LlmBetterDocResponse,
     JsonlFormatRequest,
     JsonlFormatResponse,
     PolyglotExecRequest,
@@ -146,6 +148,7 @@ from .jsonl_formatter_node import (
     aa_from_table,
 )
 from .polyglot_exec_node import ExecInput, PolyglotExecNode, merge_result_aa
+from .llm_better_doc import LlmBetterDocNode, LlmBetterDocError
 from .workflows_router import router as workflows_router
 
 DEFAULT_WIDTH = 1024
@@ -1425,6 +1428,35 @@ async def ast_extract_aa_endpoint(request: AstExtractRequest) -> AstExtractAaRes
         files_scanned=index.files_scanned,
         errors=index.errors,
         root=index.root,
+    )
+
+
+# --- LLM Better Docstring node (LlmBetterDocNode) ----------------------------
+
+
+@app.post("/llm/enrich-ast", response_model=LlmBetterDocResponse)
+async def llm_enrich_ast(request: LlmBetterDocRequest) -> LlmBetterDocResponse:
+    """Enrich an AST index with LLM-generated better_docstring column.
+
+    Takes the 7-column documented index and generates improved docstrings
+    for each function/macro using the specified LLM model. Uses D4M to add
+    the new column to the output AA.
+    """
+    try:
+        node = LlmBetterDocNode(
+            model_id=request.model_id,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+        )
+        enriched = await run_in_threadpool(node.enrich, request.ast_index)
+    except LlmBetterDocError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return LlmBetterDocResponse(
+        enriched_index=enriched,
+        rows_processed=len(set(request.ast_index.rows)),
     )
 
 

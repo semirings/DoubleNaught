@@ -723,6 +723,28 @@ class AstExtractRequest(CamelModel):
     timeout_s: float = 180.0
 
 
+# --- LLM Better Docstring node (LlmBetterDocNode) -----------------------------
+# Enriches an AST index by generating better_docstring for each row via LLM.
+
+
+class LlmBetterDocRequest(CamelModel):
+    # The 7-column AST index from AstExtractNode.
+    ast_index: AssocArray
+    # HuggingFace model ID or local path. Defaults to Phi-4-mini-instruct.
+    model_id: str = "mlx-community/Phi-4-mini-instruct-4bit"
+    # Maximum tokens per generated docstring.
+    max_tokens: int = 256
+    # Sampling temperature.
+    temperature: float = 0.7
+
+
+class LlmBetterDocResponse(CamelModel):
+    # The input AA with an enriched better_docstring column.
+    enriched_index: AssocArray
+    # Count of rows processed.
+    rows_processed: int
+
+
 # --- JSONL Formatter node (JsonlFormatterNode) --------------------------------
 # A formatting node: it turns the documented 7-column index into ChatML training
 # examples, one JSON object per line, and emits a 2-column AA.

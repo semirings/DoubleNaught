@@ -17,6 +17,9 @@
 		},
 		{
 			"path": "../../fhir.Wk/fhir-genalytics.platform/d4m.acc.microservice"
+		},
+		{
+			"path": "../../d4m.Wk/D4M.py"
 		}
 	],
 	"settings": {

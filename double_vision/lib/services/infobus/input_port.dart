@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import '../../models/aa_payload.dart';
 import 'output_port.dart';
 
@@ -51,15 +53,21 @@ class InputPort {
 
   /// Connect this InputPort to an upstream OutputPort (when a wire is drawn).
   void connect(OutputPort outputPort, {bool pullInitialState = true}) {
+    debugPrint('[PORT-DEBUG] InputPort($id).connect() to OutputPort(${outputPort.id})');
     disconnect(); // Clear any existing connection first
 
     _connectedOutputPort = outputPort;
 
     _subscription = outputPort.connect(
       (payload) {
-        if (!_acceptIngress(payload)) return; // schema guard on ingress
+        debugPrint('[PORT-DEBUG] InputPort($id) ingress: cols=${payload.cols.length}');
+        if (!_acceptIngress(payload)) {
+          debugPrint('[PORT-DEBUG] InputPort($id) dropped payload: empty cols');
+          return; // schema guard on ingress
+        }
         _buffer.add(payload);
         if (_buffer.length > maxBufferSize) _buffer.removeAt(0);
+        debugPrint('[PORT-DEBUG] InputPort($id) firing onDataArrived, buffer size=${_buffer.length}');
         _arrivalController.add(payload);
       },
       emitCurrentState: pullInitialState,
