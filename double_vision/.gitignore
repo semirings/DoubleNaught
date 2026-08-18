@@ -43,3 +43,13 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Blender binary files & auto-saves
+*.blend
+*.blend1
+*.blend2
+*.blend@
+
+# Render outputs & cached previews
+/renders/
+/animation_frames/
