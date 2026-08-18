@@ -9,17 +9,17 @@ import '../base/base_node_widget.dart';
 
 /// Enriches an AST index with LLM-generated better_docstring column.
 ///
-/// Takes the 7-column documented index from AST Extract, calls the backend
+/// Takes the 7-column documented index from Function Extraction, calls the backend
 /// `/llm/enrich-ast` endpoint to generate improved docstrings via LLM, and
 /// emits the enriched index (8 columns) downstream.
 ///
 /// Ports: `astIndex` (idx 0) is the 7-column input, `enrichedIndex` (idx 0)
 /// is the 8-column output with better_docstring added.
-class RemoteServiceNodeWidget extends BaseNodeWidget {
+class LLMDocumenterNodeWidget extends BaseNodeWidget {
   final String? baseUrl;
   final http.Client Function() clientFactory;
 
-  const RemoteServiceNodeWidget({
+  const LLMDocumenterNodeWidget({
     super.key,
     required super.node,
     super.initialParams,
@@ -34,14 +34,14 @@ class RemoteServiceNodeWidget extends BaseNodeWidget {
   });
 
   @override
-  State<RemoteServiceNodeWidget> createState() =>
-      _RemoteServiceNodeWidgetState();
+  State<LLMDocumenterNodeWidget> createState() =>
+      _LLMDocumenterNodeWidgetState();
 }
 
-class _RemoteServiceNodeWidgetState
-    extends BaseNodeState<RemoteServiceNodeWidget> {
+class _LLMDocumenterNodeWidgetState
+    extends BaseNodeState<LLMDocumenterNodeWidget> {
   @override
-  String get nodeTitle => 'Remote Service';
+  String get nodeTitle => 'LLM Documenter';
   @override
   IconData get nodeIcon => Icons.cloud_sync_outlined;
   @override
@@ -208,7 +208,7 @@ class _RemoteServiceNodeWidgetState
         SizedBox(height: BaseNodeState.portLaneClearance(1)),
         if (_incoming == null) ...[
           Text(
-            'Waiting for astIndex — wire an AST Extract node',
+            'Waiting for astIndex — wire a Function Extraction node',
             style: theme.textTheme.labelSmall
                 ?.copyWith(color: scheme.onSurfaceVariant),
           ),

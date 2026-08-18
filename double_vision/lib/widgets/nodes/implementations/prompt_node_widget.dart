@@ -14,7 +14,7 @@ import '../base/output_connector.dart';
 /// Where an ingested file's text lands relative to what is already composed.
 enum PromptInsert { append, prepend }
 
-/// A prompt-authoring processing node — see `DESIGN.md` → "Prompt Node".
+/// A prompt-authoring processing node — see `DESIGN.md` → "Prompt".
 ///
 /// Composes free text (a prompt, a code snippet, an instruction block) and
 /// publishes it on `promptOutput` as an AA. An AA arriving on `fileInput` is
@@ -77,7 +77,7 @@ class PromptNodeWidget extends BaseNodeWidget {
 }
 
 class _PromptNodeWidgetState extends BaseNodeState<PromptNodeWidget> {
-  @override String   get nodeTitle => 'Prompt Node';
+  @override String   get nodeTitle => 'Prompt';
   @override IconData get nodeIcon  => Icons.edit_note_outlined;
   @override double   get nodeWidth => PromptNodeWidget._width;
 

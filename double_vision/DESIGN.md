@@ -191,7 +191,7 @@ snake_case; that convention is **not** carried into DoubleNaught.)
   associative array. It sits at the very edge of the graph: it has no input
   port, only a raw output stream that a downstream node parses into an AA.
 
-## Prompt Node (`promptNode`)
+## Prompt (`promptNode`)
 
 A prompt-authoring processing node: it composes free text (a prompt, a code
 snippet, an instruction block) and publishes it as an AA, optionally seeded from
@@ -219,7 +219,7 @@ an upstream file.
   | `prompt` | the full composed text |
   | `char_count` | length of `prompt` (int) |
 
-- Being AA-in → AA-out, the Prompt Node is a **processing node**, not an ingest
+- Being AA-in → AA-out, the Prompt is a **processing node**, not an ingest
   boundary: it never reads local files itself.
 
 ### Interface policy
@@ -370,7 +370,7 @@ credential, 404 means the base URL isn't the API root, 429 means rate-limited
 exception type, never from the exception's string form, which can quote the
 request and its headers.
 
-## Remote Service node (`remoteServiceNode`)
+## LLM Documenter node (`llmDocumenterNode`)
 
 The graph's egress point. Takes a payload from upstream, a credential *reference*
 from the Secure Settings node, dispatches one request to an online or on-network
@@ -388,7 +388,7 @@ telemetry back on the graph as an AA.
 
 - **`dataInput`** is flattened to prose by `AaPayload.flattenText()`: the cells of
   the first `text` / `prompt` / `content` / `val` column present, else every
-  string value, newline-joined, numeric cells skipped. The Prompt Node's
+  string value, newline-joined, numeric cells skipped. The Prompt's
   `fileInput` reads an upstream AA through the same helper, so "what counts as the
   text of an AA" is defined once rather than twice.
 - **`authInput`** supplies `displayName`, `provider`, `baseUrl`, and
@@ -568,7 +568,7 @@ node without one would never be rendered, so it cannot be an optional annotation
 | Data & Ingestion | Data | sources, sinks, and the inspection nodes |
 | AST & Code Analysis | Code | *(empty — see below)* |
 | Formatting & Serialization | Formatting | JSONL Formatter, Chunk, Tokenizer |
-| AI & Teacher Models | AI/LLM | Remote Service, Secure Settings, prompts, classifiers |
+| AI & Teacher Models | AI/LLM | LLM Documenter, Secure Settings, prompts, classifiers |
 | Execution & Compute | Compute | Polyglot Exec, D4M, Start |
 | Training & Fine-Tuning | Training | Split, Review, model builders and local runners |
 
@@ -702,7 +702,7 @@ sorts, which is right for a matrix and would be wrong here.)
 `/jsonl/format` is Arrow in / Arrow out for the backend pipeline.
 `/jsonl/format/aa` takes and returns the wire AA, because the canvas transports
 JSON triples and Dart has no Arrow reader. Both call the same code; only the
-envelope differs. This is the JSON/Arrow boundary noted under the AST Extract node,
+envelope differs. This is the JSON/Arrow boundary noted under the Function Extraction node,
 drawn explicitly rather than left implicit.
 
 ### Save File extension
@@ -802,7 +802,7 @@ patcher needs that root: `--root=` first, then the index's own `dn_root` metadat
 then the working directory. A relative index with no root available is refused
 rather than guessed at — guessing means patching the wrong tree.
 
-## AST Extract node (`astExtractNode`)
+## Function Extraction node (`functionExtractionNode`)
 
 The canvas front end for the extractor below: point it at a Julia file or tree and
 it emits the 7-column definition index — every function and macro, with its
@@ -836,7 +836,7 @@ The card shows the count on its status row and the **breakdown by kind** beneath
 the panel. An index of zero definitions is reported as an error and **not** emitted:
 an empty AA downstream reads as a successful extraction of nothing.
 
-## AST Extract engine (`AstExtractNode`, Python)
+## Function Extraction engine (`AstExtractNode`, Python)
 
 Indexes every function and macro definition in a Julia source tree and emits the
 result as an **Apache Arrow table**. Backend-only for now: `julia/extract_ast.jl`
@@ -911,7 +911,7 @@ the script.
 
 Runs the source code on an incoming AA under a local interpreter, and puts the
 run's output back on the graph. The execution half of "load a source file, then
-do something with it": `Load File` → **Polyglot Exec** → Preview / Remote Service.
+do something with it": `Load File` → **Polyglot Exec** → Preview / LLM Documenter.
 
 ### Node contract
 
@@ -970,7 +970,7 @@ from — so a downstream node still finds `text` where it left it, alongside `st
 `stdout` and the rest.
 
 It used to answer with metadata only, which dropped the caller's payload: a
-`Remote Service` reading `text` found nothing, because the schema had been
+`LLM Documenter` reading `text` found nothing, because the schema had been
 overwritten rather than extended.
 
 Row keys are the input's own, which is what lets a downstream node line results up

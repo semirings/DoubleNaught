@@ -9,7 +9,7 @@ import 'package:double_vision/services/remote/model_catalog.dart';
 import 'package:double_vision/services/remote/remote_request.dart';
 import 'package:double_vision/services/vault/key_vault.dart';
 import 'package:double_vision/services/vault/vault_store.dart';
-import 'package:double_vision/widgets/nodes/implementations/remote_service_node_widget.dart';
+import 'package:double_vision/widgets/nodes/implementations/llm_documenter_node_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -280,7 +280,7 @@ void main() {
     });
   });
 
-  group('RemoteServiceNodeWidget', () {
+  group('LLMDocumenterNodeWidget', () {
     /// Mounts the node, returning the registered ports and captured emissions.
     Future<
         ({
@@ -302,7 +302,7 @@ void main() {
       await tester.pumpWidget(MaterialApp(
         home: Scaffold(
           body: SingleChildScrollView(
-            child: RemoteServiceNodeWidget(
+            child: LLMDocumenterNodeWidget(
               node: const WorkflowNode(id: 9, type: 'remoteServiceNode'),
               initialParams: params,
               vault: vault,
@@ -333,7 +333,7 @@ void main() {
     testWidgets('declares dataInput, authInput and dataOutput', (tester) async {
       final ports = await pump(tester, vault: await vaultWith(AuthProvider.ollamaLocal));
 
-      expect(find.text('Remote Service'), findsOneWidget);
+      expect(find.text('LLM Documenter'), findsOneWidget);
       expect(find.text('dataInput'), findsOneWidget);
       expect(find.text('authInput'), findsOneWidget);
       expect(find.text('dataOutput'), findsOneWidget);
@@ -616,7 +616,7 @@ void _catalogTests() {
       await tester.pumpWidget(MaterialApp(
         home: Scaffold(
           body: SingleChildScrollView(
-            child: RemoteServiceNodeWidget(
+            child: LLMDocumenterNodeWidget(
               node: const WorkflowNode(id: 9, type: 'remoteServiceNode'),
               vault: vault,
               onAuthInputPort: (p) => auth = p,
@@ -677,7 +677,7 @@ void _catalogTests() {
       await tester.pumpWidget(MaterialApp(
         home: Scaffold(
           body: SingleChildScrollView(
-            child: RemoteServiceNodeWidget(
+            child: LLMDocumenterNodeWidget(
               node: const WorkflowNode(id: 9, type: 'remoteServiceNode'),
               vault: vault,
               onAuthInputPort: (p) => auth = p,

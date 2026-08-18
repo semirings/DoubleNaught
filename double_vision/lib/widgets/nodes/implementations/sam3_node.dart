@@ -55,7 +55,7 @@ class Sam3Node extends BaseNodeWidget {
 }
 
 class _Sam3NodeState extends BaseNodeState<Sam3Node> {
-  @override String   get nodeTitle => 'Segmentation';
+  @override String   get nodeTitle => 'SAM3';
   @override IconData get nodeIcon  => Icons.auto_awesome_mosaic_outlined;
 
   final StreamController<Sam3Payload>      _segments   = StreamController.broadcast();

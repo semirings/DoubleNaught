@@ -53,7 +53,7 @@ void main() {
   testWidgets('dragging one node of a multi-selection moves them all',
       (tester) async {
     await tester.pumpWidget(const MaterialApp(home: WorkflowPage()));
-    await _add(tester, 'Prompt Node');
+    await _add(tester, 'Prompt');
     await _add(tester, 'Preview');
 
     await _click(tester, find.byType(PromptNodeWidget));
@@ -73,7 +73,7 @@ void main() {
 
   testWidgets('relative spacing is unchanged by the drag', (tester) async {
     await tester.pumpWidget(const MaterialApp(home: WorkflowPage()));
-    await _add(tester, 'Prompt Node');
+    await _add(tester, 'Prompt');
     await _add(tester, 'Preview');
     await _click(tester, find.byType(PromptNodeWidget));
     await _click(tester, find.byType(PreviewNode), shift: true);
@@ -92,7 +92,7 @@ void main() {
   testWidgets('dragging an unselected node moves only that node',
       (tester) async {
     await tester.pumpWidget(const MaterialApp(home: WorkflowPage()));
-    await _add(tester, 'Prompt Node');
+    await _add(tester, 'Prompt');
     await _add(tester, 'Preview');
 
     // Select only the prompt; then drag the *other* one.
@@ -109,7 +109,7 @@ void main() {
   testWidgets('the canvas edge stops the whole selection together, unsheared',
       (tester) async {
     await tester.pumpWidget(const MaterialApp(home: WorkflowPage()));
-    await _add(tester, 'Prompt Node');
+    await _add(tester, 'Prompt');
     await _add(tester, 'Preview');
     await _click(tester, find.byType(PromptNodeWidget));
     await _click(tester, find.byType(PreviewNode), shift: true);

@@ -380,8 +380,10 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'prompt_node': // tolerate a snake_case spelling in saved workflows
         // One input: `fileInput` (AA, idx 0).
         return const [0];
-      case 'remoteServiceNode':
+      case 'llmDocumenterNode':
+      case 'remoteServiceNode': // backward compat: old registry type
       case 'remote_service': // tolerate a snake_case spelling in saved workflows
+      case 'llm_documenter': // tolerate a snake_case spelling in saved workflows
         // Two inputs: `dataInput` (AA, idx 0), `authInput` (AA, idx 1).
         return const [0, 1];
       case 'polyglotExecNode':
@@ -392,8 +394,10 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'jsonl_formatter': // tolerate a snake_case spelling in saved workflows
         // One input: `astIndex` (AA, idx 0).
         return const [0];
-      case 'astExtractNode':
+      case 'functionExtractionNode':
+      case 'astExtractNode': // backward compat: old registry type
       case 'ast_extract': // tolerate a snake_case spelling in saved workflows
+      case 'function_extraction': // tolerate a snake_case spelling in saved workflows
         // One input: `codebasePath` (AA, idx 0) — supplies the path to parse.
         return const [0];
       case 'text_model_loader':
@@ -2359,9 +2363,11 @@ class _WorkflowPageState extends State<WorkflowPage>
           onContent: _pushFocusContent,
           onView: _openFocusTab,
         );
-      case 'remoteServiceNode':
+      case 'llmDocumenterNode':
+      case 'remoteServiceNode': // backward compat: old registry type
       case 'remote_service': // tolerate a snake_case spelling in saved workflows
-        return RemoteServiceNodeWidget(
+      case 'llm_documenter': // tolerate a snake_case spelling in saved workflows
+        return LLMDocumenterNodeWidget(
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
@@ -2373,9 +2379,11 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
-      case 'astExtractNode':
+      case 'functionExtractionNode':
+      case 'astExtractNode': // backward compat: old registry type
       case 'ast_extract': // tolerate a snake_case spelling in saved workflows
-        return AstExtractNodeWidget(
+      case 'function_extraction': // tolerate a snake_case spelling in saved workflows
+        return FunctionExtractionNodeWidget(
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,

@@ -113,7 +113,7 @@ void main() {
     });
   });
 
-  group('Prompt Node', () {
+  group('Prompt', () {
     testWidgets('exposes fileInput on the left and promptOutput on the right',
         (tester) async {
       InputPort? input;
@@ -123,7 +123,7 @@ void main() {
         onOutputPort: (p) => output = p,
       ));
 
-      expect(find.text('Prompt Node'), findsOneWidget);
+      expect(find.text('Prompt'), findsOneWidget);
       expect(find.text('fileInput'), findsOneWidget);
       expect(find.text('promptOutput'), findsOneWidget);
       expect(input!.id, 'fileInput');

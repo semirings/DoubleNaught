@@ -53,7 +53,7 @@ Future<void> _pressGroupKey(
 /// Two selected nodes on a fresh canvas.
 Future<void> _twoSelectedNodes(WidgetTester tester) async {
   await tester.pumpWidget(const MaterialApp(home: WorkflowPage()));
-  await _add(tester, 'Prompt Node');
+  await _add(tester, 'Prompt');
   await _add(tester, 'Preview');
   await _clickNode(tester, find.byType(PromptNodeWidget));
   await _clickNode(tester, find.byType(PreviewNode), shift: true);

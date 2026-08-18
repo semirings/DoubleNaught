@@ -120,7 +120,7 @@ const List<NodeType> nodeTypes = [
     tags: ['catalog', 'corpus', 'registry', 'works'],
   ),
   NodeType(
-    name: 'Categories',
+    name: 'Categorize',
     type: 'categories',
     category: NodeCategory.data,
     description: 'Define the label set a classifier scores against.',
@@ -150,8 +150,8 @@ const List<NodeType> nodeTypes = [
 
   // ── AST & Code Analysis ────────────────────────────────────────────────────
   NodeType(
-    name: 'AST Extract',
-    type: 'astExtractNode',
+    name: 'Function Extraction',
+    type: 'functionExtractionNode',
     category: NodeCategory.code,
     description: 'Index every function and macro in a Julia file or tree.',
     tags: ['ast', 'parse', 'julia', 'definitions', 'macro', 'docstring', 'symbols'],
@@ -182,8 +182,8 @@ const List<NodeType> nodeTypes = [
 
   // ── AI & Teacher Models ────────────────────────────────────────────────────
   NodeType(
-    name: 'Remote Service',
-    type: 'remoteServiceNode',
+    name: 'LLM Documenter',
+    type: 'llmDocumenterNode',
     category: NodeCategory.ai,
     description: 'Send a payload to Gemini, Claude, OpenAI or Ollama.',
     tags: ['gemini', 'claude', 'anthropic', 'openai', 'ollama', 'llm', 'teacher', 'api'],
@@ -196,7 +196,7 @@ const List<NodeType> nodeTypes = [
     tags: ['api key', 'credential', 'vault', 'keychain', 'auth', 'secret'],
   ),
   NodeType(
-    name: 'Prompt Node',
+    name: 'Prompt',
     type: 'promptNode',
     category: NodeCategory.ai,
     description: 'Compose a prompt, optionally seeded from a file.',
@@ -217,7 +217,7 @@ const List<NodeType> nodeTypes = [
     tags: ['classify', 'zero-shot', 'labels', 'transformers'],
   ),
   NodeType(
-    name: 'SAM3 Control',
+    name: 'SAM3',
     type: 'sam3',
     category: NodeCategory.ai,
     description: 'Drive SAM3 segmentation with text or box prompts.',

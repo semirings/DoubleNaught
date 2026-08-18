@@ -7,7 +7,7 @@ import '../../../services/infobus/output_port.dart';
 import '../base/base_node_widget.dart';
 
 /// Indexes every function and macro in a Julia source tree — see `DESIGN.md` →
-/// "AST Extract node".
+/// "Function Extraction node".
 ///
 /// Ports: `codebasePath` (idx 0) supplies the path to parse, `astIndex` (idx 0) carries the
 /// 7-column definition index. The path can also be typed directly, so the node is
@@ -15,11 +15,11 @@ import '../base/base_node_widget.dart';
 ///
 /// It **parses**, it does not run. `Polyglot Exec` is the node that executes a
 /// file; this one reads it and answers "what does it define?".
-class AstExtractNodeWidget extends BaseNodeWidget {
+class FunctionExtractionNodeWidget extends BaseNodeWidget {
   /// Backend seam; defaults to the local `/ast/extract/aa` endpoint.
   final AstExtractApi? api;
 
-  const AstExtractNodeWidget({
+  const FunctionExtractionNodeWidget({
     super.key,
     required super.node,
     super.initialParams,
@@ -33,11 +33,11 @@ class AstExtractNodeWidget extends BaseNodeWidget {
   });
 
   @override
-  State<AstExtractNodeWidget> createState() => _AstExtractNodeWidgetState();
+  State<FunctionExtractionNodeWidget> createState() => _FunctionExtractionNodeWidgetState();
 }
 
-class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
-  @override String   get nodeTitle    => 'AST Extract';
+class _FunctionExtractionNodeWidgetState extends BaseNodeState<FunctionExtractionNodeWidget> {
+  @override String   get nodeTitle    => 'Function Extraction';
   @override IconData get nodeIcon     => Icons.account_tree_outlined;
   @override double   get nodeWidth    => 320;
   @override String   get workingLabel => 'parsing';
@@ -112,8 +112,8 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
   /// straight back.
   void _onIngress(AaPayload payload) {
     if (!mounted) return;
-    debugPrint("[DEBUG AST Extract Node] Ingress payload received on codebasePath!");
-    debugPrint("[DEBUG AST Extract Node] Payload dimensions: rows: ${payload.rows.length}, cols: ${payload.cols.length}, vals: ${payload.vals.length}");
+    debugPrint("[DEBUG Function Extraction Node] Ingress payload received on codebasePath!");
+    debugPrint("[DEBUG Function Extraction Node] Payload dimensions: rows: ${payload.rows.length}, cols: ${payload.cols.length}, vals: ${payload.vals.length}");
 
     String? found;
     for (var i = 0; i < payload.cols.length && i < payload.vals.length; i++) {
@@ -136,22 +136,22 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
     // We can auto-extract if there is a path OR if the payload contains text!
     final hasText = payload.cols.contains('text') || payload.cols.contains('raw_text');
     final hasPath = found != null;
-    
-    debugPrint("[DEBUG AST Extract] _onIngress triggered. inputConnected=${widget.inputConnected}, hasPath=$hasPath, hasText=$hasText");
+
+    debugPrint("[DEBUG Function Extraction] _onIngress triggered. inputConnected=${widget.inputConnected}, hasPath=$hasPath, hasText=$hasText");
     if (widget.inputConnected && (hasPath || hasText)) {
-      debugPrint("[DEBUG AST Extract] Dispatching to _extract()...");
+      debugPrint("[DEBUG Function Extraction] Dispatching to _extract()...");
       _extract();
     } else {
-      debugPrint("[DEBUG AST Extract] Skipped _extract(). inputConnected failed or no text/path found.");
+      debugPrint("[DEBUG Function Extraction] Skipped _extract(). inputConnected failed or no text/path found.");
       setIdle();
     }
   }
 
   Future<void> _extract() async {
-    debugPrint("[DEBUG AST Extract] ENTERING _extract()");
+    debugPrint("[DEBUG Function Extraction] ENTERING _extract()");
     if (!mounted) return;
     if (_incomingPayload == null && _upstreamPath == null && _path.text.trim().isEmpty) {
-      debugPrint("[DEBUG AST Extract] Aborting: Both _incomingPayload and _upstreamPath/manual path are empty.");
+      debugPrint("[DEBUG Function Extraction] Aborting: Both _incomingPayload and _upstreamPath/manual path are empty.");
       return;
     }
 
@@ -159,16 +159,16 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
     setWorking();
 
     try {
-      debugPrint("[DEBUG AST Extract] Invoking backend API extract...");
+      debugPrint("[DEBUG Function Extraction] Invoking backend API extract...");
       final res = await _api.extract(_effectivePath, parsedPayload: _incomingPayload);
 
-      debugPrint("[DEBUG AST Extract] RPC SUCCESS. Extracted ${res.aa.rows.length} rows, ${res.aa.cols.length} cols.");
+      debugPrint("[DEBUG Function Extraction] RPC SUCCESS. Extracted ${res.aa.rows.length} rows, ${res.aa.cols.length} cols.");
       if (mounted) {
         setState(() {
           _result = res;
           _busy = false;
         });
-        
+
         if (res.definitionCount == 0) {
           setError('No definitions found in ${_effectivePath.split('/').last}');
         } else {
@@ -179,7 +179,7 @@ class _AstExtractNodeWidgetState extends BaseNodeState<AstExtractNodeWidget> {
         saveParams({'rootPath': _path.text.trim()});
       }
     } catch (e, stack) {
-      debugPrint("[ERROR AST Extract] RPC failed inside _extract(): $e\n$stack");
+      debugPrint("[ERROR Function Extraction] RPC failed inside _extract(): $e\n$stack");
       if (mounted) {
         setState(() => _busy = false);
         setIdle();

@@ -35,7 +35,7 @@ class CategoriesNode extends BaseNodeWidget {
 }
 
 class _CategoriesNodeState extends BaseNodeState<CategoriesNode> {
-  @override String   get nodeTitle => 'Categories';
+  @override String   get nodeTitle => 'Categorize';
   @override IconData get nodeIcon  => Icons.label_outline;
   @override double   get nodeWidth => CategoriesNode._width;
 

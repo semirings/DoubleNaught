@@ -53,7 +53,7 @@ Future<void> _boxSelect(
 /// Two nodes on a fresh canvas: a Prompt on the left, a Preview to its right.
 Future<void> _twoNodes(WidgetTester tester) async {
   await tester.pumpWidget(const MaterialApp(home: WorkflowPage()));
-  await _add(tester, 'Prompt Node');
+  await _add(tester, 'Prompt');
   await _add(tester, 'Preview');
 }
 

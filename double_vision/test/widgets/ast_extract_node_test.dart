@@ -85,8 +85,8 @@ Future<({InputPort input, List<AaPayload> emitted})> _pump(
     MaterialApp(
       home: Scaffold(
         body: SingleChildScrollView(
-          child: AstExtractNodeWidget(
-            node: const WorkflowNode(id: 1, type: 'astExtractNode'),
+          child: FunctionExtractionNodeWidget(
+            node: const WorkflowNode(id: 1, type: 'functionExtractionNode'),
             initialParams: params,
             api: api ?? _api().api,
             inputConnected: inputConnected,
@@ -115,9 +115,9 @@ AaPayload _loadFileAa(String path) => AaPayload(
 
 void main() {
   group('catalog registration', () {
-    test('AST Extract is registered under AST & Code Analysis', () {
-      final entry = nodeTypes.singleWhere((t) => t.type == 'astExtractNode');
-      expect(entry.name, 'AST Extract');
+    test('Function Extraction is registered under AST & Code Analysis', () {
+      final entry = nodeTypes.singleWhere((t) => t.type == 'functionExtractionNode');
+      expect(entry.name, 'Function Extraction');
       expect(entry.category, NodeCategory.code);
       // The category was empty until now.
       expect(
@@ -127,7 +127,7 @@ void main() {
     });
 
     test('it is findable by the words someone would type', () {
-      final entry = nodeTypes.singleWhere((t) => t.type == 'astExtractNode');
+      final entry = nodeTypes.singleWhere((t) => t.type == 'functionExtractionNode');
       for (final query in ['ast', 'macro', 'parse', 'definitions', 'symbols']) {
         expect(entry.matches(query), isTrue, reason: query);
       }
@@ -138,7 +138,7 @@ void main() {
     testWidgets('starts disabled, asking for a path', (tester) async {
       await _pump(tester);
 
-      expect(find.text('AST Extract'), findsOneWidget);
+      expect(find.text('Function Extraction'), findsOneWidget);
       expect(find.textContaining('Wire a Load File node'), findsOneWidget);
       expect(
         tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
@@ -352,7 +352,7 @@ void main() {
     await tester.tap(item);
     await tester.pumpAndSettle();
 
-    expect(find.byType(AstExtractNodeWidget), findsOneWidget);
+    expect(find.byType(FunctionExtractionNodeWidget), findsOneWidget);
     expect(find.textContaining('Wire a Load File node'), findsOneWidget);
   });
 }
