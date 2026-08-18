@@ -119,6 +119,86 @@ def save_aa_json(aa: AssocArray, filename: str) -> Path:
     return out_path
 
 
+#: The unified column name for pre-formatted JSONL lines.
+JSONL_COLUMN = "json_line"
+
+#: The deprecated AA2JSONL node's column. Read, never written — an AA saved from an
+#: older workflow still saves correctly.
+JSONL_COLUMN_LEGACY = "jsonl_line"
+
+#: Both spellings, unified first.
+JSONL_COLUMNS = (JSONL_COLUMN, JSONL_COLUMN_LEGACY)
+
+
+def jsonl_column_of(aa: AssocArray) -> Optional[str]:
+    """Which JSONL column *aa* carries, preferring the unified name, else None."""
+    for candidate in JSONL_COLUMNS:
+        if candidate in aa.cols:
+            return candidate
+    return None
+
+
+def aa_has_jsonl(aa: AssocArray) -> bool:
+    """Whether *aa* is ready to write as JSONL (either column spelling)."""
+    return jsonl_column_of(aa) is not None
+
+
+def save_aa_jsonl(aa: AssocArray, filename: str) -> Path:
+    """Save an AA's ``json_line`` column as a JSONL file under storage/out/.
+
+    One line per entry, joined by newline with a trailing newline — the shape every
+    fine-tuning loader expects.
+
+    Order is **appearance order** in the triples, not sorted row keys. A JSONL file
+    is a sequence, and sorting keys lexically would interleave ``line:10`` before
+    ``line:2``. (:func:`save_aa_csv` sorts, which is fine for a matrix and wrong
+    here.)
+
+    Accepts the deprecated AA2JSONL node's ``jsonl_line`` spelling as a fallback, so
+    an AA produced by an older workflow still saves.
+
+    Args:
+        aa: An AA carrying a ``json_line`` column, e.g. from JsonlFormatterNode.
+        filename: Output filename (without extension; .jsonl added).
+
+    Returns:
+        Path to the written file.
+
+    Raises:
+        ValueError: The AA has no ``json_line`` column, or a line contains a literal
+            newline — which would silently split one example into two records.
+    """
+    filename_clean = filename.removesuffix(".jsonl")
+    out_path = storage_out_dir() / f"{filename_clean}.jsonl"
+
+    column = jsonl_column_of(aa)
+    if column is None:
+        raise ValueError(
+            "cannot write JSONL: the AA has no 'json_line' column "
+            f"(columns present: {sorted(set(aa.cols))})"
+        )
+
+    lines = [
+        str(val)
+        for row, col, val in zip(aa.rows, aa.cols, aa.vals)
+        if col == column and str(val) != ""
+    ]
+    if not lines:
+        raise ValueError(
+            f"cannot write JSONL: every '{column}' entry is empty"
+        )
+
+    for index, line in enumerate(lines):
+        if "\n" in line or "\r" in line:
+            raise ValueError(
+                f"cannot write JSONL: entry {index} contains a literal newline, "
+                "which would split one example across two records"
+            )
+
+    out_path.write_text("".join(f"{line}\n" for line in lines))
+    return out_path
+
+
 def save_text(text: str, filename: str) -> Path:
     """Save plain text under storage/out/.
 
@@ -223,16 +303,23 @@ def execute_save(
         text: Text payload (if present).
         image_base64: Base64-encoded image bytes (if present).
         filename: Output filename (without extension).
-        format: Output format ("parquet", "csv", "json", "txt", "png", "jpg").
+        format: Output format ("parquet", "csv", "json", "jsonl", "txt", "png",
+            "jpg").
 
     Returns:
         Tuple of (output Path, bytes written).
 
     Raises:
-        ValueError: If no data provided or format mismatch.
+        ValueError: If no data provided, the format does not match the payload, or
+            a JSONL write was asked for without a ``json_line`` column.
     """
     if aa is not None:
-        if format == "csv":
+        if format == "jsonl" or (aa_has_jsonl(aa) and filename.endswith(".jsonl")):
+            # Pre-formatted training lines: write them as-is rather than as a
+            # matrix. Triggered by an explicit format or by a .jsonl filename on an
+            # AA that actually carries the column.
+            out_path = save_aa_jsonl(aa, filename)
+        elif format == "csv":
             out_path = save_aa_csv(aa, filename)
         elif format in ("json", "json5"):
             out_path = save_aa_json(aa, filename)

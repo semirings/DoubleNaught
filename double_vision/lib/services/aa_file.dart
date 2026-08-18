@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../config/env.dart';
 import '../models/aa_payload.dart';
 
 /// Shared load/save for an associative array persisted as a single JSON file —
@@ -17,7 +18,7 @@ import '../models/aa_payload.dart';
 /// with `--dart-define=DN_STORAGE_DIR=/path` (run.sh DV passes it). Uses
 /// `dart:io`, so this is desktop/mobile only.
 class AaFile {
-  static const _storageDir = String.fromEnvironment(
+  static String get _storageDir => getEnvVar(
     'DN_STORAGE_DIR',
     defaultValue: '/Users/gcr/populi.Wk/DoubleNaught/storage',
   );

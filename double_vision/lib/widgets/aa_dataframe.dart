@@ -35,6 +35,56 @@ class _AaDataFrameState extends State<AaDataFrame> {
     super.dispose();
   }
 
+  /// Whether this AA is one cell whose value is prose or source rather than a
+  /// datum — multi-line, or long enough that a table cell would clip it.
+  static bool _isSingleTextCell(
+    List<String> rowKeys,
+    List<String> colKeys,
+    Map<String, String> cellOf,
+  ) {
+    if (rowKeys.length != 1 || colKeys.length != 1 || cellOf.length != 1) {
+      return false;
+    }
+    final value = cellOf.values.first;
+    return value.contains('\n') || value.length > 120;
+  }
+
+  /// The one-cell view: a caption naming the `(row, col)` it came from, then the
+  /// whole value, scrollable and selectable.
+  Widget _singleCellText(
+    ThemeData theme,
+    String rowKey,
+    String colKey,
+    String value,
+  ) {
+    final lines = value.split('\n').length;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+            '$rowKey · $colKey — ${value.length} chars, $lines lines',
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+          ),
+        ),
+        Expanded(
+          child: Scrollbar(
+            controller: _vController,
+            child: SingleChildScrollView(
+              controller: _vController,
+              child: SelectableText(
+                value,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -46,61 +96,89 @@ class _AaDataFrameState extends State<AaDataFrame> {
       );
     }
 
+    final aa = widget.aa.toSparse();
+
     // Row keys in first-appearance order; column keys likewise.
-    final allRowKeys = widget.aa.distinctRows();
+    final allRowKeys = aa.distinctRows();
     final allColKeys = <String>[];
-    for (final c in widget.aa.cols) {
+    for (final c in aa.cols) {
       if (!allColKeys.contains(c)) allColKeys.add(c);
     }
 
     // Apply display caps before building any widgets.
-    final rowKeys = allRowKeys.length > _kMaxRows
-        ? allRowKeys.sublist(0, _kMaxRows)
-        : allRowKeys;
-    final colKeys = allColKeys.length > _kMaxCols
-        ? allColKeys.sublist(0, _kMaxCols)
-        : allColKeys;
+    final rowKeys = allRowKeys;
+    final colKeys = allColKeys;
 
-    final rowsClipped = allRowKeys.length > _kMaxRows;
-    final colsClipped = allColKeys.length > _kMaxCols;
+    debugPrint("AaDataFrame Received colKeys (${colKeys.length}): $colKeys");
+
+    final rowsClipped = false;
+    final colsClipped = false;
 
     // (row, col) -> value lookup — only index cells that will be displayed.
     final rowSet = rowKeys.toSet();
     final colSet = colKeys.toSet();
     const sep = '\x00';
     final cellOf = <String, String>{};
-    for (var i = 0; i < widget.aa.cols.length; i++) {
-      final r = widget.aa.rows[i];
-      final c = widget.aa.cols[i];
+    for (var i = 0; i < aa.cols.length; i++) {
+      final r = aa.rows[i];
+      final c = aa.cols[i];
       if (rowSet.contains(r) && colSet.contains(c)) {
-        cellOf['$r$sep$c'] = widget.aa.vals[i].toString();
+        cellOf['$r$sep$c'] = aa.vals[i].toString();
       }
     }
 
+    // A whole file in one cell is not a table. A `Load File` source payload is a
+    // single `text` triple holding thousands of characters, and a DataCell clips
+    // at six lines — which reads exactly like a truncated load. Render it as the
+    // text it is: complete, scrollable, selectable.
+    if (_isSingleTextCell(rowKeys, colKeys, cellOf)) {
+      return _singleCellText(
+        theme,
+        rowKeys.first,
+        colKeys.first,
+        cellOf.values.first,
+      );
+    }
+
     return Scrollbar(
-      controller: _vController,
+      controller: _hController,
+      scrollbarOrientation: ScrollbarOrientation.bottom,
       child: SingleChildScrollView(
-        controller: _vController,
-        scrollDirection: Axis.vertical,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Scrollbar(
-              controller: _hController,
-              child: SingleChildScrollView(
-                controller: _hController,
-                scrollDirection: Axis.horizontal,
-                child: DataTable(
+        controller: _hController,
+        scrollDirection: Axis.horizontal,
+        clipBehavior: Clip.none,
+        child: Scrollbar(
+          controller: _vController,
+          scrollbarOrientation: ScrollbarOrientation.right,
+          child: SingleChildScrollView(
+            controller: _vController,
+            scrollDirection: Axis.vertical,
+            clipBehavior: Clip.none,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                DataTable(
                   headingRowHeight: 36,
                   dataRowMinHeight: 28,
                   dataRowMaxHeight: 120,
-                  columnSpacing: 24,
+                  columnSpacing: 16.0,
                   headingTextStyle: theme.textTheme.labelMedium
                       ?.copyWith(fontWeight: FontWeight.w700),
                   columns: [
-                    const DataColumn(label: Text('row')),
-                    for (final c in colKeys) DataColumn(label: Text(c)),
+                    DataColumn(
+                      label: ConstrainedBox(
+                        constraints: BoxConstraints(minWidth: 80),
+                        child: Text('row'),
+                      ),
+                    ),
+                    for (final c in colKeys)
+                      DataColumn(
+                        label: ConstrainedBox(
+                          constraints: const BoxConstraints(minWidth: 80),
+                          child: Text(c),
+                        ),
+                      ),
                   ],
                   rows: [
                     for (final r in rowKeys)
@@ -126,17 +204,17 @@ class _AaDataFrameState extends State<AaDataFrame> {
                       ),
                   ],
                 ),
-              ),
+                if (rowsClipped || colsClipped)
+                  _TruncationBanner(
+                    theme: theme,
+                    totalRows: allRowKeys.length,
+                    shownRows: rowKeys.length,
+                    totalCols: allColKeys.length,
+                    shownCols: colKeys.length,
+                  ),
+              ],
             ),
-            if (rowsClipped || colsClipped)
-              _TruncationBanner(
-                theme: theme,
-                totalRows: allRowKeys.length,
-                shownRows: rowKeys.length,
-                totalCols: allColKeys.length,
-                shownCols: colKeys.length,
-              ),
-          ],
+          ),
         ),
       ),
     );

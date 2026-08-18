@@ -104,9 +104,9 @@ class _ModelClassifierNodeState extends BaseNodeState<ModelClassifierNode> {
 
   late final ModelCatalogStore _catalog = widget.store ?? ModelCatalogStore();
 
-  final InputPort  _in         = InputPort('aaIn');
+  final InputPort  _in         = InputPort('documentsIn');
   final InputPort  _categoryIn = InputPort('categoryIn');
-  final OutputPort _out        = OutputPort('classifiedAaOut');
+  final OutputPort _out        = OutputPort('classificationScores');
 
   final TextEditingController _manual = TextEditingController();
 
@@ -291,7 +291,7 @@ class _ModelClassifierNodeState extends BaseNodeState<ModelClassifierNode> {
     final labels     = _labelList();
     if (model == null || docs == null || categories == null || labels.isEmpty) {
       setState(() => _error =
-          'Need text on aaIn, a model, and categories on categoryIn.');
+          'Need text on documentsIn, a model, and categories on categoryIn.');
       return;
     }
     setState(() {
@@ -333,7 +333,7 @@ class _ModelClassifierNodeState extends BaseNodeState<ModelClassifierNode> {
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
         InputConnector(
-          label: 'aaIn',
+          label: 'documentsIn',
           idx: 0,
           active: widget.inputConnected,
           onConnect: widget.onInputConnect,
@@ -355,7 +355,7 @@ class _ModelClassifierNodeState extends BaseNodeState<ModelClassifierNode> {
   @override
   List<Widget> buildOutputConnectors(BuildContext context) => [
         singleOutputConnector(
-          label: 'classifiedAaOut',
+          label: 'classificationScores',
           idx: 0,
           hasData: _lastOutput != null,
         ),
@@ -533,7 +533,7 @@ class _ModelClassifierNodeState extends BaseNodeState<ModelClassifierNode> {
     if (_hasText) {
       final chunkCount = _incomingAa!.distinctRows().length;
       return Text(
-        '$chunkCount chunk${chunkCount == 1 ? '' : 's'} · $_bytes bytes on aaIn',
+        '$chunkCount chunk${chunkCount == 1 ? '' : 's'} · $_bytes bytes on documentsIn',
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: muted,
@@ -541,11 +541,11 @@ class _ModelClassifierNodeState extends BaseNodeState<ModelClassifierNode> {
     }
     final incoming = _incomingAa;
     if (incoming == null) {
-      return Text('Connect aaIn (AA payload with text column).', style: muted);
+      return Text('Connect documentsIn (AA payload with text column).', style: muted);
     }
     final cols = {for (final c in incoming.cols) c}.join(', ');
     return Text(
-      "aaIn AA has no 'text' column — got: $cols. Wire Chunk's aaOut here.",
+      "documentsIn AA has no 'text' column — got: $cols. Wire Chunk's aaOut here.",
       maxLines: 3,
       overflow: TextOverflow.ellipsis,
       style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error),

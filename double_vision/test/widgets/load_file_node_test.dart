@@ -1,7 +1,9 @@
 import 'package:double_vision/models/aa_payload.dart';
 import 'package:double_vision/models/workflow.dart';
 import 'package:double_vision/services/infobus/output_port.dart';
-import 'package:double_vision/widgets/nodes/implementations/load_file_node.dart';
+import 'package:double_vision/pages/workflow_page.dart';
+import 'package:double_vision/widgets/nodes/nodes.dart';
+import 'package:double_vision/services/load_file_api.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -24,6 +26,9 @@ Map<String, Object> _cells(AaPayload aa) => {
     };
 
 void main() {
+  _portRoutingTests();
+  _portMigrationTests();
+
   group('contentsToAa', () {
     test('column-major table (parquet/arrow to_pydict) keys rows by index', () {
       final aa = LoadFileNode.contentsToAa({
@@ -105,8 +110,10 @@ void main() {
       final browse = find.byTooltip('Browse…');
       await tester.tapAt(tester.getCenter(browse));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
+      await tester.pumpAndSettle();
 
-      expect(_pathField(tester), '/tmp/picked/export.parquet');
+      expect(_pathField(tester), 'file:///tmp/picked/export.parquet');
     });
 
     testWidgets('a cancelled dialog leaves the path untouched', (tester) async {
@@ -120,6 +127,8 @@ void main() {
       ));
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
       await tester.pumpAndSettle();
 
       expect(_pathField(tester), 'storage/out/export.parquet');
@@ -171,8 +180,10 @@ void main() {
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
+      await tester.pumpAndSettle();
 
-      expect(_pathField(tester), '/Users/me/src/model.jl');
+      expect(_pathField(tester), 'file:///Users/me/src/model.jl');
       expect(find.textContaining('Unsupported file type'), findsNothing);
     });
 
@@ -188,6 +199,8 @@ void main() {
       ));
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
       await tester.pumpAndSettle();
 
       // Reported, not thrown — and the previous path is untouched.
@@ -210,6 +223,8 @@ void main() {
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
+      await tester.pumpAndSettle();
 
       expect(find.text('Unsupported file: Makefile'), findsOneWidget);
     });
@@ -226,6 +241,8 @@ void main() {
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
+      await tester.pumpAndSettle();
       expect(find.text('Unsupported file type: .png'), findsOneWidget);
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Dismiss')));
@@ -234,21 +251,166 @@ void main() {
     });
   });
 
-  testWidgets('contents and aa register as separate indexed ports',
-      (tester) async {
+  testWidgets('exposes exactly one output port, `parsedPayload` at idx 0', (tester) async {
     final ports = <int, OutputPort>{};
     await tester.pumpWidget(MaterialApp(
       home: Scaffold(
         body: LoadFileNode(
           node: const WorkflowNode(id: 1, type: 'load_file'),
-          onContentsOutputPort: (p) => ports[0] = p,
-          onAaOutputPort: (p) => ports[1] = p,
+          onAaOutputPort: (p) => ports[0] = p,
         ),
       ),
     ));
 
-    expect(ports[0]?.id, 'contents');
-    expect(ports[1]?.id, 'aa');
-    expect(ports[0], isNot(same(ports[1])));
+    expect(ports[0]?.id, 'parsedPayload');
+    // `contents` is gone: one connector, and it is the AA.
+    expect(find.text('contents'), findsNothing);
+    expect(find.text('parsedPayload'), findsOneWidget);
+    expect(find.byType(OutputConnector), findsOneWidget);
+  });
+}
+
+/// What lands on the single `aa` output port.
+///
+/// The backend sends an AA for tabular files and for source files alike; the
+/// fallbacks below cover an older backend that sends none, so the port cannot go
+/// silent — the failure that started this.
+void _portRoutingTests() {
+  group('output port routing', () {
+    test('a text response carries the source in a one-cell AA', () {
+      final response = LoadFileResponse(
+        aa: const AaPayload(rows: ['0'], cols: ['text'], vals: ['f(x) = x']),
+        contents: 'f(x) = x',
+        data: const {'text': 'f(x) = x'},
+        payloadType: 'text',
+        message: 'Loaded text from a.jl',
+      );
+
+      // The AA the port emits: one `text` cell, the shape Polyglot Exec reads.
+      expect(response.aa!.cols, ['text']);
+      expect(response.aa!.value('text'), 'f(x) = x');
+    });
+
+    test('a tabular response emits the reconstructed AA', () {
+      final response = LoadFileResponse(
+        aa: const AaPayload(rows: ['r1'], cols: ['val'], vals: [42]),
+        contents: null,
+        data: const {'rowKey': ['r1'], 'colKey': ['val'], 'val': [42]},
+        payloadType: 'associative_array',
+        message: 'Loaded associative_array from t.parquet',
+      );
+
+      // No raw string for a Parquet file, and none is needed: `aa` carries the
+      // reconstructed AA unchanged.
+      expect(response.contents, isNull);
+      expect(response.aa!.value('val'), '42');
+    });
+
+    test('an older backend that sends no AA still populates the aa port', () {
+      // `aa: response.aa ?? contents` — the fallback in the node.
+      final response = LoadFileResponse(
+        contents: 'f(x) = x',
+        data: const {'text': 'f(x) = x'},
+        payloadType: 'text',
+        message: 'Loaded text from a.jl',
+      );
+
+      final contents = LoadFileNode.contentsToAa({'text': response.contents});
+      final parsed = response.aa ?? contents;
+
+      expect(parsed, isNotNull, reason: 'the aa port must not go silent');
+      expect(parsed!.value('text'), 'f(x) = x');
+    });
+
+    test('the response parses the contents field from the wire', () {
+      final parsed = LoadFileResponse.fromJson({
+        'aa': {'rows': ['0'], 'cols': ['text'], 'vals': ['x = 1']},
+        'contents': 'x = 1',
+        'data': {'text': 'x = 1'},
+        'payloadType': 'text',
+        'message': 'Loaded text from a.jl',
+      });
+
+      expect(parsed.contents, 'x = 1');
+      expect(parsed.aa!.value('text'), 'x = 1');
+    });
+  });
+}
+
+/// Saved workflows wired the old `contents`/`aa` indices; loading must re-point
+/// them at the single port that remains.
+void _portMigrationTests() {
+  group('legacy port migration', () {
+    WorkflowEdge edge(int fromNode, int fromIdx) => WorkflowEdge(
+          from: PortRef(nodeId: fromNode, idx: fromIdx),
+          to: const PortRef(nodeId: 9, idx: 1),
+        );
+
+    test('an edge saved from the old aa index (1) is re-pointed to 0', () {
+      // Exactly what classifier.json / d4m.json / remote.json carry.
+      final migrated = migrateLoadFilePorts(
+        const [WorkflowNode(id: 1, type: 'load_file')],
+        [edge(1, 1)],
+      );
+
+      expect(migrated.single.from.idx, 0);
+      expect(migrated.single.to.idx, 1, reason: 'the target end is untouched');
+    });
+
+    test('an edge already on idx 0 is left alone', () {
+      final original = [edge(1, 0)];
+      final migrated = migrateLoadFilePorts(
+        const [WorkflowNode(id: 1, type: 'load_file')],
+        original,
+      );
+      expect(migrated.single.from.idx, 0);
+    });
+
+    test('it is idempotent', () {
+      const nodes = [WorkflowNode(id: 1, type: 'load_file')];
+      final once = migrateLoadFilePorts(nodes, [edge(1, 1)]);
+      final twice = migrateLoadFilePorts(nodes, once);
+      expect(twice.single.from.idx, 0);
+    });
+
+    test('the file_source alias is migrated too', () {
+      final migrated = migrateLoadFilePorts(
+        const [WorkflowNode(id: 1, type: 'file_source')],
+        [edge(1, 1)],
+      );
+      expect(migrated.single.from.idx, 0);
+    });
+
+    test('idx 1 on another node type is preserved', () {
+      // Split's `val` really is the second output — rewriting it would silently
+      // swap a train set for a validation set.
+      final migrated = migrateLoadFilePorts(
+        const [WorkflowNode(id: 1, type: 'split')],
+        [edge(1, 1)],
+      );
+      expect(migrated.single.from.idx, 1);
+    });
+
+    test('a graph with no loader is returned unchanged', () {
+      final original = [edge(1, 1)];
+      final migrated = migrateLoadFilePorts(
+        const [WorkflowNode(id: 1, type: 'chunk')],
+        original,
+      );
+      expect(migrated, same(original), reason: 'no copy when there is no work');
+    });
+
+    test('only the loader\'s own edges move', () {
+      final migrated = migrateLoadFilePorts(
+        const [
+          WorkflowNode(id: 1, type: 'load_file'),
+          WorkflowNode(id: 2, type: 'split'),
+        ],
+        [edge(1, 1), edge(2, 1)],
+      );
+
+      expect(migrated[0].from.idx, 0, reason: 'the loader');
+      expect(migrated[1].from.idx, 1, reason: 'the split');
+    });
   });
 }

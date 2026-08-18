@@ -43,7 +43,7 @@ void main() {
     await _add(tester, 'Preview');
 
     // Preview starts unwired.
-    expect(find.text('Connect a source (bytes or AA)'), findsOneWidget);
+    expect(find.text('Connect an AA source'), findsOneWidget);
 
     // Nodes are already 360 px apart horizontally (grid layout), so only move
     // Preview down to make sure its input port doesn't overlap the title bar.
@@ -51,8 +51,8 @@ void main() {
         find.byIcon(Icons.drag_indicator).at(1), const Offset(0, 100));
     await tester.pumpAndSettle();
 
-    // Drag from File Source's first output (`contents`, idx 0 — the byte
-    // stream) to Preview's first input (`bytes`, idx 0).
+    // Drag from File Source's first output (`parsedPayload`, idx 0 — the AA
+    // stream) to Preview's first input (`previewData`, idx 0).
     final from = tester.getCenter(find.byType(Draggable<PortRef>).first);
     final to = tester.getCenter(find.byType(InputConnector).first);
     final gesture = await tester.startGesture(from);
@@ -64,6 +64,6 @@ void main() {
 
     // The input is now wired: the unconnected hint is gone.
     expect(find.byType(PreviewNode), findsOneWidget);
-    expect(find.text('Connect a source (bytes or AA)'), findsNothing);
+    expect(find.text('Connect an AA source'), findsNothing);
   });
 }

@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 
 
 def main() -> None:
+    # 1. Define paths to local and global env files
+    local_env = Path(".env")
+    global_env = Path.home() / ".gemini" / ".env"
+
+    # 2. Load global env first, then override with local env if present
+    if global_env.exists():
+        load_dotenv(dotenv_path=global_env)
+
+    if local_env.exists():
+        load_dotenv(dotenv_path=local_env, override=True)
+
     import uvicorn
 
     uvicorn.run(

@@ -177,6 +177,56 @@ def to_arrow_bytes(table: pa.Table) -> bytes:
     return sink.getvalue().to_pybytes()
 
 
+def aa_from_table(table: pa.Table) -> "AssocArray":
+    """The 7-column index as a wire AA (dense row-major matrix), for the canvas.
+
+    Row keys are ``<file_path>:<line_range>`` — informative, and unique because the
+    walk never descends into a definition's body, so two definitions cannot share a
+    file and a line span. A ``#n`` suffix is appended if one ever does, because a
+    duplicate row key would silently merge two definitions into one row.
+
+    Dart has no Arrow reader, which is the whole reason this exists; the Arrow route
+    stays the canonical one for the backend pipeline.
+    """
+    from .models import AssocArray  # local: avoids a cycle at module import
+
+    records = table.select(list(SCHEMA_COLUMNS)).to_pylist()
+    if not records:
+        out_aa_pydantic = AssocArray(rows=[], cols=[], vals=[])
+        print(f"[TRACE DT] Julia extraction complete. Empty table.")
+        return out_aa_pydantic
+
+    rows: list[str] = []
+    cols: list[str] = []
+    vals: list[object] = []
+    seen: dict[str, int] = {}
+
+    for record in records:
+        key = f"{record.get('file_path') or '?'}:{record.get('line_range') or '?'}"
+        count = seen.get(key, 0)
+        seen[key] = count + 1
+        if count:
+            key = f"{key}#{count}"
+        for column in SCHEMA_COLUMNS:
+            rows.append(key)
+            cols.append(column)
+            vals.append(record.get(column) or "")
+
+    out_aa_pydantic = AssocArray(rows=rows, cols=cols, vals=vals)
+
+    # Map to dict to support .get() safely and run the exact requested print statements
+    out_aa = {
+        "rows": out_aa_pydantic.rows,
+        "cols": out_aa_pydantic.cols,
+        "vals": out_aa_pydantic.vals
+    }
+    print(f"[TRACE DT] Julia extraction complete.")
+    print(f"[TRACE DT] Output row_keys count: {len(out_aa.row_keys if hasattr(out_aa, 'row_keys') else out_aa.get('rows', []))}")
+    print(f"[TRACE DT] Output col_keys: {out_aa.col_keys if hasattr(out_aa, 'col_keys') else out_aa.get('cols', [])}")
+
+    return out_aa_pydantic
+
+
 class AstExtractNode:
     """Node wrapper around ``extract_ast.jl``.
 
@@ -204,31 +254,141 @@ class AstExtractNode:
         root: Union[str, Path],
         *,
         out_path: Optional[Union[str, Path]] = None,
+        parsed_payload: Optional[AssocArray] = None,
     ) -> AstIndex:
         """Index every function and macro under [root].
 
-        [out_path] keeps the Arrow artifact at a chosen location; by default it
-        goes to a temporary file, which is read and then removed — the table
-        itself lives on in memory.
+        If [parsed_payload] is provided, walks each Julia (.jl) file path present
+        in the multi-row payload and combines all extracted definitions into a
+        single merged AstIndex.
 
         Raises:
-            AstExtractError: the root does not exist, the script is missing, Julia
-                is not installed, the run failed or timed out, or what it wrote is
-                not the agreed schema.
+            AstExtractError: parsing or extraction failure.
         """
+        inputs = {
+            "parsedPayload": parsed_payload,
+            "codebasePath": parsed_payload,
+            "aa": parsed_payload,
+        }
+
+        print("================ [AST EXTRACT RUNNING] ================")
+        print(f"[AST EXTRACT] Raw inputs: {list(inputs.keys())}")
+
+        # Extract incoming AA dataframe/dictionary
+        aa_payload = inputs.get("codebasePath") or inputs.get("parsedPayload")
+        raw_code = None
+
+        if hasattr(aa_payload, "to_dict"):
+            # Extract text column from AA
+            raw_code = aa_payload.to_dict().get("text", [None])[0]
+        elif isinstance(aa_payload, dict):
+            raw_code = aa_payload.get("text")
+
+        print(f"[DEBUG AST Extract] Extracted raw_code length: {len(raw_code) if raw_code else 'NONE'}")
+
+        print(f"[DEBUG AstExtractNode] Raw root_path: {root}")
+        print(f"[DEBUG AstExtractNode] Ingested parsed_payload: {parsed_payload}")
+
+        if not str(root).strip() and not parsed_payload:
+            print("[DEBUG AstExtractNode] Execution skipped: No path or upstream AA provided.")
+            raise AstExtractError("No path or upstream AA payload provided.")
+
+        if parsed_payload is not None:
+            from .aa_utils import aa_rows
+            records = aa_rows(parsed_payload)
+            jl_files = []
+            
+            # Create a temporary directory to write in-memory file contents so the
+            # Julia parser can read them as standard files.
+            temp_sources_dir = tempfile.TemporaryDirectory(prefix="dn_ast_sources_")
+            temp_sources_path = Path(temp_sources_dir.name)
+
+            try:
+                for row_key, rec in records:
+                    ext = rec.get("extension", "").lower()
+                    f_path = rec.get("file_path", "") or rec.get("filepath", "") or rec.get("path", "")
+                    text = rec.get("text", "") or rec.get("raw_text", "")
+
+                    if not f_path:
+                        f_path = f"source_{row_key}.jl"
+
+                    if ext == ".jl" or Path(f_path).suffix.lower() == ".jl" or text.strip():
+                        # Write the in-memory text to a temporary local file,
+                        # preserving its base name.
+                        safe_name = Path(f_path).name or f"source_{row_key}.jl"
+                        # Force `.jl` extension so Julia's `julia_files()` walker accepts and parses it
+                        if not safe_name.endswith(".jl"):
+                            safe_name = Path(safe_name).stem + f"_{row_key}.jl"
+                        temp_file = temp_sources_path / safe_name
+                        temp_file.write_text(text, encoding="utf-8")
+                        jl_files.append((temp_file, f_path))
+
+                if not jl_files:
+                    raise AstExtractError("No Julia (.jl) files found in the payload")
+
+                tables = []
+                all_errors = []
+                scanned = 0
+
+                for temp_file, orig_path in jl_files:
+                    try:
+                        # Extract the AST from the temporary file buffer
+                        index = await self._run_extractor(temp_file, keep=False)
+                        
+                        # Re-point the "file_path" column back to its original name.
+                        # This ensures downstream nodes (such as Patch Docstrings)
+                        # can cleanly locate the file.
+                        repointed_rows = [orig_path] * index.table.num_rows
+                        cols_dict = {}
+                        for col_name in index.table.column_names:
+                            if col_name == "file_path":
+                                cols_dict[col_name] = pa.array(repointed_rows, type=pa.string())
+                            else:
+                                cols_dict[col_name] = index.table.column(col_name)
+
+                        repointed_table = pa.table(cols_dict, schema=index.table.schema)
+                        tables.append(repointed_table)
+                        all_errors.extend(index.errors)
+                        scanned += index.files_scanned
+                    except Exception as exc:
+                        all_errors.append(f"{orig_path}: Extraction failed: {exc}")
+
+                if not tables:
+                    raise AstExtractError("Could not extract AST from any of the Julia files")
+
+                merged_table = pa.concat_tables(tables)
+                return AstIndex(
+                    table=merged_table,
+                    errors=all_errors,
+                    files_scanned=scanned,
+                    root=str(root),
+                )
+            finally:
+                temp_sources_dir.cleanup()
+
+        return await self._run_extractor(root, keep=(out_path is not None), out_path=out_path)
+
+    async def _run_extractor(
+        self,
+        root: Union[str, Path],
+        *,
+        keep: bool = False,
+        out_path: Optional[Union[str, Path]] = None,
+    ) -> AstIndex:
         source_root = Path(root).expanduser()
-        if not source_root.is_dir():
-            raise AstExtractError(f"not a directory: {source_root}")
+        # A single `.jl` file is a valid root: the canvas extracts the file a
+        # `Load File` node opened, not the tree around it.
+        if not source_root.is_dir() and not source_root.is_file():
+            raise AstExtractError(f"no such file or directory: {source_root}")
         if not self.script.is_file():
             raise AstExtractError(
                 f"extraction script not found at {self.script} "
                 f"(set ${SCRIPT_ENV_VAR} to relocate it)"
             )
 
-        keep = out_path is not None
         destination = (
             Path(out_path).expanduser()
-            if keep
+            if keep and out_path
             else Path(tempfile.mkdtemp(prefix="dn_ast_")) / "ast_index.arrow"
         )
         destination.parent.mkdir(parents=True, exist_ok=True)

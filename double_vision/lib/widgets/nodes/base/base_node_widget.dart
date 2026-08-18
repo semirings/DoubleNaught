@@ -341,8 +341,12 @@ abstract class BaseNodeState<T extends BaseNodeWidget> extends State<T> {
   /// the subclass; dispose it in the subclass `dispose()` — [InputPort.dispose]
   /// also cancels the stream subscription.
   void initInputPort(InputPort port, void Function(AaPayload) onData) {
+    debugPrint('[PORT-DEBUG] initInputPort registered');
     widget.onInputPort?.call(port);
-    port.onDataArrived.listen(onData);
+    port.onDataArrived.listen((payload) {
+      debugPrint('[PORT-DEBUG] InputPort received data: ${payload.cols}');
+      onData(payload);
+    });
   }
 
   /// Register [port] with the canvas.

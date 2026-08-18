@@ -10,9 +10,7 @@ Row-key triplet layout: each non-zero cell of an Assoc is one record.
                stability across numeric, boolean, and text columns
     metadata : string — optional per-triple annotation (empty string = absent)
 
-This is the canonical format for general-purpose AA persistence.  For the
-ML-pipeline binary-cache schema (chunkId, text, scores, …) see
-:mod:`aa_binary_normalizer`.
+This is the canonical format for general-purpose AA persistence.
 
 Usage::
 

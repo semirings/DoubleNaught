@@ -1,4 +1,5 @@
 import 'package:sanity_client/sanity_client.dart';
+import 'env.dart';
 
 /// Sanity / CMS configuration for the DoubleNaught front-end.
 ///
@@ -12,10 +13,9 @@ import 'package:sanity_client/sanity_client.dart';
 ///   --dart-define=SANITY_TOKEN=skxxxx
 /// ```
 class DoubleVisionSanity {
-  static const projectId = String.fromEnvironment('SANITY_PROJECT_ID');
-  static const dataset =
-      String.fromEnvironment('SANITY_DATASET', defaultValue: 'production');
-  static const token = String.fromEnvironment('SANITY_TOKEN');
+  static String get projectId => getEnvVar('SANITY_PROJECT_ID');
+  static String get dataset => getEnvVar('SANITY_DATASET', defaultValue: 'production');
+  static String get token => getEnvVar('SANITY_TOKEN');
 
   /// True once a Sanity project id has been provided. Until then the app runs
   /// against local routes only (see [rootFeature]).

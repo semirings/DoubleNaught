@@ -11,8 +11,10 @@ import '../services/infobus/output_port.dart';
 import '../models/node_group.dart';
 import '../models/workflow.dart';
 import '../services/canvas/grouping.dart';
+import '../services/workflow_api.dart';
 import '../services/workflow_store.dart';
 import '../widgets/focus_panel.dart';
+import '../widgets/node_catalog_widget.dart';
 import '../widgets/nodes/nodes.dart';
 
 /// Default node width — used both for layout and to anchor edge endpoints.
@@ -34,6 +36,8 @@ double _nodeWidthFor(String type) {
   if (type == 'd4m') { return _kD4mNodeWidth; }
   if (type == NodeGroup.type) { return 260; }
   if (type == 'polyglotExecNode') { return 320; }
+  if (type == 'jsonlFormatterNode') { return 320; }
+  if (type == 'astExtractNode') { return 320; }
   if (type == 'inventory' ||
       type == 'review' ||
       type == 'load_model' ||
@@ -44,6 +48,37 @@ double _nodeWidthFor(String type) {
   return _kNodeWidth;
 }
 
+/// Re-point Load File edges saved against the removed `contents` port.
+///
+/// Load File used to expose `contents` at idx 0 and `aa` at idx 1; it now has only
+/// `aa`, at idx 0. Workflows saved before that carry `fromIdx: 1`, which would
+/// resolve to no registered port — the wire would draw a lane too low and carry
+/// nothing. Both old indices mean the same port now, so both map to 0.
+///
+/// Only edges leaving a `load_file` / `file_source` node are touched: idx 1 is a
+/// real second output elsewhere (Split's `val`, for one). Idempotent, and the
+/// corrected edges are written back on the next save.
+///
+/// Top-level and public so it can be tested as the pure function it is.
+List<WorkflowEdge> migrateLoadFilePorts(
+  List<WorkflowNode> nodes,
+  List<WorkflowEdge> edges,
+) {
+  final loaders = {
+    for (final n in nodes)
+      if (n.type == 'load_file' || n.type == 'file_source') n.id,
+  };
+  if (loaders.isEmpty) return edges;
+
+  return [
+    for (final e in edges)
+      if (loaders.contains(e.from.nodeId) && e.from.idx != 0)
+        e.copyWith(from: PortRef(nodeId: e.from.nodeId, idx: 0))
+      else
+        e,
+  ];
+}
+
 /// Vertical offset (from a node's top) at which edges attach. Approximate; the
 /// real connectors sit at different heights per node type.
 const double _kPortY = 40;
@@ -51,7 +86,15 @@ const double _kPortY = 40;
 /// A minimal workflow editor: a thin header to instantiate and save nodes, a
 /// draggable-node canvas, and connector-to-connector edge creation.
 class WorkflowPage extends StatefulWidget {
-  const WorkflowPage({super.key});
+  /// Workflow CRUD backend. Injected in tests; defaults to the local service.
+  final WorkflowApi? workflowApi;
+
+  /// Saved-workflow storage. **Injected in tests** — the default points at the
+  /// real `storage/workflows`, so a test that deletes without overriding this
+  /// would remove the user's own files.
+  final WorkflowStore? workflowStore;
+
+  const WorkflowPage({super.key, this.workflowApi, this.workflowStore});
 
   @override
   State<WorkflowPage> createState() => _WorkflowPageState();
@@ -60,6 +103,12 @@ class WorkflowPage extends StatefulWidget {
 class _WorkflowPageState extends State<WorkflowPage>
     with SingleTickerProviderStateMixin {
   static const _version = '0.1.0';
+
+  /// Saved-workflow storage — the injected one, or the default local store.
+  WorkflowStore get _store => widget.workflowStore ?? WorkflowStore();
+
+  /// Workflow CRUD client — the injected one, or the default local backend.
+  WorkflowApi get _workflowApi => widget.workflowApi ?? const WorkflowApi();
 
   final List<WorkflowNode> _nodes = [];
   final List<WorkflowEdge> _edges = [];
@@ -308,17 +357,17 @@ class _WorkflowPageState extends State<WorkflowPage>
   Iterable<int> _inputIndicesFor(WorkflowNode n) {
     switch (n.type) {
       case 'preview':
-        // Two inputs: `bytes` (idx 0) and `aa` (idx 1).
-        return const [0, 1];
+        // One input: `previewData` (idx 0).
+        return const [0];
       case 'load_model':
         // Two inputs: `trigger` (AA, idx 0) and `urlIn` (String, idx 1).
         return const [0, 1];
       case 'model_classifier':
-        // Three inputs: `aaIn` (AA, idx 0), `modelIn` (String, idx 1),
+        // Three inputs: `documentsIn` (AA, idx 0), `modelIn` (String, idx 1),
         // `categoryIn` (AA, idx 2).
         return const [0, 1, 2];
       case 'save_file':
-        // Three inputs: `aaIn` (AA, idx 0), `textIn` (String, idx 1),
+        // Three inputs: `dataToSave` (AA, idx 0), `textIn` (String, idx 1),
         // `imageIn` (bytes, idx 2).
         return const [0, 1, 2];
       case NodeGroup.type:
@@ -337,7 +386,15 @@ class _WorkflowPageState extends State<WorkflowPage>
         return const [0, 1];
       case 'polyglotExecNode':
       case 'polyglot_exec': // tolerate a snake_case spelling in saved workflows
-        // One input: `in_aa` (AA, idx 0).
+        // One input: `executionPayload` (AA, idx 0).
+        return const [0];
+      case 'jsonlFormatterNode':
+      case 'jsonl_formatter': // tolerate a snake_case spelling in saved workflows
+        // One input: `astIndex` (AA, idx 0).
+        return const [0];
+      case 'astExtractNode':
+      case 'ast_extract': // tolerate a snake_case spelling in saved workflows
+        // One input: `codebasePath` (AA, idx 0) — supplies the path to parse.
         return const [0];
       case 'text_model_loader':
         // One optional input: `trigger` (AA, idx 0).
@@ -457,7 +514,6 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _onCanvasTapUp(TapUpDetails d) {
-    debugPrint('[D4M-diag] _onCanvasTapUp fired');
     _canvasFocus.requestFocus(); // so Delete/Backspace target this canvas
     // Clicking empty canvas selects the edge there (if any) and clears node
     // selection.
@@ -968,8 +1024,8 @@ class _WorkflowPageState extends State<WorkflowPage>
         WorkflowNode(
           id: _nextId++,
           type: type.type,
-          x: canvasPos.dx.clamp(0, 4000),
-          y: canvasPos.dy.clamp(_kPortY, 4000),
+          x: canvasPos.dx.clamp(-50000.0, 50000.0),
+          y: canvasPos.dy.clamp(-50000.0, 50000.0),
         ),
       );
     });
@@ -1138,17 +1194,20 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// neighbours kept going, shearing the arrangement apart. Here the first node
   /// to reach a bound stops the entire selection, so relative positions survive
   /// any drag.
-  void _moveNode(int id, Offset delta) {
+  void _moveNode(int id, Offset delta, {Offset? globalPosition}) {
+
     final moving = (_selectedNodeIds.length > 1 && _selectedNodeIds.contains(id))
         ? _selectedNodeIds
         : {id};
 
-    var dx = delta.dx;
-    var dy = delta.dy;
+    // Clamp the delta to prevent huge jumps from runaway feedback loops.
+    // A value like 100 is arbitrary but prevents multi-thousand-pixel jumps.
+    var dx = delta.dx.clamp(-100.0, 100.0);
+    var dy = delta.dy.clamp(-100.0, 100.0);
     for (final n in _nodes) {
       if (!moving.contains(n.id)) continue;
-      dx = dx.clamp(-n.x, 4000 - n.x);
-      dy = dy.clamp(_kPortY - n.y, 4000 - n.y);
+      dx = dx.clamp(-50000.0 - n.x, 50000.0 - n.x);
+      dy = dy.clamp(-50000.0 - n.y, 50000.0 - n.y);
     }
     if (dx == 0 && dy == 0) return;
 
@@ -1211,6 +1270,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// `categoryIn` at idx 2).
   void _registerAaInput(int nodeId, int idx, InputPort port) {
     (_aaInputPorts[nodeId] ??= <int, InputPort>{})[idx] = port;
+    debugPrint('[BIND-DEBUG] Registered input port: node=$nodeId, idx=$idx');
   }
 
   /// Bind an AA edge on the port bus: the target's InputPort subscribes to the
@@ -1224,7 +1284,13 @@ class _WorkflowPageState extends State<WorkflowPage>
         ? multiPorts[source.idx]
         : _aaOutputPorts[source.nodeId];
     final input = _aaInputPorts[targetId]?[targetIdx];
-    if (out != null && input != null) input.connect(out);
+    debugPrint('[BIND-DEBUG] source=${source.nodeId}.${source.idx} → target=$targetId.$targetIdx | out=$out | input=$input');
+    if (out != null && input != null) {
+      input.connect(out);
+      debugPrint('[BIND-DEBUG] ✓ Connected');
+    } else {
+      debugPrint('[BIND-DEBUG] ✗ Binding failed: out=$out, input=$input');
+    }
   }
 
   /// Unbind [targetId]'s AA InputPort(s) on wire delete / replace / node
@@ -1459,7 +1525,7 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   Future<void> _refreshSavedWorkflows() async {
     try {
-      final list = await WorkflowStore().list();
+      final list = await _store.list();
       if (mounted) setState(() => _savedWorkflows = list);
     } catch (_) {
       // Listing is best-effort; a storage error just leaves the menu empty.
@@ -1482,7 +1548,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     final name = await _promptWorkflowName(initial: _currentWorkflowName);
     if (name == null) return; // cancelled
     final slug = WorkflowStore.slugify(name);
-    if (slug != _currentWorkflowSlug && await WorkflowStore().exists(slug)) {
+    if (slug != _currentWorkflowSlug && await _store.exists(slug)) {
       final overwrite = await _confirm(
         title: 'Name in use',
         message: 'A workflow named "$name" already exists. Overwrite it?',
@@ -1507,7 +1573,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     final workflow = Workflow(version: _version, nodes: nodes, edges: _edges);
     String message;
     try {
-      await WorkflowStore().write(slug, name, workflow);
+      await _store.write(slug, name, workflow);
       message =
           'Saved "$name" — ${_nodes.length} node(s), '
           '${_edges.length} edge(s)';
@@ -1534,7 +1600,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     }
     Workflow? loaded;
     try {
-      loaded = await WorkflowStore().read(meta.slug);
+      loaded = await _store.read(meta.slug);
     } catch (e) {
       _showMessage('Could not open "${meta.name}": $e');
       return;
@@ -1548,7 +1614,7 @@ class _WorkflowPageState extends State<WorkflowPage>
     setState(() {
       _resetCanvasState();
       _nodes.addAll(wf.nodes);
-      _edges.addAll(wf.edges);
+      _edges.addAll(migrateLoadFilePorts(wf.nodes, wf.edges));
       // Restore each node's saved settings so its widget can re-read them.
       for (final n in wf.nodes) {
         if (n.params.isNotEmpty) _nodeParams[n.id] = Map.of(n.params);
@@ -1571,26 +1637,58 @@ class _WorkflowPageState extends State<WorkflowPage>
     _showMessage('Loaded "${meta.name}"');
   }
 
+  /// Delete a saved workflow, after confirmation.
+  ///
+  /// The backend owns the delete (`DELETE /workflows/{id}`) so it can refuse while
+  /// the workflow is executing. Two of its answers are **not** refusals and fall
+  /// back to the local store:
+  ///
+  ///  * `unreachable` — workflows are local files and the app works without the
+  ///    backend, so a dead server must not make them undeletable.
+  ///  * `404` — the backend is not holding this file; the user still asked for it
+  ///    to go.
+  ///
+  /// A `409` never falls back: deleting a workflow the server just said is running
+  /// is precisely what that status exists to prevent.
   Future<void> _deleteWorkflow(WorkflowMeta meta) async {
     final ok = await _confirm(
-      title: 'Delete workflow',
-      message: 'Delete saved workflow "${meta.name}"? This cannot be undone.',
+      title: 'Delete Workflow',
+      message: 'Are you sure you want to delete \'${meta.name}\'? '
+          'This action cannot be undone.',
       confirmLabel: 'Delete',
       destructive: true,
     );
     if (!ok) return;
+
+    var deleted = false;
     try {
-      await WorkflowStore().delete(meta.slug);
-    } catch (e) {
-      _showMessage('Delete failed: $e');
-      return;
+      deleted = await _workflowApi.deleteWorkflow(meta.slug);
+    } on WorkflowDeleteException catch (e) {
+      if (e.reason == WorkflowDeleteFailure.conflict) {
+        _showMessage('Cannot delete "${meta.name}": ${e.message}');
+        return;
+      }
+      if (e.reason != WorkflowDeleteFailure.unreachable &&
+          e.reason != WorkflowDeleteFailure.notFound) {
+        _showMessage('Delete failed: ${e.message}');
+        return;
+      }
+      // Fall through to the local store.
     }
-    if (_currentWorkflowSlug == meta.slug) {
-      setState(() {
-        _currentWorkflowSlug = null;
-        _currentWorkflowName = null;
-      });
+
+    if (!deleted) {
+      try {
+        await _store.delete(meta.slug);
+      } catch (e) {
+        _showMessage('Delete failed: $e');
+        return;
+      }
     }
+
+    // The open workflow just went: reset the canvas rather than leaving an
+    // orphaned graph that Save would recreate under the deleted name.
+    if (_currentWorkflowSlug == meta.slug) _clear();
+
     await _refreshSavedWorkflows();
     _showMessage('Deleted "${meta.name}"');
   }
@@ -1717,6 +1815,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           const _LogoBanner(),
           _Header(
             onAdd: _addNode,
+            onCatalogClosed: () => _canvasFocus.requestFocus(),
             onRun: _nodes.isEmpty ? null : _runWorkflow,
             running: _isRunning,
             onSave: _save,
@@ -1999,7 +2098,7 @@ class _WorkflowPageState extends State<WorkflowPage>
                   onPanStart: (_) => _bringToFront(node.id),
                   onPanUpdate: (d) {
                     _draggedSincePress = true;
-                    _moveNode(node.id, d.delta);
+                    _moveNode(node.id, d.delta, globalPosition: d.globalPosition);
                   },
                 ),
               ),
@@ -2104,14 +2203,12 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // `aa` is also the node's headline output (Focus Panel edits re-emit
-          // on it); both ports additionally register by index so _bindAaPorts
-          // can tell a `contents` wire from an `aa` wire.
+          // One output, `aa`, at idx 0. Registered both flat (the headline output
+          // the Focus Panel re-emits on) and by index, so an edge drawn from the
+          // port resolves the same way multi-output nodes do.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
-          onContentsOutputPort: (port) =>
-              (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
           onAaOutputPort: (port) =>
-              (_aaMultiOutputPorts[node.id] ??= {})[1] = port,
+              (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'image_display':
@@ -2220,6 +2317,8 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
+      // DEPRECATED — not in the Node Catalog. Kept so a workflow saved before the
+      // JSONL consolidation still opens; use `jsonlFormatterNode` for new work.
       case 'aa2jsonl':
         return Aa2JsonlNode(
           node: node,
@@ -2232,15 +2331,10 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'preview':
         return PreviewNode(
           node: node,
-          // `bytes` input (idx 0) — image/text byte stream.
-          input: _inputForAt(node.id, 0),
           fileName: _fileNameFor(node.id),
-          inputConnected: _hasIncomingEdgeAt(node.id, 0),
-          onConnect: (source) => _connectAt(source, node.id, 0),
-          // `aa` input (idx 1) — an associative array over the port bus.
-          aaConnected: _hasIncomingEdgeAt(node.id, 1),
-          onAaConnect: (source) => _connectAt(source, node.id, 1),
-          onAaInputPort: (port) => _registerAaInput(node.id, 1, port),
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputConnect: (source) => _connect(source, node.id),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
           // Route decoded content to the Focus Panel tab for this node, and
           // retract that tab once the node's inputs go dead.
           onContent: _pushFocusContent,
@@ -2275,11 +2369,35 @@ class _WorkflowPageState extends State<WorkflowPage>
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          // `authInput` (AA, idx 1) — profiles from a Secure Settings node.
-          authConnected: _hasIncomingEdgeAt(node.id, 1),
-          onAuthConnect: (source) => _connectAt(source, node.id, 1),
-          onAuthInputPort: (port) => _registerAaInput(node.id, 1, port),
-          // `dataOutput` (AA, idx 0) — the result matrix.
+          // `enrichedIndex` (AA, idx 0) — the 8-column result with better_docstring.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'astExtractNode':
+      case 'ast_extract': // tolerate a snake_case spelling in saved workflows
+        return AstExtractNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `in_aa` (AA, idx 0) — carries the path to parse.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `out_aa` (AA, idx 0) — the 7-column definition index.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'jsonlFormatterNode':
+      case 'jsonl_formatter': // tolerate a snake_case spelling in saved workflows
+        return JsonlFormatterNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `in_aa` (AA, idx 0) — the documented 7-column index.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `out_aa` (AA, idx 0) — json_line / symbol_name.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
@@ -2414,17 +2532,6 @@ class _WorkflowPageState extends State<WorkflowPage>
               (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
           onValOutputPort: (port) =>
               (_aaMultiOutputPorts[node.id] ??= {})[1] = port,
-          connectedOutputs: _connectedOutputs(node.id),
-        );
-      case 'aa_binary_normalizer':
-        return AaBinaryNormalizerNode(
-          node: node,
-          initialParams: _nodeParams[node.id],
-          onParams: (p) => _nodeParams[node.id] = p,
-          inputConnected: _hasIncomingEdge(node.id),
-          onInputConnect: (source) => _connect(source, node.id),
-          onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       default:
@@ -2751,6 +2858,10 @@ class _Header extends StatelessWidget {
   /// Clear the workflow; null disables the button (nothing to clear).
   final VoidCallback? onClear;
 
+  /// Called after the Node Catalog closes, selection or not — the page uses it to
+  /// pull keyboard focus back to the canvas.
+  final VoidCallback? onCatalogClosed;
+
   /// Saved workflows for the Workflows dropdown, and the active one's name.
   final List<WorkflowMeta> savedWorkflows;
   final String? currentWorkflowName;
@@ -2769,6 +2880,7 @@ class _Header extends StatelessWidget {
     this.onRun,
     this.running = false,
     this.onClear,
+    this.onCatalogClosed,
   });
 
   // Reference style: dark fill, coloured border + content, rounded corners.
@@ -2814,22 +2926,28 @@ class _Header extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Node Catalog — the palette of node primitives to place on canvas.
-          PopupMenuButton<NodeType>(
-            tooltip: 'Add a node from the catalog',
-            onSelected: onAdd,
-            itemBuilder: (context) => [
-              for (final type in nodeTypes)
-                PopupMenuItem(value: type, child: Text(type.name)),
-            ],
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.widgets_outlined, size: 18),
-                const SizedBox(width: 6),
-                Text('Node Catalog', style: theme.textTheme.titleSmall),
-                const Icon(Icons.arrow_drop_down),
-              ],
+          // Node Catalog — the searchable palette of node primitives. A panel
+          // rather than a menu: it carries a search field and filter chips, and a
+          // menu route would close on the first tap inside it.
+          InkWell(
+            onTap: () async {
+              final chosen = await showNodeCatalog(context);
+              if (chosen != null) onAdd(chosen);
+              // Hand focus back to the canvas either way, so Delete and Cmd-G
+              // keep working after the palette closes.
+              onCatalogClosed?.call();
+            },
+            child: Tooltip(
+              message: 'Add a node from the catalog',
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.widgets_outlined, size: 18),
+                  const SizedBox(width: 6),
+                  Text('Node Catalog', style: theme.textTheme.titleSmall),
+                  const Icon(Icons.arrow_drop_down),
+                ],
+              ),
             ),
           ),
           const SizedBox(width: 12),

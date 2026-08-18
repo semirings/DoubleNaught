@@ -91,7 +91,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
   late List<_D4mPort> _ports;
   final Map<int, AaPayload> _portData = {};
 
-  final OutputPort _out = OutputPort('aaOut');
+  final OutputPort _out = OutputPort('evaluatedResult');
 
   late final TextEditingController _scriptCtrl;
   late final TextEditingController _outSymCtrl;
@@ -348,7 +348,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
   @override
   List<Widget> buildOutputConnectors(BuildContext context) => [
         OutputConnector(
-          label: 'aaOut',
+          label: 'evaluatedResult',
           idx: 0,
           active: _outputHandleId != null || widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),

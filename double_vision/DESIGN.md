@@ -457,6 +457,283 @@ there is no honest completion fraction.
 with `stream: false` and the body is read incrementally. Token-level SSE would
 mean implementing four different event dialects and is deliberately out of scope.
 
+## Load File output ports
+
+**One output: `aa` (idx 0).**
+
+`contents` used to sit at idx 0, carrying the file's raw representation while `aa`
+carried a reconstructed AA at idx 1. It is gone. For a source file the two were the
+same payload, and `aa` was silent — which read as a node that had loaded nothing. The
+backend now builds the AA for text as well (a single `text` cell), so one port
+carries it in every case.
+
+Nothing consumed `contents`: of the saved workflows on disk, every Load File edge
+was drawn from idx 1.
+
+**Saved workflows are migrated on load.** `migrateLoadFilePorts` re-points edges
+leaving a `load_file` / `file_source` node from any non-zero index to 0, and the
+corrected edges are written back on the next save. It is deliberately scoped to that
+node type — idx 1 is a genuine second output elsewhere, and rewriting Split's `val`
+would silently swap a validation set for a training set. This matters because the
+node wrapper positions port dots by **list order** while the edge painter uses
+`PortRef.idx`: an un-migrated edge would both draw to an empty lane and bind to no
+port.
+
+## Deleting a workflow
+
+`DELETE /workflows/{workflow_id}` in `workflows_router.py`, `WorkflowApi` on the
+Dart side, and the trash icon on each entry of the Workflows menu.
+
+Saved workflows are JSON files under `storage/workflows/<id>.json`. The Flutter
+`WorkflowStore` writes them and the backend deletes them — both address the same
+directory on the same machine, and the backend's `workflow_id` **is** the store's
+`slug`. `$DN_STORAGE_DIR` overrides the root on both sides.
+
+### The endpoint
+
+| Status | Meaning |
+|---|---|
+| 200 | `{"status": "SUCCESS", "workflowId": …}` — definition removed, cached execution state purged |
+| 404 | no such workflow, **or** an id that could never name one |
+| 409 | the execution registry reports tasks in flight |
+
+A malformed id is not distinguished from a missing one: both mean "nothing here to
+delete", and separating them would only describe the filesystem to a caller with no
+business knowing it. 404 also takes precedence over 409 — a workflow that does not
+exist cannot be busy.
+
+The response key is `workflowId`, not `workflow_id`: camelCase on the wire is the
+binding convention in this document. The Dart client reads either.
+
+### `workflow_id` becomes a filename
+
+This is the part to be careful with. The id arrives from the URL, so it is matched
+against a strict pattern (`[A-Za-z0-9][A-Za-z0-9._-]{0,127}`) **and** the resolved
+path is checked to still sit inside the workflows directory. The pattern stops the
+obvious `../`; the containment check catches whatever a symlink or an odd encoding
+gets past it. Without both, `DELETE /workflows/..%2F..%2Fsomething` would remove
+arbitrary files.
+
+A delete also removes the workflow's sidecar artefact directory, if it has one, so
+run output does not outlive the definition.
+
+### The 409 guard exists before the engine does
+
+Execution is driven from the canvas today, so nothing marks a workflow as running.
+`ExecutionRegistry` is the seam a server-side runner would call (`begin` / `end`,
+counted so concurrent runs cannot clear the flag early), and the route already
+refuses while it reports work in flight. The guard is in place before the first bad
+delete rather than after it.
+
+### What the client does with each answer
+
+Two of the backend's answers are **not** refusals, and fall back to deleting from
+the local store:
+
+* **unreachable** — workflows are local files and the app works with no backend
+  running; a dead server must not make them undeletable.
+* **404** — the backend is not holding this file, and the user still asked for it to
+  go.
+
+**409 never falls back.** Deleting a workflow the server just said is running is
+exactly what that status exists to prevent. A 5xx does not fall back either — that
+is an unknown state, not a known absence.
+
+On success the entry leaves the list, a SnackBar confirms, and if the deleted
+workflow was the one open on the canvas the graph is **reset** — otherwise Save
+would happily recreate it under the name that was just deleted.
+
+### Testing note
+
+`WorkflowPage` takes an injectable `workflowStore` and `workflowApi`. The store's
+default points at the real `storage/workflows`, so a delete test that skipped the
+injection would remove the user's own files. The widget tests use an in-memory
+store subclass rather than a temp directory: real file I/O inside `testWidgets`
+runs in a fake-async zone where the future never completes, and `pumpAndSettle`
+then waits out its full ten-minute timeout.
+
+## Node Catalog
+
+The palette of node primitives, in `node_catalog_widget.dart`. A search field, a
+row of category chips, and collapsible category accordions — because a flat list of
+~30 entries is a scroll-and-squint exercise.
+
+### Taxonomy
+
+Every registry entry carries a `NodeCategory`, and it is a **required** field: a
+node without one would never be rendered, so it cannot be an optional annotation.
+
+| Category | Chip | Holds |
+|---|---|---|
+| Data & Ingestion | Data | sources, sinks, and the inspection nodes |
+| AST & Code Analysis | Code | *(empty — see below)* |
+| Formatting & Serialization | Formatting | JSONL Formatter, Chunk, Tokenizer |
+| AI & Teacher Models | AI/LLM | Remote Service, Secure Settings, prompts, classifiers |
+| Execution & Compute | Compute | Polyglot Exec, D4M, Start |
+| Training & Fine-Tuning | Training | Split, Review, model builders and local runners |
+
+Entries also carry a one-line `description` (shown under the name) and `tags` —
+search terms that are **never displayed**, so a node can be findable by a word that
+would clutter its card (`gemini`, `parquet`, `tiktoken`, `holdout`).
+
+`AST & Code Analysis` is empty on purpose: Extract AST and Patch Docstrings are
+backend-only, with no canvas widgets. The category and its chip exist so the
+taxonomy is visible where it is not yet populated; selecting it shows the empty
+state.
+
+### Behaviour worth knowing
+
+* **Categories start expanded.** A palette hidden behind six closed headers is
+  worse than a long list — grouping is there to give the eye somewhere to land, not
+  to hide things.
+* **A search overrides collapse**, so a match can never sit unseen inside a shut
+  section. Clearing the query restores whatever was collapsed by hand.
+* **Header counts are post-filter** — `Data & Ingestion (2)` means two nodes are on
+  screen, not two in the registry.
+* **Empty categories are not rendered** as headers; a `(0)` header invites a click
+  that does nothing.
+* **The empty state distinguishes its two causes.** A query that matches nothing
+  says `No nodes match "kubernetes"`; an unpopulated category says
+  `No nodes in AST & Code Analysis yet`, because quoting a blank query would be
+  nonsense.
+* **Chips are additive with search.** Picking `Data` then typing `jsonl` finds Save
+  File (by tag) and not JSONL Formatter (wrong category).
+
+### Why a dialog, and why not a lazy list
+
+The catalog opens as a **panel anchored under the header**, not a
+`PopupMenuButton`: it needs a focused search field and tappable chips, and a menu
+route closes on the first tap inside it. Closing it hands keyboard focus back to
+the canvas (`onCatalogClosed`), so Delete and ⌘G keep working afterwards.
+
+The list is a `Column` in a `SingleChildScrollView` rather than a `ListView`. With
+~30 items laziness buys nothing, and a lazy list leaves off-screen tiles **unbuilt**
+— invisible to `ensureVisible` and to anything else that expects the whole palette
+to exist once it is open. That was a real failure: switching to a `ListView` broke
+29 tests that reach for a node by name.
+
+## JSONL Formatter node (`jsonlFormatterNode`)
+
+**The** JSONL node: every training line in this app is built here.
+`jsonl_formatter_node.py`, the `JsonlFormatterNodeWidget`, and routes
+`POST /jsonl/format` (Arrow) / `POST /jsonl/format/aa` (wire AA).
+
+    extract_ast → teacher node → JSONL Formatter → Save File (.jsonl)
+
+### Node contract
+
+| | |
+|---|---|
+| Type | `jsonlFormatterNode` |
+| Input port | `in_aa` (idx 0) — any AA; what is read depends on the mode |
+| Output port | `out_aa` (idx 0) — 2 columns: `json_line`, `symbol_name` |
+
+`json_line` is the **one** output column name, in every mode. `symbol_name` travels
+beside it so a bad training example can be traced back to the row that produced it
+without re-parsing the JSON; when the source AA names no symbol, the row's position
+is used so the key is never empty.
+
+### Format modes
+
+| `format_mode` | Reads | Emits |
+|---|---|---|
+| `chatml` (default) | `raw_code`, `better_docstring` | 3-message ChatML example |
+| `prompt_completion` | `prompt`\|`input`\|`source`, `completion`\|`target`\|`output` | `{"prompt", "completion"}` |
+| `passthrough` (alias `row_dict`) | every non-empty cell | one object per row |
+| `instruction_completion`, `continuation` | *legacy* | the deprecated AA2JSONL formats |
+
+Names are normalised (`row-dict`, `ChatML`, `promptCompletion` all resolve), because
+they travel through a URL, a JSON body and a Dart enum.
+
+The two legacy formats are modes here rather than a separate code path — that is
+what consolidating the logic *means*. `instruction_completion` is
+`prompt_completion` with a constant prompt, which is exactly what AA2JSONL's
+lambda did.
+
+Validation is **per mode**. `chatml` requires the code and docstring columns;
+`prompt_completion` requires some completion column; `passthrough` takes anything
+with a column in it. One global schema check would either reject valid passage AAs
+or wave through an index the ChatML path cannot use.
+
+The widget's readiness count is mode-aware for the same reason: a payload with no
+`better_docstring` is useless to ChatML but perfectly formattable as passthrough,
+so a single definition of "ready" would grey out the button on valid input.
+Switching mode re-counts and **discards the previous result** — those lines were
+built by a different mode.
+
+### One example, one line
+
+Each row becomes a three-message ChatML object — system, user (the code in a
+```julia fence), assistant (the docstring, a blank line, then the code) —
+serialised with `json.dumps`, which escapes every internal newline as `\n`. That
+escaping *is* the format: a JSONL line must contain no literal newline, and the
+tests assert it on every emitted line.
+
+`ensure_ascii=False`, deliberately: Julia code is full of unicode operators
+(`∘`, `≈`, `∈`), and `\uXXXX`-escaping them would train the model on text that
+does not look like the corpus.
+
+### What gets dropped
+
+Rows whose `better_docstring` is null, empty **or whitespace** are skipped — an
+index fresh from the extractor is entirely empty in that column, and a teacher node
+fills it a few symbols at a time, so this is the normal case rather than an error.
+
+Rows with a docstring but **no `raw_code`** are also skipped, which is not in the
+original contract: the user turn would be an empty code fence, which teaches
+nothing. Both counts are reported separately (`skipped_no_doc`, `skipped_no_code`)
+in the result, the response, the `X-Dn-*` headers and the card, so nothing vanishes
+quietly.
+
+A formatting pass that yields **zero** lines is surfaced on the card as an error
+rather than an empty success, and emits nothing — there is no useful payload to
+send downstream.
+
+### Row order is meaningful
+
+A JSONL file is a sequence, unlike every other AA in this app. Row keys are
+zero-padded (`line:0007`) so a consumer that sorts keys lexically still gets the
+lines in order rather than `1, 10, 11, 2` — and `save_aa_jsonl` uses **appearance
+order** in the triples rather than sorted keys for the same reason. (`save_aa_csv`
+sorts, which is right for a matrix and would be wrong here.)
+
+### Two routes, one formatter
+
+`/jsonl/format` is Arrow in / Arrow out for the backend pipeline.
+`/jsonl/format/aa` takes and returns the wire AA, because the canvas transports
+JSON triples and Dart has no Arrow reader. Both call the same code; only the
+envelope differs. This is the JSON/Arrow boundary noted under the AST Extract node,
+drawn explicitly rather than left implicit.
+
+### Save File extension
+
+`Save File` writes `.jsonl` when the format says so **or** when a `.jsonl` filename
+arrives on an AA that actually carries a `json_line` column; the Dart node
+auto-selects JSONL on seeing that column. Two guards, because a silent wrong write
+here produces a corrupt training file: an AA with no `json_line` column is refused,
+and so is a line containing a literal newline (it would split one example across two
+records).
+
+### The deprecated AA2JSONL node
+
+`AA2JSONLNode` is **gone from the Node Catalog** and its widget is marked
+deprecated. Two things were deliberately *not* deleted:
+
+* **`POST /aa2jsonl` still works**, rather than redirecting to `/jsonl/format`. It
+  writes the file itself, sorts by `position`, and returns per-chunk provenance plus
+  stats — none of which the unified route does, and all of which its callers expect.
+  A redirect would change the response shape underneath them. Its **line
+  construction** now goes through `JsonlFormatterNode`, so there is one
+  implementation of each format; only the file-writing and provenance are local. The
+  route is flagged `deprecated` in OpenAPI.
+* **The `aa2jsonl` builder case in `workflow_page.dart`**, so a workflow saved before
+  the consolidation still opens. Removing it from the catalogue stops it being
+  *placed*; removing the case would stop it being *loaded*.
+
+`save_aa_jsonl` reads the unified `json_line` and falls back to the legacy
+`jsonl_line`, preferring the former when both are present — so old payloads still
+save, and nothing writes `jsonl_line` any more.
+
 ## Patch Docstrings node (`PatchDocstringsNode`, backend-only)
 
 The write side of the docstring loop: takes the 7-column Arrow index enriched with
@@ -525,7 +802,41 @@ patcher needs that root: `--root=` first, then the index's own `dn_root` metadat
 then the working directory. A relative index with no root available is refused
 rather than guessed at — guessing means patching the wrong tree.
 
-## AST Extract node (`AstExtractNode`, backend-only)
+## AST Extract node (`astExtractNode`)
+
+The canvas front end for the extractor below: point it at a Julia file or tree and
+it emits the 7-column definition index — every function and macro, with its
+docstring and source.
+
+| | |
+|---|---|
+| Type | `astExtractNode` |
+| Input port | `in_aa` (idx 0) — supplies the **path**; a `Load File` payload's `file_path` |
+| Output port | `out_aa` (idx 0) — the 7-column index, one row per definition |
+| Backend | `POST /ast/extract/aa` (JSON AA) — the canvas twin of the Arrow route |
+
+**It parses; it does not run.** `Polyglot Exec` executes a file and reports
+stdout/exit code; this reads one and answers "what does it define?". Confusing the
+two is easy and cost a debugging round: a file of definitions executes to *no
+output*, which looks like a node that did nothing.
+
+**Only a path crosses the wire, never the source.** The extractor parses files on
+disk, so handing it text would mean writing a temp file to read straight back.
+`Load File` therefore publishes `file_path` alongside a source file's `text`, which
+is also what lets `Polyglot Exec` infer the language from an extension. A typed path
+overrides the upstream one, so the node works with nothing wired in.
+
+Row keys are `<file_path>:<line_range>` — informative, and unique because the walk
+never descends into a definition's body, so two definitions cannot share a file and
+a line span. A `#n` suffix is appended if one ever does; a duplicate key would
+silently merge two definitions into one row.
+
+The card shows the count on its status row and the **breakdown by kind** beneath
+(`150 function · 5 macro`), which answers "did it see my macros?" without opening
+the panel. An index of zero definitions is reported as an error and **not** emitted:
+an empty AA downstream reads as a successful extraction of nothing.
+
+## AST Extract engine (`AstExtractNode`, Python)
 
 Indexes every function and macro definition in a Julia source tree and emits the
 result as an **Apache Arrow table**. Backend-only for now: `julia/extract_ast.jl`
@@ -607,7 +918,7 @@ do something with it": `Load File` → **Polyglot Exec** → Preview / Remote Se
 | | |
 |---|---|
 | Type | `polyglotExecNode` |
-| Input port (left edge) | `in_aa` (idx 0) — an AA carrying code, e.g. a `Load File` `contents` output |
+| Input port (left edge) | `in_aa` (idx 0) — an AA carrying code, e.g. a `Load File` `aa` output |
 | Output port (right edge) | `out_aa` (idx 0) — the 1×8 result matrix |
 | Backend | `POST /exec` → `PolyglotExecNode` in `polyglot_exec_node.py` |
 
@@ -650,6 +961,43 @@ disabled rather than guessing at an interpreter.
 `bash -c CODE a b` binds `a` to `$0`, not `$1`, so a placeholder argv0 is
 inserted for bash alone — making `$1` the first user argument, as it is in every
 other language here.
+
+### The output merges into the input
+
+`out_aa` **extends** `in_aa`; it does not replace it. Every incoming column and row
+key survives, and the execution metadata is appended to the row the code was read
+from — so a downstream node still finds `text` where it left it, alongside `status`,
+`stdout` and the rest.
+
+It used to answer with metadata only, which dropped the caller's payload: a
+`Remote Service` reading `text` found nothing, because the schema had been
+overwritten rather than extended.
+
+Row keys are the input's own, which is what lets a downstream node line results up
+against the rows it sent. A request with no `aa` (a direct `code=` call) has nothing
+to merge with and still gets the standalone `exec:<hex>` metadata row.
+
+One value per cell: where a metadata name collides with an input column on that row,
+the fresh value **replaces** it rather than adding a second triple, since two triples
+for one `(row, col)` is not a cell a reader can resolve.
+
+### Where stdout goes
+
+`stdoutMode` decides what happens to a script that writes transformed code or an AST
+dump to stdout:
+
+| mode | effect |
+|---|---|
+| `column` (default) | into `transformed_text` (`stdoutColumn` to rename), input untouched |
+| `replace` | over the column the code came from, so a node reading `text` sees the transformed text; the pre-execution source stays reachable as `code` |
+| `none` | nowhere — stdout remains only in the `stdout` metadata column |
+
+Empty or whitespace stdout adds no column at all.
+
+**The widget must send the payload, not just the code.** `_incomingAa` is kept whole
+and posted with the run; without it the backend has nothing to merge into and the
+output collapses to metadata — which is how the original bug reached the canvas even
+though the merge is a backend concern.
 
 ### Failure is data, not an exception
 

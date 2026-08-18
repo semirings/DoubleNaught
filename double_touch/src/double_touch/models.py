@@ -152,6 +152,18 @@ class AssocArray(CamelModel):
     cols: list[str]
     vals: list[Union[str, int, float]]
 
+    def to_dict(self) -> dict:
+        """Convert AssocArray into a {column: [values]} lookup dict."""
+        from .aa_utils import aa_rows
+        records = aa_rows(self)
+        text_list = []
+        for r_key, rec in records:
+            if "text" in rec:
+                text_list.append(rec["text"])
+            elif "raw_text" in rec:
+                text_list.append(rec["raw_text"])
+        return {"text": text_list if text_list else [None]}
+
 
 class UrlPayloadResponse(CamelModel):
     node_id: str
@@ -186,7 +198,7 @@ class ClassifyResponse(CamelModel):
     # Result AA: rows = document id, cols = labels, vals = scores (0..1). When
     # categories carry thresholds, each document also gains a ``passed`` column
     # listing the categories that met their threshold.
-    aa: AssocArray
+    classification_scores: AssocArray
 
 
 # --- Inventory node (InventoryNode) -----------------------------------------
@@ -225,11 +237,11 @@ class InventorySelectResponse(CamelModel):
 
 class FetchRequest(CamelModel):
     # The upstream URLNode associative array (carries url/author/work_title).
-    aa: AssocArray
+    work_metadata: AssocArray
 
 
 class FetchResponse(CamelModel):
-    aa: AssocArray
+    work_metadata: AssocArray
 
 
 # --- Chunk node (ChunkNode) -------------------------------------------------
@@ -581,36 +593,6 @@ class SplitResponse(CamelModel):
     total_count: int
 
 
-# --- AA Binary Normalizer node (AaBinaryNormalizerNode) ----------------------
-# A processing node: ingests raw files (.txt, .jsonl, .csv, .parquet, .arrow),
-# normalises them to the canonical AA Arrow schema, writes a persistent binary
-# cache, and emits an AA of normalization metadata for downstream nodes.
-
-
-class AaBinaryNormalizeRequest(CamelModel):
-    # Absolute path to the source file.
-    file_path: str
-    # Directory where the normalised .arrow cache will be written.
-    output_directory: str
-    # Dataset split key written into the output filename (default "train").
-    split_name: str = "train"
-    # When True, load into Python heap instead of memory-mapping.
-    keep_in_memory: bool = False
-
-
-class AaBinaryNormalizeResponse(CamelModel):
-    # Metadata AA: row = bookId, cols = arrowFilePath/rowCount/… (see below).
-    aa: AssocArray
-    # Absolute path of the generated .arrow binary cache.
-    arrow_file_path: str
-    # Total record count.
-    row_count: int
-    # Map of canonical field name → Arrow type string.
-    column_schema: dict[str, str]
-    # True when the backing Dataset was memory-mapped (keep_in_memory=False).
-    is_memory_mapped: bool
-
-
 # --- Load File node (LoadFileNode) -------------------------------------------
 # A source node: loads files (.parquet, .arrow, .json, .csv, .txt) from disk
 # and auto-detects Associative Arrays based on schema metadata or column patterns.
@@ -624,9 +606,14 @@ class LoadFileRequest(CamelModel):
 
 
 class LoadFileResponse(CamelModel):
-    # The loaded AA (if detected/requested), else None.
-    aa: Optional[AssocArray] = None
-    # The raw data representation (dict/table).
+    # Feeds the node's `aa` output port: the AA for this file — reconstructed from
+    # a tabular file, or the single-cell text AA for a source/prose file.
+    parsed_payload: Optional[AssocArray] = None
+    # Feeds the node's `contents` output port: the raw file string, when the file
+    # has one. Named for the port so the two contracts line up.
+    contents: Optional[str] = None
+    # The raw data representation (dict/table). Retained for callers that predate
+    # `contents`; for a text file it is `{"text": <contents>}`.
     data: dict = {}
     # Detected payload type: "associative_array", "table", "text", "unknown".
     payload_type: str = "unknown"
@@ -641,7 +628,7 @@ class LoadFileResponse(CamelModel):
 
 class SaveFileRequest(CamelModel):
     # Data payload: AA for tabular data, text string, or base64-encoded image.
-    aa: Optional[AssocArray] = None
+    data_to_save: Optional[AssocArray] = None
     text: Optional[str] = None
     # Image bytes as base64-encoded string.
     image_base64: Optional[str] = None
@@ -669,7 +656,7 @@ class SaveFileResponse(CamelModel):
 class PolyglotExecRequest(CamelModel):
     # The upstream payload, e.g. a Load File `contents` AA. Either this or `code`
     # must be present; explicit fields below win over anything read out of it.
-    aa: Optional[AssocArray] = None
+    execution_payload: Optional[AssocArray] = None
     # Source to execute, when the caller has it in hand rather than on an AA.
     code: Optional[str] = None
     # Language override. "" or "auto" means infer (payload → extension → shebang).
@@ -681,11 +668,17 @@ class PolyglotExecRequest(CamelModel):
     args: list[str] = []
     # Wall-clock budget in seconds.
     timeout_s: float = 30.0
+    # Where a script's stdout lands in the merged output AA:
+    # "column" (default) -> `stdoutColumn`, "replace" -> the column the code came
+    # from, "none" -> only the `stdout` metadata column.
+    stdout_mode: str = "column"
+    # Column for "column" mode.
+    stdout_column: str = "transformed_text"
 
 
 class PolyglotExecResponse(CamelModel):
     # The 1x8 result AA — the payload a downstream node consumes.
-    aa: AssocArray
+    execution_result: AssocArray
     # The same result as flat fields, for a caller that wants them directly.
     status: str
     language: str
@@ -702,11 +695,91 @@ class PolyglotExecResponse(CamelModel):
 # and returns the 7-column definition index as Arrow IPC bytes (never JSON).
 
 
+class AstExtractAaResponse(CamelModel):
+    # The 7-column index in wire (sparse triple) form — the canvas transport.
+    ast_index: AssocArray
+    # Definitions found.
+    definition_count: int
+    # `.jl` files walked.
+    files_scanned: int
+    # Files the walk skipped, one message each; never fatal.
+    errors: list[str] = []
+    # The root as the extractor resolved it.
+    root: str = ""
+
+
 class AstExtractRequest(CamelModel):
-    # Directory to index, recursively. Hidden directories and `deps` are skipped.
+    # Directory to index recursively, or a single `.jl` file. Hidden directories
+    # and `deps` are skipped when walking a tree.
     root_path: str
     # Keep the Arrow artifact at this path instead of a temporary file.
     out_path: Optional[str] = None
+    # Optional multi-file payload from Load File
+    parsed_payload: Optional[AssocArray] = None
+    codebase_path: Optional[AssocArray] = None
+    aa: Optional[AssocArray] = None
     # Wall-clock budget for the Julia run. Cold Julia plus Arrow.jl is a couple of
     # seconds before parsing begins, so this is generous by default.
     timeout_s: float = 180.0
+
+
+# --- LLM Better Docstring node (LlmBetterDocNode) -----------------------------
+# Enriches an AST index by generating better_docstring for each row via LLM.
+
+
+class LlmBetterDocRequest(CamelModel):
+    # The 7-column AST index from AstExtractNode.
+    ast_index: AssocArray
+    # HuggingFace model ID or local path. Defaults to Phi-4-mini-instruct.
+    model_id: str = "mlx-community/Phi-4-mini-instruct-4bit"
+    # Maximum tokens per generated docstring.
+    max_tokens: int = 256
+    # Sampling temperature.
+    temperature: float = 0.7
+
+
+class LlmBetterDocResponse(CamelModel):
+    # The input AA with an enriched better_docstring column.
+    enriched_index: AssocArray
+    # Count of rows processed.
+    rows_processed: int
+
+
+# --- JSONL Formatter node (JsonlFormatterNode) --------------------------------
+# A formatting node: it turns the documented 7-column index into ChatML training
+# examples, one JSON object per line, and emits a 2-column AA.
+
+
+class JsonlFormatRequest(CamelModel):
+    # The source AA in wire (sparse triple) form: the documented index for
+    # "chatml", passages for "prompt_completion", anything for "passthrough".
+    ast_index: AssocArray
+    # "chatml" (default) | "prompt_completion" | "passthrough" (alias "row_dict").
+    format_mode: str = "chatml"
+
+
+class JsonlFormatResponse(CamelModel):
+    # 2-column result: `json_line` and `symbol_name`, one row per example.
+    jsonl_lines: AssocArray
+    # The mode that produced it, canonicalised.
+    format_mode: str
+    # Examples written.
+    line_count: int
+    # "chatml": rows dropped for having no generated docstring yet.
+    skipped_no_doc: int
+    # "chatml": rows dropped for having no source code to learn from.
+    skipped_no_code: int
+    # Other modes: rows dropped for lacking the fields the mode reads.
+    skipped_incomplete: int = 0
+
+
+# --- Workflow CRUD (workflows_router) ----------------------------------------
+# Saved workflow definitions under storage/workflows/. `workflowId` is the file
+# stem — the same value the Flutter WorkflowStore calls a `slug`.
+
+
+class WorkflowDeleteResponse(CamelModel):
+    # "SUCCESS" on a completed delete; failures are HTTP errors, not statuses.
+    status: str
+    # Echoed back so a caller batching deletes can match up responses.
+    workflow_id: str

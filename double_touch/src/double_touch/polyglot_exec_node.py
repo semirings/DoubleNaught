@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional, Sequence
 from uuid import uuid4
 
 from .aa_utils import aa_rows
+from .d4m_ops import eval_expression
 from .models import AssocArray
 
 # ---------------------------------------------------------------------------
@@ -119,6 +120,27 @@ STATUS_SUCCESS = "SUCCESS"
 STATUS_FAILED = "FAILED"
 STATUS_TIMEOUT = "TIMEOUT"
 
+#: Where a script's stdout goes in the merged output.
+#:
+#: ``column``  — into :data:`DEFAULT_STDOUT_COLUMN`, leaving the input untouched.
+#:               The default: a script that rewrites its input publishes the new
+#:               text without destroying what it was given.
+#: ``replace`` — over the column the code was read from, so a downstream node that
+#:               reads ``text`` sees the transformed text. The original is still
+#:               reachable as the ``code`` metadata column.
+#: ``none``    — nowhere; stdout remains only in the ``stdout`` metadata column.
+STDOUT_MODE_COLUMN = "column"
+STDOUT_MODE_REPLACE = "replace"
+STDOUT_MODE_NONE = "none"
+STDOUT_MODES: tuple[str, ...] = (
+    STDOUT_MODE_COLUMN,
+    STDOUT_MODE_REPLACE,
+    STDOUT_MODE_NONE,
+)
+
+#: Column ``column`` mode writes stdout to.
+DEFAULT_STDOUT_COLUMN = "transformed_text"
+
 #: Output AA columns, in emission order.
 RESULT_COLUMNS: tuple[str, ...] = (
     "status",
@@ -144,6 +166,15 @@ class ExecInput:
     file_path: str = ""
     language: str = ""
     shebang: Optional[str] = None
+
+    #: Row key the code was read from, when it came from an AA. The merged output
+    #: hangs its metadata on this row so downstream nodes keep the original
+    #: context alongside the results.
+    row_key: str = ""
+
+    #: Column the code was read from (``text``, ``code``, …). ``replace`` mode
+    #: writes stdout back to this column.
+    source_column: str = ""
     args: list[str] = field(default_factory=list)
 
     @property
@@ -225,8 +256,17 @@ class PolyglotExecNode:
                     return val
             return ""
 
-        for _row, record in aa_rows(aa):
-            code = pick(record, CODE_COLUMNS)
+        def pick_named(record, names):
+            """`(value, column)` for the first of `names` the record fills."""
+            lowered = {norm(k): (k, v) for k, v in record.items()}
+            for name in names:
+                entry = lowered.get(name)
+                if entry and isinstance(entry[1], str) and entry[1].strip():
+                    return entry[1], entry[0]
+            return "", ""
+
+        for row, record in aa_rows(aa):
+            code, code_column = pick_named(record, CODE_COLUMNS)
             path = pick(record, PATH_COLUMNS)
             lang = pick(record, LANG_COLUMNS)
             shebang = pick(record, ("shebang",))
@@ -239,6 +279,8 @@ class PolyglotExecNode:
                 language=lang,
                 shebang=shebang or None,
                 args=_split_args(raw_args),
+                row_key=row,
+                source_column=code_column,
             )
         return ExecInput()
 
@@ -483,6 +525,71 @@ class PolyglotExecNode:
             cols=list(RESULT_COLUMNS),
             vals=[result[col] for col in RESULT_COLUMNS],
         )
+
+
+def merge_result_aa(
+    source: Optional[AssocArray],
+    result: dict[str, Any],
+    *,
+    row_key: str = "",
+    source_column: str = "",
+    stdout_mode: str = STDOUT_MODE_COLUMN,
+    stdout_column: str = DEFAULT_STDOUT_COLUMN,
+) -> AssocArray:
+    """The execution result **merged into** the incoming AA.
+
+    The node used to answer with metadata only, which dropped the caller's payload
+    on the floor: a downstream node reading ``text`` found nothing, because the
+    output had been replaced rather than extended. Here every input triple survives
+    and the metadata is appended to the row the code came from, so one AA carries
+    both the original source and what running it produced.
+
+    Row keys are the **input's own**, which is what lets a downstream node line the
+    results up against the rows it sent.
+
+    Merge semantics use the right-overwrite semiring (a ⊕ b = b): where the
+    metadata AA (B) and the source AA (A) share a (row, col) key, B's value
+    replaces A's.  This is expressed via D4M.jl's ``right_overwrite(A, B)``.
+
+    Args:
+        source: The incoming AA. When absent or empty the result is the standalone
+            metadata row :meth:`PolyglotExecNode.to_aa` produces — a direct
+            ``code=`` call has no rows to merge with.
+        result: One :meth:`PolyglotExecNode.run` result.
+        row_key: Row to hang the metadata on. Defaults to the first row of
+            [source], matching the row :meth:`PolyglotExecNode.from_aa` reads.
+        source_column: Column the code came from; ``replace`` mode writes there.
+        stdout_mode: One of :data:`STDOUT_MODES`.
+        stdout_column: Column for ``column`` mode.
+
+    Raises:
+        ValueError: [stdout_mode] is not one of :data:`STDOUT_MODES`.
+    """
+    if stdout_mode not in STDOUT_MODES:
+        raise ValueError(
+            f"unknown stdout_mode {stdout_mode!r}; known: {', '.join(STDOUT_MODES)}"
+        )
+    if source is None or not source.cols:
+        return PolyglotExecNode.to_aa(result)
+
+    target = row_key or (source.rows[0] if source.rows else f"exec:{uuid4().hex[:8]}")
+    stdout = result.get("stdout") or ""
+
+    meta: dict[str, Any] = {col: result[col] for col in RESULT_COLUMNS}
+    if stdout.strip():
+        if stdout_mode == STDOUT_MODE_COLUMN:
+            meta[stdout_column] = stdout
+        elif stdout_mode == STDOUT_MODE_REPLACE and source_column:
+            meta[source_column] = stdout
+
+    meta_cols = list(meta.keys())
+    meta_aa = AssocArray(
+        rows=[target] * len(meta_cols),
+        cols=meta_cols,
+        vals=[meta[c] for c in meta_cols],
+    )
+
+    return eval_expression({"A": source, "B": meta_aa}, "right_overwrite(A, B)")
 
 
 def _split_args(raw: object) -> list[str]:

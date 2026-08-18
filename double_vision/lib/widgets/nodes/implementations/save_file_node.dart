@@ -14,7 +14,7 @@ import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
 
 /// Save format for the output file, auto-detected or manually selected.
-enum _SaveFormat { parquet, csv, json, txt, png, jpg }
+enum _SaveFormat { parquet, csv, json, jsonl, txt, png, jpg }
 
 /// A workflow sink node that saves incoming port data (AA, text, or image)
 /// to local disk with format selection and save-location controls.
@@ -103,7 +103,7 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
   @override
   void initState() {
     super.initState();
-    _aaIn = InputPort('aaIn');
+    _aaIn = InputPort('dataToSave');
     initInputPort(_aaIn, _onAaData);
 
     _subscribeText();
@@ -175,6 +175,11 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
   }
 
   _SaveFormat _autoDetectFormat() {
+    // A `json_line` column means the payload is already formatted training
+    // lines, not a matrix — writing it as Parquet would bury them.
+    if (_incomingAa?.cols.contains('json_line') ?? false) {
+      return _SaveFormat.jsonl;
+    }
     if (_incomingAa    != null) return _SaveFormat.parquet;
     if (_incomingText  != null) return _SaveFormat.txt;
     if (_incomingImage != null) {
@@ -304,6 +309,7 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
   String _formatLabel(_SaveFormat format) => switch (format) {
         _SaveFormat.parquet => 'Parquet',
         _SaveFormat.json    => 'JSON',
+        _SaveFormat.jsonl   => 'JSONL',
         _SaveFormat.csv     => 'CSV',
         _SaveFormat.txt     => 'Text',
         _SaveFormat.png     => 'PNG',
@@ -315,7 +321,7 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
         InputConnector(
-          label: 'aaIn',
+          label: 'dataToSave',
           idx: 0,
           active: widget.inputConnected,
           onConnect: widget.onInputConnect,

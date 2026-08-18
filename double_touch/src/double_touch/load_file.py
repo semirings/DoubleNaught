@@ -18,12 +18,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Optional
+import glob
+import zipfile
+import tempfile
+import urllib.parse
+import urllib.request
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .models import AssocArray
 from .save_file import load_parquet_with_auto_detect, _table_to_aa
+
+# Directory names skipped outright, on top of every dotted directory (.git, etc.)
+SKIP_DIRS = {"deps", "node_modules", "target", ".git"}
 
 # The Flutter node names its schema modes with a Dart enum, so it sends the
 # camelCase spelling on the wire. Accept both rather than silently falling
@@ -37,46 +45,182 @@ TEXT_SUFFIXES = (".txt", ".jl", ".md")
 
 
 def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[AssocArray], Optional[dict]]:
-    """Load a file and optionally auto-detect Associative Array format.
+    """Load a file, remote URL, directory, or glob pattern, and parse into an AssocArray.
 
-    Args:
-        file_path: Absolute or relative path to the file.
-        schema_mode: "auto" (default), "force_aa", or "raw_table". Ignored for
-                     plain-text inputs, which have no AA to detect.
-                     - "auto": detect based on metadata or column names
-                     - "force_aa": force reconstruction as AA even if not tagged
-                     - "raw_table": return raw table/dict representation
-
-    Returns:
-        Tuple of (AssocArray if applicable, raw_representation).
-        - raw_representation is a dict for JSON, a PyArrow table dict for Parquet/Arrow, etc.
-
-    Raises:
-        FileNotFoundError: If the file doesn't exist.
-        ValueError: If the file format is unsupported or reconstruction fails.
+    Handles 'file://' and 'http://' / 'https://' URLs (unpacking .zip files to temp directories).
+    Performs directory walking or glob pattern expansion.
+    Returns (AssocArray, raw_representation).
     """
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError(f"File not found: {file_path}")
-
-    schema_mode = _SCHEMA_MODE_ALIASES.get(schema_mode, schema_mode)
-    suffix = path.suffix.lower()
-
-    if suffix == ".parquet":
-        return _load_parquet(path, schema_mode)
-    elif suffix == ".arrow":
-        return _load_arrow(path, schema_mode)
-    elif suffix == ".json":
-        return _load_json(path, schema_mode)
-    elif suffix == ".csv":
-        return _load_csv(path, schema_mode)
-    elif suffix in TEXT_SUFFIXES:
-        # Source and prose files are content, not tables: hand back the text and
-        # let the graph decide what to do with it. No AA — a Julia file has no
-        # rows and columns, and inventing some would only obscure it.
-        return None, {"text": path.read_text()}
+    # 1. Parse URL/File Path
+    parsed = urllib.parse.urlparse(file_path)
+    temp_dir = None
+    
+    if parsed.scheme in ("file", ""):
+        # standard local file or unquoted file:// path
+        path_str = urllib.parse.unquote(parsed.path)
+        resolved_path = Path(path_str)
+    elif parsed.scheme in ("http", "https"):
+        # Remote download / unzip
+        temp_dir_obj = tempfile.TemporaryDirectory(prefix="dn_dl_")
+        temp_dir = temp_dir_obj
+        temp_path = Path(temp_dir_obj.name)
+        filename = Path(parsed.path).name or "download.zip"
+        download_target = temp_path / filename
+        
+        try:
+            urllib.request.urlretrieve(file_path, str(download_target))
+        except Exception as exc:
+            temp_dir_obj.cleanup()
+            raise ValueError(f"Failed to download remote file: {exc}")
+            
+        if download_target.suffix.lower() == ".zip":
+            unpack_dir = temp_path / "unpacked"
+            unpack_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                with zipfile.ZipFile(download_target, "r") as zip_ref:
+                    zip_ref.extractall(unpack_dir)
+                resolved_path = unpack_dir
+            except Exception as exc:
+                temp_dir_obj.cleanup()
+                raise ValueError(f"Failed to unpack zip: {exc}")
+        else:
+            resolved_path = download_target
     else:
-        raise ValueError(f"Unsupported file format: {suffix}")
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
+
+    # 2. Check for Directory or Glob Expansion
+    files = []
+    # If the user passed a glob string pattern (or if resolved_path is a directory)
+    if resolved_path.is_dir():
+        for p in resolved_path.rglob("*"):
+            if p.is_file():
+                # Filter out hidden or skipped directories
+                relative = p.relative_to(resolved_path)
+                if any(part.startswith(".") or part in SKIP_DIRS for part in relative.parts):
+                    continue
+                files.append(p)
+        files = sorted(files)
+    elif "*" in file_path or "?" in file_path or "[" in file_path:
+        # Local glob pattern
+        glob_matches = glob.glob(file_path, recursive=True)
+        files = [Path(f) for f in glob_matches if Path(f).is_file()]
+        files = sorted(files)
+    else:
+        # Single file
+        if not resolved_path.exists():
+            if temp_dir:
+                temp_dir.cleanup()
+            raise FileNotFoundError(f"File not found: {file_path}")
+        files = [resolved_path]
+
+    # 3. Handle Multi-File AA Construction
+    # If there is more than 1 file, or if the single target was expanded from a directory
+    if len(files) > 1 or resolved_path.is_dir():
+        rows: list[str] = []
+        cols: list[str] = []
+        vals: list[Union[str, int, float]] = []
+        records = []
+        
+        for i, file_p in enumerate(files):
+            row_key = f"file:{i:05d}"
+            # Relative path to directory if directory loaded, else absolute path string
+            if resolved_path.is_dir():
+                file_path_str = str(file_p.relative_to(resolved_path))
+            else:
+                file_path_str = str(file_p)
+                
+            try:
+                text = file_p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                text = ""
+                
+            ext = file_p.suffix.lower()
+            try:
+                size = file_p.stat().st_size
+            except Exception:
+                size = 0
+                
+            cols_list = ["row", "file_path", "text", "extension", "file_size"]
+            vals_list = [row_key, file_path_str, text, ext, size]
+            
+            for c, v in zip(cols_list, vals_list):
+                rows.append(row_key)
+                cols.append(c)
+                vals.append(v)
+                
+            records.append({
+                "row": row_key,
+                "file_path": file_path_str,
+                "text": text,
+                "extension": ext,
+                "file_size": size,
+            })
+            
+        # Clean up temporary directory if we are done with it
+        if temp_dir:
+            temp_dir.cleanup()
+            
+        aa = AssocArray(rows=rows, cols=cols, vals=vals)
+        return aa, {"rows": records}
+
+    if not files:
+        if temp_dir:
+            temp_dir.cleanup()
+        raise FileNotFoundError(f"No files matched glob or directory walk: {file_path}")
+
+    # 4. Handle Single File Loading
+    single_file = files[0]
+    schema_mode = _SCHEMA_MODE_ALIASES.get(schema_mode, schema_mode)
+    suffix = single_file.suffix.lower()
+
+    try:
+        if suffix == ".parquet":
+            aa, data = _load_parquet(single_file, schema_mode)
+        elif suffix == ".arrow":
+            aa, data = _load_arrow(single_file, schema_mode)
+        elif suffix == ".json":
+            aa, data = _load_json(single_file, schema_mode)
+        elif suffix == ".csv":
+            aa, data = _load_csv(single_file, schema_mode)
+        elif suffix in TEXT_SUFFIXES:
+            aa, data = _load_text(single_file, schema_mode)
+        else:
+            raise ValueError(f"Unsupported file format: {suffix}")
+    finally:
+        if temp_dir:
+            temp_dir.cleanup()
+
+    return aa, data
+
+
+def _load_text(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Optional[dict]]:
+    """Load a source or prose file as a single-cell AA plus its raw string.
+
+    A ``.jl`` file has no rows and columns of its own, so the AA is one cell:
+    ``rows=["0"]``, ``cols=["text"]``, the whole file as the value. That is
+    deliberately the same shape the Flutter side used to build client-side, so the
+    nodes that read it — Polyglot Exec, Prompt Node — need no change; they already
+    look for a ``text`` column.
+
+    Under ``raw_table`` the AA is withheld and only the raw string comes back, for a
+    caller that wants the bytes and nothing inferred.
+    """
+    text = path.read_text()
+    raw = {"text": text}
+    if schema_mode == "raw_table":
+        return None, raw
+    # `file_path` travels with the text: a downstream node needs it to know what it
+    # is looking at — AST Extract to know which file to parse, Polyglot Exec to
+    # infer the language from the extension. Only for text; adding it to a real
+    # table's schema would pollute it.
+    return (
+        AssocArray(
+            rows=["0", "0"],
+            cols=["text", "file_path"],
+            vals=[text, str(path)],
+        ),
+        raw,
+    )
 
 
 def _load_parquet(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Optional[dict]]:

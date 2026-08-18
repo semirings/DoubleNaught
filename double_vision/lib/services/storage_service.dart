@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import '../config/env.dart';
+
 /// Local JSON-file persistence for the DoubleNaught front-end.
 ///
 /// This is a development stub: each record is a JSON file under the repo's
@@ -18,7 +20,7 @@ class StorageService {
   /// `--dart-define=DN_STORAGE_DIR=/path` (run.sh DV passes it); defaults to the
   /// repo `storage/` folder so a bundled/debug app still writes somewhere the
   /// developer is watching. Mirrors [InventoryStore] so both land side by side.
-  static const _storageDir = String.fromEnvironment(
+  static String get _storageDir => getEnvVar(
     'DN_STORAGE_DIR',
     defaultValue: '/Users/gcr/populi.Wk/DoubleNaught/storage',
   );

@@ -18,8 +18,12 @@ from double_touch.app import app
 from double_touch.models import AssocArray
 from double_touch.polyglot_exec_node import (
     RESULT_COLUMNS,
+    STDOUT_MODE_COLUMN,
+    STDOUT_MODE_NONE,
+    STDOUT_MODE_REPLACE,
     ExecInput,
     PolyglotExecNode,
+    merge_result_aa,
 )
 
 client = TestClient(app)
@@ -342,14 +346,14 @@ def test_exec_route_runs_code_and_returns_both_shapes():
     assert body["exitCode"] == 0
     assert body["executionTimeMs"] > 0
     # …and the same result as an AA.
-    assert body["aa"]["cols"] == list(RESULT_COLUMNS)
+    assert body["executionResult"]["cols"] == list(RESULT_COLUMNS)
 
 
 def test_exec_route_runs_an_upstream_aa_payload():
     response = client.post(
         "/exec",
         json={
-            "aa": {"rows": ["0"], "cols": ["text"], "vals": ["print('from aa')"]},
+            "executionPayload": {"rows": ["0"], "cols": ["text"], "vals": ["print('from aa')"]},
             "language": "python",
         },
     )
@@ -361,7 +365,7 @@ def test_exec_route_request_fields_override_the_payload():
     response = client.post(
         "/exec",
         json={
-            "aa": {
+            "executionPayload": {
                 "rows": ["0", "0"],
                 "cols": ["code", "language"],
                 "vals": ["print('ignored')", "python"],
@@ -427,3 +431,207 @@ def test_exec_route_passes_args_through():
         },
     )
     assert response.json()["stdout"].strip() == "hello"
+
+
+# --- Schema pass-through: the merged output AA -------------------------------
+
+
+def _cells(aa):
+    """`{row: {col: val}}` from sparse triples."""
+    out = {}
+    for row, col, val in zip(aa.rows, aa.cols, aa.vals):
+        out.setdefault(row, {})[col] = val
+    return out
+
+
+SOURCE_AA = AssocArray(
+    rows=["r1", "r1", "r1", "r2"],
+    cols=["text", "author", "file_path", "text"],
+    vals=["print('hi')", "gcr", "/tmp/a.py", "a second row"],
+)
+
+RESULT = {
+    "status": "SUCCESS",
+    "language": "python",
+    "stdout": "transformed source",
+    "stderr": "",
+    "exit_code": 0,
+    "execution_time_ms": 9.5,
+    "code": "print('hi')",
+    "file_path": "/tmp/a.py",
+}
+
+
+def test_merge_keeps_every_input_column():
+    """The bug: metadata replaced the payload instead of extending it."""
+    merged = merge_result_aa(SOURCE_AA, RESULT, row_key="r1", source_column="text")
+    cells = _cells(merged)
+
+    assert cells["r1"]["text"] == "print('hi')", "the source text survives"
+    assert cells["r1"]["author"] == "gcr", "unrelated columns survive"
+
+
+def test_merge_appends_the_metadata_to_the_source_row():
+    merged = merge_result_aa(SOURCE_AA, RESULT, row_key="r1", source_column="text")
+    row = _cells(merged)["r1"]
+
+    for column in RESULT_COLUMNS:
+        assert column in row, column
+    assert row["status"] == "SUCCESS"
+    # Numeric columns keep their types through the merge.
+    assert isinstance(row["exit_code"], int)
+    assert isinstance(row["execution_time_ms"], float)
+
+
+def test_merge_keeps_the_input_row_keys():
+    """Downstream nodes line results up against the rows they sent."""
+    merged = merge_result_aa(SOURCE_AA, RESULT, row_key="r1", source_column="text")
+    assert set(merged.rows) == {"r1", "r2"}
+    assert "exec:" not in " ".join(merged.rows)
+
+
+def test_merge_leaves_other_rows_untouched():
+    merged = merge_result_aa(SOURCE_AA, RESULT, row_key="r1", source_column="text")
+    assert _cells(merged)["r2"] == {"text": "a second row"}
+
+
+def test_stdout_column_mode_adds_transformed_text_without_touching_text():
+    merged = merge_result_aa(
+        SOURCE_AA, RESULT, row_key="r1", source_column="text",
+        stdout_mode=STDOUT_MODE_COLUMN,
+    )
+    row = _cells(merged)["r1"]
+
+    assert row["transformed_text"] == "transformed source"
+    assert row["text"] == "print('hi')", "the original is preserved"
+
+
+def test_stdout_replace_mode_overwrites_the_source_column():
+    merged = merge_result_aa(
+        SOURCE_AA, RESULT, row_key="r1", source_column="text",
+        stdout_mode=STDOUT_MODE_REPLACE,
+    )
+    row = _cells(merged)["r1"]
+
+    # A downstream node reading `text` sees the transformed text…
+    assert row["text"] == "transformed source"
+    # …and the pre-execution source is still reachable.
+    assert row["code"] == "print('hi')"
+    assert "transformed_text" not in row
+
+
+def test_stdout_none_mode_leaves_only_the_metadata_column():
+    merged = merge_result_aa(
+        SOURCE_AA, RESULT, row_key="r1", source_column="text",
+        stdout_mode=STDOUT_MODE_NONE,
+    )
+    row = _cells(merged)["r1"]
+
+    assert row["text"] == "print('hi')"
+    assert "transformed_text" not in row
+    assert row["stdout"] == "transformed source", "still in the metadata"
+
+
+def test_a_custom_stdout_column_is_honoured():
+    merged = merge_result_aa(
+        SOURCE_AA, RESULT, row_key="r1", source_column="text",
+        stdout_column="better_docstring",
+    )
+    assert _cells(merged)["r1"]["better_docstring"] == "transformed source"
+
+
+def test_empty_stdout_adds_no_column():
+    merged = merge_result_aa(
+        SOURCE_AA, dict(RESULT, stdout="   "), row_key="r1", source_column="text"
+    )
+    assert "transformed_text" not in _cells(merged)["r1"]
+
+
+def test_a_colliding_input_column_is_replaced_not_duplicated():
+    """One value per cell: two triples for one (row, col) is unresolvable."""
+    source = AssocArray(
+        rows=["r1", "r1"], cols=["text", "status"], vals=["code", "stale"]
+    )
+    merged = merge_result_aa(source, RESULT, row_key="r1", source_column="text")
+
+    pairs = list(zip(merged.rows, merged.cols))
+    assert len(pairs) == len(set(pairs)), "no duplicate cells"
+    assert _cells(merged)["r1"]["status"] == "SUCCESS", "the fresh value wins"
+
+
+def test_no_source_aa_falls_back_to_the_standalone_metadata_row():
+    """A direct `code=` call has no rows to merge with."""
+    merged = merge_result_aa(None, RESULT)
+    assert list(merged.cols) == list(RESULT_COLUMNS)
+    assert merged.rows[0].startswith("exec:")
+
+
+def test_an_unknown_stdout_mode_is_refused():
+    with pytest.raises(ValueError, match="unknown stdout_mode"):
+        merge_result_aa(SOURCE_AA, RESULT, stdout_mode="wat")
+
+
+def test_from_aa_reports_the_row_and_column_it_read():
+    payload = PolyglotExecNode.from_aa(SOURCE_AA)
+    assert payload.row_key == "r1"
+    assert payload.source_column == "text"
+
+
+# --- The route ----------------------------------------------------------------
+
+
+def test_route_merges_the_payload_into_the_response_aa():
+    response = client.post(
+        "/exec",
+        json={
+            "executionPayload": {
+                "rows": ["r1", "r1", "r2"],
+                "cols": ["text", "author", "text"],
+                "vals": ["print('hello')", "gcr", "untouched"],
+            },
+            "language": "python",
+        },
+    )
+
+    assert response.status_code == 200
+    cells = {}
+    aa = response.json()["executionResult"]
+    for row, col, val in zip(aa["rows"], aa["cols"], aa["vals"]):
+        cells.setdefault(row, {})[col] = val
+
+    assert cells["r1"]["text"] == "print('hello')"
+    assert cells["r1"]["author"] == "gcr"
+    assert cells["r1"]["status"] == "SUCCESS"
+    assert cells["r1"]["transformed_text"] == "hello\n"
+    assert cells["r2"] == {"text": "untouched"}
+
+
+def test_route_honours_replace_mode():
+    response = client.post(
+        "/exec",
+        json={
+            "executionPayload": {"rows": ["r1"], "cols": ["text"], "vals": ["print('new text')"]},
+            "language": "python",
+            "stdoutMode": "replace",
+        },
+    )
+
+    aa = response.json()["executionResult"]
+    cells = dict(zip(aa["cols"], aa["vals"]))
+    assert cells["text"] == "new text\n"
+    assert cells["code"] == "print('new text')"
+
+
+def test_route_rejects_an_unknown_stdout_mode():
+    response = client.post(
+        "/exec",
+        json={"code": "print(1)", "language": "python", "stdoutMode": "sideways"},
+    )
+    assert response.status_code == 422
+    assert "unknown stdout_mode" in response.json()["detail"]
+
+
+def test_a_code_only_request_still_returns_the_metadata_aa():
+    """No AA in, no merge — the old shape, unchanged."""
+    body = client.post("/exec", json={"code": "print(1)", "language": "python"}).json()
+    assert body["executionResult"]["cols"] == list(RESULT_COLUMNS)

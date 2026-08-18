@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from double_touch.app import app
 from double_touch.ast_extract import (
     SCHEMA_COLUMNS,
+    aa_from_table as ast_aa_from_table,
     AstExtractError,
     AstExtractNode,
     default_script_path,
@@ -182,7 +183,7 @@ def test_the_script_ships_with_the_package():
 
 def test_a_missing_root_fails_before_launching_julia(tmp_path):
     node = AstExtractNode()
-    with pytest.raises(AstExtractError, match="not a directory"):
+    with pytest.raises(AstExtractError, match="no such file or directory"):
         run(node.extract(tmp_path / "nope"))
 
 
@@ -392,4 +393,132 @@ def test_route_rejects_a_missing_directory(tmp_path):
         json={"rootPath": str(tmp_path / "absent")},
     )
     assert response.status_code == 422
-    assert "not a directory" in response.json()["detail"]
+    assert "no such file or directory" in response.json()["detail"]
+
+
+# --- Single-file roots and the wire-AA route ---------------------------------
+
+
+@julia_required
+def test_a_single_file_is_a_valid_root(codebase):
+    """The canvas extracts the file Load File opened, not the tree around it."""
+    index = run(AstExtractNode().extract(codebase / "src" / "core.jl"))
+
+    assert index.files_scanned == 1
+    names = index.table.column("symbol_name").to_pylist()
+    assert "add_one" in names
+    # `file_path` is relative to the file's own directory.
+    assert set(index.table.column("file_path").to_pylist()) == {"core.jl"}
+    # And the neighbouring broken file was not touched.
+    assert "survivor" not in names
+
+
+@julia_required
+def test_a_non_julia_file_root_yields_an_empty_index(tmp_path):
+    (tmp_path / "notes.md").write_text("# prose")
+    index = run(AstExtractNode().extract(tmp_path / "notes.md"))
+    assert index.definition_count == 0
+
+
+def test_a_missing_root_names_itself(tmp_path):
+    with pytest.raises(AstExtractError, match="no such file or directory"):
+        run(AstExtractNode().extract(tmp_path / "absent.jl"))
+
+
+def test_aa_from_table_emits_one_row_per_definition():
+    table = pa.table(
+        {
+            "symbol_name": ["add_one", "@shout"],
+            "kind": ["function", "macro"],
+            "file_path": ["a.jl", "a.jl"],
+            "line_range": ["1:3", "5:7"],
+            "docstring": ["", ""],
+            "raw_code": ["add_one(x) = x", "macro shout() end"],
+            "better_docstring": ["", ""],
+        }
+    )
+    aa = ast_aa_from_table(table)
+
+    cells = {}
+    if len(aa.vals) == len(aa.rows) * len(aa.cols):
+        for i, row in enumerate(aa.rows):
+            for j, col in enumerate(aa.cols):
+                cells.setdefault(row, {})[col] = aa.vals[i * len(aa.cols) + j]
+    else:
+        for row, col, val in zip(aa.rows, aa.cols, aa.vals):
+            cells.setdefault(row, {})[col] = val
+
+    assert len(cells) == 2
+    assert set(next(iter(cells.values()))) == set(SCHEMA_COLUMNS)
+    # Row keys locate the definition.
+    assert "a.jl:1:3" in cells
+    assert cells["a.jl:1:3"]["symbol_name"] == "add_one"
+    assert cells["a.jl:5:7"]["kind"] == "macro"
+
+
+def test_aa_from_table_disambiguates_a_repeated_location():
+    """A duplicate row key would silently merge two definitions into one row."""
+    table = pa.table(
+        {name: ["x", "y"] for name in SCHEMA_COLUMNS}
+    ).set_column(
+        SCHEMA_COLUMNS.index("file_path"), "file_path", pa.array(["a.jl", "a.jl"])
+    ).set_column(
+        SCHEMA_COLUMNS.index("line_range"), "line_range", pa.array(["1:1", "1:1"])
+    )
+    aa = ast_aa_from_table(table)
+
+    assert len(set(aa.rows)) == 2, "two definitions, two rows"
+    assert "a.jl:1:1#1" in set(aa.rows)
+
+
+def test_aa_from_table_on_an_empty_index_is_empty():
+    table = pa.table({name: pa.array([], type=pa.string()) for name in SCHEMA_COLUMNS})
+    aa = ast_aa_from_table(table)
+    assert (aa.rows, aa.cols, aa.vals) == ([], [], [])
+
+
+@julia_required
+def test_aa_route_returns_the_index_as_triples(codebase):
+    response = client.post(
+        "/ast/extract/aa", json={"rootPath": str(codebase / "src" / "core.jl")}
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["definitionCount"] > 0
+    assert body["filesScanned"] == 1
+    assert body["errors"] == []
+
+    cells = {}
+    aa = body["astIndex"]
+    if len(aa["vals"]) == len(aa["rows"]) * len(aa["cols"]):
+        for i, row in enumerate(aa["rows"]):
+            for j, col in enumerate(aa["cols"]):
+                cells.setdefault(row, {})[col] = aa["vals"][i * len(aa["cols"]) + j]
+    else:
+        for row, col, val in zip(aa["rows"], aa["cols"], aa["vals"]):
+            cells.setdefault(row, {})[col] = val
+    assert len(cells) == body["definitionCount"]
+
+    names = {c["symbol_name"] for c in cells.values()}
+    assert "add_one" in names
+    assert "@shout" in names, "macros carry their @"
+
+
+@julia_required
+def test_aa_route_reports_skipped_files_without_failing(codebase):
+    """The whole tree: one file in it is deliberately truncated."""
+    response = client.post("/ast/extract/aa", json={"rootPath": str(codebase)})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["definitionCount"] > 0
+    assert body["filesScanned"] == 2
+
+
+def test_aa_route_rejects_a_missing_root(tmp_path):
+    response = client.post(
+        "/ast/extract/aa", json={"rootPath": str(tmp_path / "absent")}
+    )
+    assert response.status_code == 422
+    assert "no such file or directory" in response.json()["detail"]

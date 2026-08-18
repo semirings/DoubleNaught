@@ -40,7 +40,7 @@ class _FetchNodeState extends BaseNodeState<FetchNode> {
   @override IconData get nodeIcon     => Icons.cloud_download_outlined;
   @override String   get workingLabel => 'fetching';
 
-  final InputPort  _in  = InputPort('assocArray');
+  final InputPort  _in  = InputPort('workMetadata');
   final OutputPort _out = OutputPort('rawText');
 
   AaPayload? _incoming;
@@ -105,7 +105,7 @@ class _FetchNodeState extends BaseNodeState<FetchNode> {
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
         InputConnector(
-          label: 'assocArray',
+          label: 'workMetadata',
           idx: 0,
           active: widget.inputConnected,
           onConnect: widget.onInputConnect,

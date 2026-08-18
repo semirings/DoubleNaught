@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import '../../models/aa_payload.dart';
 
 /// A robust Output Port wrapper for N&N Canvas Nodes
@@ -17,6 +19,7 @@ class OutputPort {
 
   /// Emit a new payload downstream
   void emit(AaPayload payload) {
+    debugPrint('[PORT-DEBUG] OutputPort($id).emit() called with cols=${payload.cols.length}');
     _lastPayload = payload;
     _controller.add(payload);
   }

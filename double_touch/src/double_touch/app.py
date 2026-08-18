@@ -8,11 +8,25 @@ to a pluggable :class:`InferenceEngine` (default: the deterministic stub).
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# 1. Define paths to local and global env files
+local_env = Path(".env")
+global_env = Path.home() / ".gemini" / ".env"
+
+# 2. Load global env first, then override with local env if present
+if global_env.exists():
+    load_dotenv(dotenv_path=global_env)
+
+if local_env.exists():
+    load_dotenv(dotenv_path=local_env, override=True)
+
 import json
 import re
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
@@ -41,8 +55,6 @@ from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cx
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
 from .models import (
-    AaBinaryNormalizeRequest,
-    AaBinaryNormalizeResponse,
     D4mExecRequest,
     D4mExecResponse,
     D4mIngestRequest,
@@ -78,7 +90,12 @@ from .models import (
     ReviewSessionResponse,
     ReviewStartRequest,
     LoadFileRequest,
+    AstExtractAaResponse,
     AstExtractRequest,
+    LlmBetterDocRequest,
+    LlmBetterDocResponse,
+    JsonlFormatRequest,
+    JsonlFormatResponse,
     PolyglotExecRequest,
     PolyglotExecResponse,
     LoadFileResponse,
@@ -116,9 +133,23 @@ from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
 from .save_file import execute_save
 from .load_file import load_file
-from .ast_extract import AstExtractError, AstExtractNode, to_arrow_bytes
+from .ast_extract import (
+    AstExtractError,
+    AstExtractNode,
+    aa_from_table as ast_aa_from_table,
+    read_arrow_table,
+    to_arrow_bytes,
+)
 from .patch_docstrings import PatchDocstringsError, PatchDocstringsNode
-from .polyglot_exec_node import ExecInput, PolyglotExecNode
+from .jsonl_formatter_node import (
+    LEGACY_INSTRUCTION_PROMPT,
+    JsonlFormatError,
+    JsonlFormatterNode,
+    aa_from_table,
+)
+from .polyglot_exec_node import ExecInput, PolyglotExecNode, merge_result_aa
+from .llm_better_doc import LlmBetterDocNode, LlmBetterDocError
+from .workflows_router import router as workflows_router
 
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
@@ -164,6 +195,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Workflow CRUD lives in its own router module.
+app.include_router(workflows_router)
 
 store = SessionStore()
 engine: InferenceEngine = StubInferenceEngine()
@@ -563,7 +597,7 @@ async def classify_documents(request: ClassifyRequest) -> ClassifyResponse:
 
     aa_out = await run_in_threadpool(_run)
     return ClassifyResponse(
-        aa=AssocArray(
+        classification_scores=AssocArray(
             rows=aa_out.get("row", []),
             cols=aa_out.get("col", []),
             vals=aa_out.get("val", []),
@@ -579,13 +613,13 @@ async def fetch_text(request: FetchRequest) -> FetchResponse:
     (``chunk:00000``) carrying the whole cleaned document; ChunkNode later splits
     it into many rows sharing this schema.
     """
-    url = _aa_value(request.aa, "url")
+    url = _aa_value(request.work_metadata, "url")
     if not url:
         raise HTTPException(status_code=422, detail="AA payload missing a 'url' column")
-    author = _aa_value(request.aa, "author") or ""
-    work_title = _aa_value(request.aa, "work_title") or ""
+    author = _aa_value(request.work_metadata, "author") or ""
+    work_title = _aa_value(request.work_metadata, "work_title") or ""
     # Carried through unchanged so ChunkNode can locate the target work.
-    work_selector = _aa_value(request.aa, "work_selector") or ""
+    work_selector = _aa_value(request.work_metadata, "work_selector") or ""
 
     try:
         async with httpx.AsyncClient(
@@ -604,7 +638,7 @@ async def fetch_text(request: FetchRequest) -> FetchResponse:
     cols = ["raw_text", "author", "work_title", "work_selector", "char_count", "fetch_timestamp"]
     vals = [raw_text, author, work_title, work_selector, str(len(raw_text)), fetch_timestamp]
     aa = AssocArray(rows=[_chunk_id(0)] * len(cols), cols=cols, vals=vals)
-    return FetchResponse(aa=aa)
+    return FetchResponse(work_metadata=aa)
 
 
 # --- Chunk node (ChunkNode) -------------------------------------------------
@@ -680,36 +714,57 @@ async def chunk_text(request: ChunkRequest) -> ChunkResponse:
 
 # --- AA→JSONL node (AA2JSONLNode) -------------------------------------------
 
-# Phi-4 fine-tuning line formatters, keyed by the selectable format id. Add a
-# new entry here to support another format — the route needs no other change.
-_JSONL_FORMATTERS = {
-    "instruction-completion": lambda text: {
-        "prompt": "Write in the GCC voice:",
-        "completion": text,
-    },
-    "continuation": lambda text: {"text": text},
+# DEPRECATED. The legacy AA2JSONL format ids, mapped onto JsonlFormatterNode's
+# modes. Line construction lives in `jsonl_formatter_node.py` — this table only
+# says which mode each legacy id means, so the two nodes cannot drift apart.
+#
+# "instruction-completion" is `prompt_completion` with a constant prompt, which is
+# exactly what the old lambda did.
+_LEGACY_FORMAT_MODES = {
+    "instruction-completion": "instruction_completion",
+    "continuation": "continuation",
 }
+
+
+def _legacy_formatter(format_id: str) -> JsonlFormatterNode:
+    """The unified formatter configured to reproduce a legacy format byte for byte."""
+    return JsonlFormatterNode(
+        format_mode=_LEGACY_FORMAT_MODES[format_id],
+        default_prompt=LEGACY_INSTRUCTION_PROMPT,
+    )
 
 # Output AA columns, in order (all string-valued).
 _AA2JSONL_COLUMNS = ["jsonl_line", "format", "output_file", "write_timestamp", "status"]
 
 
-@app.post("/aa2jsonl", response_model=Aa2JsonlResponse)
+@app.post("/aa2jsonl", response_model=Aa2JsonlResponse, deprecated=True)
 async def aa_to_jsonl(request: Aa2JsonlRequest) -> Aa2JsonlResponse:
-    """Write an AA of passages to a JSONL file formatted for Phi-4 fine-tuning.
+    """**Deprecated** — use `/jsonl/format/aa` with `formatMode`.
+
+    Kept working rather than redirected: this route *writes the file itself*, sorts
+    by `position`, and returns per-chunk provenance plus stats, none of which the
+    unified route does. A redirect would change the response shape under existing
+    callers. Its **line construction** now goes through `JsonlFormatterNode`, so
+    there is one implementation of each format; only the file-writing and
+    provenance below are specific to this endpoint.
+
+    New work should emit lines with `/jsonl/format/aa` (`formatMode`:
+    `prompt_completion`) and write them with the Save File node.
+
+    Writes an AA of passages to a JSONL file formatted for Phi-4 fine-tuning.
 
     Iterates rows in ``position`` order, formats each chunk's text per the
     selected format, validates each line is valid JSON, and writes one object
     per line. Emits a provenance AA — one row per source chunk, keyed by the
     original chunkID — recording the line written and its status.
     """
-    formatter = _JSONL_FORMATTERS.get(request.format)
-    if formatter is None:
+    if request.format not in _LEGACY_FORMAT_MODES:
         raise HTTPException(
             status_code=422,
             detail=f"unknown format {request.format!r}; "
-            f"known formats: {sorted(_JSONL_FORMATTERS)}",
+            f"known formats: {sorted(_LEGACY_FORMAT_MODES)}",
         )
+    formatter = _legacy_formatter(request.format)
     output_file = request.output_file.strip()
     if not output_file:
         raise HTTPException(status_code=422, detail="outputFile must not be empty")
@@ -747,8 +802,12 @@ async def aa_to_jsonl(request: Aa2JsonlRequest) -> Aa2JsonlResponse:
             skipped += 1
         else:
             try:
-                jsonl_line = json.dumps(formatter(text), ensure_ascii=False)
-                json.loads(jsonl_line)  # validate before accepting the line
+                # One implementation of every format: JsonlFormatterNode builds it.
+                built = formatter.line_for({text_col: text})
+                if built is None:
+                    raise ValueError("mode produced no line")
+                json.loads(built)  # validate before accepting the line
+                jsonl_line = built
                 lines.append(jsonl_line)
             except (TypeError, ValueError):
                 jsonl_line = ""
@@ -1216,12 +1275,93 @@ async def load_file_endpoint(request: LoadFileRequest) -> LoadFileResponse:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
-    payload_type = "associative_array" if aa is not None else "table"
+    raw_text = data.get("text") if data else None
+    if isinstance(raw_text, str) and set(data) == {"text"}:
+        payload_type = "text"
+        message = f"Loaded text from {Path(request.file_path).name}"
+    elif data and isinstance(data.get("rows"), list) and data["rows"] and "file_path" in data["rows"][0]:
+        payload_type = "multi_file"
+        message = f"Loaded {len(data['rows'])} files"
+    elif aa is not None:
+        payload_type = "associative_array"
+        message = f"Loaded associative_array from {Path(request.file_path).name}"
+    else:
+        payload_type = "table"
+        message = f"Loaded table from {Path(request.file_path).name}"
+
     return LoadFileResponse(
-        aa=aa,
+        parsed_payload=aa,
+        contents=raw_text if isinstance(raw_text, str) else None,
         data=data or {},
         payload_type=payload_type,
-        message=f"Loaded {payload_type} from {Path(request.file_path).name}",
+        message=message,
+    )
+
+
+# --- JSONL Formatter node (JsonlFormatterNode) --------------------------------
+
+@app.post("/jsonl/format")
+async def jsonl_format_arrow(
+    request: Request,
+    format_mode: str = "chatml",
+) -> Response:
+    """Format a documented index into ChatML JSONL — Arrow in, Arrow out.
+
+    The pipeline path: the request body is the 7-column index as Arrow IPC bytes and
+    the response is the 2-column result (`json_line`, `symbol_name`) as Arrow IPC
+    bytes. Counts are in the `X-Dn-*` headers and the result's schema metadata.
+
+    Rows with no `better_docstring` are dropped, not an error: an index is
+    documented a few symbols at a time.
+    """
+    body = await request.body()
+    if not body:
+        raise HTTPException(
+            status_code=422,
+            detail="empty body: POST the index as Arrow IPC bytes "
+            "(application/vnd.apache.arrow.file)",
+        )
+
+    try:
+        table = read_arrow_table(body)
+        result = JsonlFormatterNode(format_mode=format_mode).format_table(table)
+    except (AstExtractError, JsonlFormatError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return Response(
+        content=to_arrow_bytes(result.table),
+        media_type="application/vnd.apache.arrow.file",
+        headers={
+            "X-Dn-Line-Count": str(result.line_count),
+            "X-Dn-Format-Mode": result.mode,
+            "X-Dn-Skipped-No-Doc": str(result.skipped_no_doc),
+            "X-Dn-Skipped-No-Code": str(result.skipped_no_code),
+            "X-Dn-Skipped-Incomplete": str(result.skipped_incomplete),
+            "X-Dn-Schema": "jsonl_lines_v1",
+        },
+    )
+
+
+@app.post("/jsonl/format/aa", response_model=JsonlFormatResponse)
+async def jsonl_format_aa(request: JsonlFormatRequest) -> JsonlFormatResponse:
+    """Same formatting, over the wire AA the canvas speaks.
+
+    The canvas transports AAs as JSON triples and Dart cannot read Arrow, so the
+    node widget uses this route while the Arrow-native pipeline uses `/jsonl/format`.
+    Both call the same formatter; only the envelope differs.
+    """
+    try:
+        result = JsonlFormatterNode(format_mode=request.format_mode).format_aa(request.ast_index)
+    except JsonlFormatError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return JsonlFormatResponse(
+        jsonl_lines=aa_from_table(result.table),
+        format_mode=result.mode,
+        line_count=result.line_count,
+        skipped_no_doc=result.skipped_no_doc,
+        skipped_no_code=result.skipped_no_code,
+        skipped_incomplete=result.skipped_incomplete,
     )
 
 
@@ -1260,6 +1400,63 @@ async def ast_extract_endpoint(request: AstExtractRequest) -> Response:
             "X-Dn-Error-Count": str(len(index.errors)),
             "X-Dn-Schema": "ast_index_v1",
         },
+    )
+
+
+@app.post("/ast/extract/aa", response_model=AstExtractAaResponse)
+async def ast_extract_aa_endpoint(request: AstExtractRequest) -> AstExtractAaResponse:
+    """The same extraction, returned as a wire AA instead of Arrow bytes.
+
+    The canvas transport: Dart has no Arrow reader, so the node widget uses this
+    while the backend pipeline uses `/ast/extract`. Both run the same script; only
+    the envelope differs.
+
+    `rootPath` may be a directory or a single `.jl` file.
+    """
+    try:
+        payload = request.parsed_payload or request.codebase_path or request.aa
+        index = await AstExtractNode(timeout_s=request.timeout_s).extract(
+            request.root_path,
+            parsed_payload=payload,
+        )
+    except AstExtractError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return AstExtractAaResponse(
+        ast_index=ast_aa_from_table(index.table),
+        definition_count=index.definition_count,
+        files_scanned=index.files_scanned,
+        errors=index.errors,
+        root=index.root,
+    )
+
+
+# --- LLM Better Docstring node (LlmBetterDocNode) ----------------------------
+
+
+@app.post("/llm/enrich-ast", response_model=LlmBetterDocResponse)
+async def llm_enrich_ast(request: LlmBetterDocRequest) -> LlmBetterDocResponse:
+    """Enrich an AST index with LLM-generated better_docstring column.
+
+    Takes the 7-column documented index and generates improved docstrings
+    for each function/macro using the specified LLM model. Uses D4M to add
+    the new column to the output AA.
+    """
+    try:
+        node = LlmBetterDocNode(
+            model_id=request.model_id,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+        )
+        enriched = await run_in_threadpool(node.enrich, request.ast_index)
+    except LlmBetterDocError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return LlmBetterDocResponse(
+        enriched_index=enriched,
+        rows_processed=len(set(request.ast_index.rows)),
     )
 
 
@@ -1325,6 +1522,11 @@ async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
     fields win over anything read off the AA, so the node's dropdown and timeout
     box override what the upstream node happened to say.
 
+    The response AA **merges** into the request's: every incoming column and row key
+    survives, and the execution metadata is appended to the row the code was read
+    from. `stdoutMode` decides where stdout goes — a new `transformed_text` column
+    by default, over the source column with `"replace"`, or nowhere with `"none"`.
+
     A failing snippet is **not** an HTTP error: a non-zero exit, a timeout and a
     missing interpreter all return 200 with a ``status`` of ``FAILED`` /
     ``TIMEOUT``, because the result AA is how a downstream node sees the failure.
@@ -1335,8 +1537,8 @@ async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
     ``asyncio`` subprocess and its pipes, which is already non-blocking.
     """
     payload = (
-        PolyglotExecNode.from_aa(request.aa)
-        if request.aa is not None
+        PolyglotExecNode.from_aa(request.execution_payload)
+        if request.execution_payload is not None
         else ExecInput()
     )
     # Explicit request fields beat the payload's own.
@@ -1359,10 +1561,21 @@ async def polyglot_exec(request: PolyglotExecRequest) -> PolyglotExecResponse:
     node = PolyglotExecNode(timeout_s=request.timeout_s)
     try:
         result = await node.run(payload, override_language=request.language)
+        # Merge, never replace: the incoming payload's columns and row keys survive
+        # and the execution metadata is appended to the row the code came from, so
+        # a downstream node still finds `text` where it left it.
+        aa = merge_result_aa(
+            request.execution_payload,
+            result,
+            row_key=payload.row_key,
+            source_column=payload.source_column,
+            stdout_mode=request.stdout_mode,
+            stdout_column=request.stdout_column,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    return PolyglotExecResponse(aa=PolyglotExecNode.to_aa(result), **result)
+    return PolyglotExecResponse(execution_result=aa, **result)
 
 
 # --- Save File node (SaveFileNode) -------------------------------------------
@@ -1372,7 +1585,7 @@ async def save_file(request: SaveFileRequest) -> SaveFileResponse:
     try:
         out_path, bytes_written = await run_in_threadpool(
             execute_save,
-            request.aa,
+            request.data_to_save,
             request.text,
             request.image_base64,
             request.filename,
@@ -1390,50 +1603,3 @@ async def save_file(request: SaveFileRequest) -> SaveFileResponse:
     )
 
 
-# --- AA Binary Normalizer node (AaBinaryNormalizerNode) ----------------------
-
-@app.post("/normalize", response_model=AaBinaryNormalizeResponse)
-async def aaBinaryNormalize(
-    request: AaBinaryNormalizeRequest,
-) -> AaBinaryNormalizeResponse:
-    from .aa_binary_normalizer import AABinaryNormalizer
-    try:
-        aaOut = await run_in_threadpool(
-            AABinaryNormalizer().normalize,
-            {
-                "filePath":        request.file_path,
-                "outputDirectory": request.output_directory,
-                "splitName":       request.split_name,
-                "keepInMemory":    request.keep_in_memory,
-            },
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-    import os as _os
-    bookId = _os.path.splitext(_os.path.basename(aaOut["arrowFilePath"]))[0]
-    rows: list[str] = []
-    cols: list[str] = []
-    vals: list = []
-
-    def _add(col: str, val) -> None:
-        rows.append(bookId)
-        cols.append(col)
-        vals.append(val)
-
-    _add("arrowFilePath",  aaOut["arrowFilePath"])
-    _add("rowCount",       aaOut["rowCount"])
-    _add("splitName",      request.split_name)
-    _add("isMemoryMapped", str(aaOut["isMemoryMapped"]))
-    for fieldName, arrowType in aaOut["columnSchema"].items():
-        _add(f"schema:{fieldName}", arrowType)
-
-    return AaBinaryNormalizeResponse(
-        aa=AssocArray(rows=rows, cols=cols, vals=vals),
-        arrow_file_path=aaOut["arrowFilePath"],
-        row_count=aaOut["rowCount"],
-        column_schema=aaOut["columnSchema"],
-        is_memory_mapped=aaOut["isMemoryMapped"],
-    )
