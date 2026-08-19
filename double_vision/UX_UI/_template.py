@@ -189,6 +189,130 @@ def build_card_border(coll, N, card_pts):
 
 
 # ============================================================
+# WIDGET VERTICAL ORDER CONVENTION (all nodes)
+#
+# For any node that has a Wait checkbox and/or an Execute button, the
+# standing vertical order — top to bottom — is:
+#
+#     [ any other widgets: ports, fields, script boxes, etc. ]
+#     Wait checkbox         <- above Execute, below everything else
+#     Execute button         <- below Wait, above the status bar
+#     [ status bar, if present ]
+#
+# This was decided after D4M and Function Extraction initially had these
+# reversed (Execute above Wait); both were corrected and this ordering is
+# now the standard for every future node. When laying out a new
+# build_<node>.py, place the Wait checkbox's Y coordinate ABOVE (i.e. a
+# smaller CARD_H-offset than) the Execute button's Y coordinate, and place
+# the button just above the status row (or above the bottom margin, if the
+# node has no status row).
+# ============================================================
+
+# ============================================================
+# WAIT / EXECUTE / STATUS VERTICAL SPACING — computed, not hand-picked.
+#
+# Root cause of the inconsistency found across the first several nodes:
+# each build_<node>.py picked its own raw Y offset for the Wait checkbox,
+# copied from whatever the previous node happened to use. Because the
+# widget directly above Wait has a different height on different nodes
+# (a 0.5-tall field box vs. a bare port-label row vs. a 0.34-tall field),
+# matching offset NUMBERS did not produce matching VISUAL gaps, and
+# non-matching numbers made it worse.
+#
+# Fix: always compute Wait/Execute/status Y from the actual bottom edge of
+# whatever precedes them, using these constants + helper functions. Never
+# hand-pick a CHK_Y / BTN_Y / STATUS_Y offset again — this is what prevents
+# future drift.
+# ============================================================
+GAP_BEFORE_WAIT      = 0.20  # clear space: last "other" widget -> Wait checkbox
+GAP_WAIT_TO_EXECUTE  = 0.10  # clear space: Wait checkbox -> Execute button
+GAP_EXECUTE_TO_STATUS = 0.15  # clear space: Execute button -> status row (if present)
+
+WAIT_CHK_SIZE  = 0.22
+EXECUTE_BTN_H  = 0.46
+TEXT_ROW_HALF  = 0.13  # nominal half-height to use when the preceding widget
+                        # is a bare text/port row rather than a boxed field
+                        # (i.e. it has no explicit height of its own)
+
+def wait_checkbox_y(prev_bottom_y):
+    """prev_bottom_y = the Y of the BOTTOM edge of the last widget above
+    Wait (box_center_y - box_height/2, or row_y - TEXT_ROW_HALF for a bare
+    text/port row). Returns Wait checkbox's center Y."""
+    return prev_bottom_y - GAP_BEFORE_WAIT - WAIT_CHK_SIZE/2
+
+def execute_button_y(wait_chk_y):
+    """Given Wait's center Y, returns Execute button's center Y directly
+    below it, using the standard gap."""
+    return wait_chk_y - WAIT_CHK_SIZE/2 - GAP_WAIT_TO_EXECUTE - EXECUTE_BTN_H/2
+
+def status_row_y(execute_btn_y):
+    """Given Execute's center Y, returns the status row's Y directly below
+    it, using the standard gap. Only call this for nodes that have a
+    status row (not all do — e.g. D4M does not)."""
+    return execute_btn_y - EXECUTE_BTN_H/2 - GAP_EXECUTE_TO_STATUS
+
+
+# ============================================================
+# Standard Execute button — text + arrowhead (arrow ALWAYS to the right of
+# the label), three states (disabled/enabled/lit). Previously each node
+# built its own Execute button by hand: D4M had a play-triangle icon on the
+# LEFT, every other node had no icon at all. Standardized here: always use
+# this function so every node's Execute button matches exactly, with no
+# per-node variation possible.
+# ============================================================
+def build_execute_button(coll, N, cx, y, w=3.6, h=None):
+    h = h if h is not None else EXECUTE_BTN_H
+    btn_pts = rounded_rect_points(cx, y, w, h, 0.18, 8)
+
+    make_filled(N("Button_Disabled"), btn_pts, N("ButtonDisabledMat"), BUTTON_DISABLED_COL, tier="fill", strength=0.4, coll=coll)
+    make_filled(N("Button_Enabled"), btn_pts, N("ButtonEnabledMat"), BUTTON_NORMAL_COL, tier="fill", strength=0.6, coll=coll)
+    make_filled(N("Button_Lit"), btn_pts, N("ButtonLitMat"), BUTTON_LIT_COL, tier="fill", strength=4.0, coll=coll)
+
+    # Label shifted slightly left of button-center so the (label + arrow)
+    # group as a whole reads as centered, with the arrowhead to the right.
+    label_x = cx - 0.20
+    make_text(N("Button_Label_Disabled"), "Execute", (label_x, y), 0.18, N("ButtonLabelDisabledMat"),
+              TEXT_DIM_COL, tier="labels", align='CENTER', strength=0.5, coll=coll)
+    make_text(N("Button_Label_Active"), "Execute", (label_x, y), 0.18, N("ButtonLabelActiveMat"),
+              TEXT_COL, tier="labels", align='CENTER', strength=1.2, coll=coll)
+
+    arrow_x = cx + 0.62
+    tri_pts = [(arrow_x-0.065, y-0.09), (arrow_x-0.065, y+0.09), (arrow_x+0.075, y)]
+    make_filled(N("Button_Arrow_Disabled"), tri_pts, N("ButtonArrowDisabledMat"), TEXT_DIM_COL, tier="labels", strength=0.5, coll=coll)
+    make_filled(N("Button_Arrow_Active"), tri_pts, N("ButtonArrowActiveMat"), TEXT_COL, tier="labels", strength=1.2, coll=coll)
+
+    return {
+        "disabled": [N("Button_Disabled"), N("Button_Label_Disabled"), N("Button_Arrow_Disabled")],
+        "enabled":  [N("Button_Enabled"),  N("Button_Label_Active"),   N("Button_Arrow_Active")],
+        "lit":      [N("Button_Lit"),      N("Button_Label_Active"),   N("Button_Arrow_Active")],
+    }
+
+
+# ============================================================
+# Standard status row — dot + label, four mutually-exclusive states.
+# Shared so every node's idle/running/success/error indicator looks and
+# behaves identically. Returns a dict of {state: (dot_name, text_name)}.
+# ============================================================
+def build_status_row(coll, N, x, y, dot_r=0.06):
+    specs = [
+        ("idle",    STATUS_IDLE_COL,    "idle",    0.5, 0.5),
+        ("running", STATUS_RUNNING_COL, "running", 6.0, 1.0),
+        ("success", STATUS_SUCCESS_COL, "done",    5.0, 1.0),
+        ("error",   STATUS_ERROR_COL,   "error",   5.0, 1.0),
+    ]
+    result = {}
+    for state, color, label, strength, text_strength in specs:
+        dot_name = N(f"Status_{state.capitalize()}_Dot")
+        text_name = N(f"Status_{state.capitalize()}_Text")
+        make_filled(dot_name, circle_points(x, y, dot_r, 16), N(f"Status{state.capitalize()}DotMat"),
+                    color, tier="controls", strength=strength, coll=coll)
+        make_text(text_name, label, (x + dot_r + 0.14, y), 0.15, N(f"Status{state.capitalize()}TextMat"),
+                  TEXT_DIM_COL, tier="labels", align='LEFT', strength=text_strength, coll=coll)
+        result[state] = (dot_name, text_name)
+    return result
+
+
+# ============================================================
 # Collection / scene setup
 # ============================================================
 def new_node_collection(node_name):

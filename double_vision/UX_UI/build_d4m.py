@@ -46,7 +46,7 @@ NODE_KEY = "D4M"
 def N(suffix):
     return f"{NODE_KEY}_{suffix}"
 
-CARD_W, CARD_H = 4.6, 4.3
+CARD_W, CARD_H = 4.6, 4.8  # grown to fit the re-added status row
 cx = CARD_W / 2
 
 coll = new_node_collection("D4M")
@@ -92,8 +92,6 @@ make_text(N("PortOut_Label"), "Out", (CARD_W-0.22, PORT_Y), 0.19, N("PortOutLabe
 ADDPORT_Y = CARD_H - 1.15
 make_text(N("AddPort_Plus"), "+", (0.22, ADDPORT_Y), 0.22, N("AddPortPlusMat"),
           (0.78,0.55,1.0,1), tier="controls", align='LEFT', strength=2.0, coll=coll)
-make_text(N("AddPort_Hint"), "add port", (0.50, ADDPORT_Y), 0.13, N("AddPortHintMat"),
-          TEXT_DIM_COL, tier="labels", align='LEFT', coll=coll)
 
 # ---------------- Script text area ----------------
 SCRIPT_TOP = CARD_H - 1.30
@@ -122,8 +120,6 @@ make_filled(N("Script_ScrollThumb"), sb_thumb_pts, N("ScriptScrollThumbMat"), (0
 # expand-to-editor hint icon (top-right corner of the box) + caption
 make_text(N("Script_ExpandIcon"), "⤢", (script_right - 0.26, SCRIPT_TOP - 0.16), 0.16,
           N("ScriptExpandIconMat"), TEXT_DIM_COL, tier="controls", align='LEFT', strength=1.0, coll=coll)
-make_text(N("Script_ExpandHint"), "double-click to expand → full editor", (0.40, SCRIPT_TOP - SCRIPT_H + 0.16), 0.105,
-          N("ScriptExpandHintMat"), TEXT_DIM_COL, tier="labels", align='LEFT', strength=0.6, coll=coll)
 
 # ---------------- Out: name field ----------------
 OUTFIELD_Y = CARD_H - 2.65
@@ -147,29 +143,21 @@ make_outline(N("OutField_Outline"), outfield_pts, N("OutFieldOutlineMat"), OUTLI
 make_text(N("OutField_Value"), "Out", (OUTFIELD_BOX_LEFT + 0.15, OUTFIELD_Y), 0.15, N("OutFieldValueMat"),
           TEXT_COL, tier="labels", align='LEFT', coll=coll)
 
-# ---------------- Execute button (centered, no longer paired with Preview) ----------------
-BTN_W, BTN_H = 3.6, 0.42
-BTN_Y = CARD_H - 3.15
-btn_pts = rounded_rect_points(cx, BTN_Y, BTN_W, BTN_H, 0.18, 8)
+# ---- Wait / Execute vertical positions — COMPUTED from the Out: field's
+# actual bottom edge, never hand-picked. See _template.py for the rule. ----
+_outfield_box_bottom = OUTFIELD_Y - 0.34/2
+CHK_Y = wait_checkbox_y(_outfield_box_bottom)
+BTN_Y = execute_button_y(CHK_Y)
 
-make_filled(N("Button_Disabled"), btn_pts, N("ButtonDisabledMat"), BUTTON_DISABLED_COL, tier="fill", strength=0.4, coll=coll)
-make_filled(N("Button_Enabled"), btn_pts, N("ButtonEnabledMat"), BUTTON_NORMAL_COL, tier="fill", strength=0.6, coll=coll)
-make_filled(N("Button_Lit"), btn_pts, N("ButtonLitMat"), BUTTON_LIT_COL, tier="fill", strength=4.0, coll=coll)
-
-# small play-triangle glyph + label, two brightness variants matching disabled/active
-tri_pts_dim = [(cx-0.62, BTN_Y-0.08), (cx-0.62, BTN_Y+0.08), (cx-0.50, BTN_Y)]
-make_filled(N("Button_Play_Disabled"), tri_pts_dim, N("ButtonPlayDisabledMat"), TEXT_DIM_COL, tier="labels", strength=0.5, coll=coll)
-make_filled(N("Button_Play_Active"), tri_pts_dim, N("ButtonPlayActiveMat"), TEXT_COL, tier="labels", strength=1.2, coll=coll)
-
-make_text(N("Button_Label_Disabled"), "Execute", (cx+0.10, BTN_Y), 0.18, N("ButtonLabelDisabledMat"),
-          TEXT_DIM_COL, tier="labels", align='CENTER', strength=0.5, coll=coll)
-make_text(N("Button_Label_Active"), "Execute", (cx+0.10, BTN_Y), 0.18, N("ButtonLabelActiveMat"),
-          TEXT_COL, tier="labels", align='CENTER', strength=1.2, coll=coll)
+# ---------------- Execute button (shared, standardized: see _template.py) ----------------
+# Previously a left-side play-triangle icon (bespoke to this node). Replaced
+# with the standard shared button: text + arrowhead to the RIGHT, matching
+# every other node.
+btn_states = build_execute_button(coll, N, cx, BTN_Y, w=3.6)
 
 # ---------------- Wait checkbox (same pattern as Preview node) ----------------
-CHK_Y = CARD_H - 3.55
 CHK_X = 0.32
-CHK_SIZE = 0.22
+CHK_SIZE = WAIT_CHK_SIZE
 chk_pts = [
     (CHK_X - CHK_SIZE/2, CHK_Y - CHK_SIZE/2),
     (CHK_X + CHK_SIZE/2, CHK_Y - CHK_SIZE/2),
@@ -195,10 +183,18 @@ make_outline(N("Checkbox_Disabled_Outline"), chk_pts, N("ChkDisabledOutlineMat")
 make_text(N("Checkbox_Label"), "Wait", (CHK_X + CHK_SIZE/2 + 0.14, CHK_Y), 0.18, N("ChkLabelMat"),
           TEXT_COL, tier="labels", align='LEFT', coll=coll)
 
+# ---------------- Status row (idle / running / success / error) ----------------
+# Previously removed entirely; re-added per updated spec, via the shared
+# helper so it matches every other node.
+STATUS_Y = status_row_y(BTN_Y)
+status_objs = build_status_row(coll, N, 0.32, STATUS_Y)
+
 # ---------------- Chain nav: add sibling D4M node left/right ----------------
 # NOT port controls — these insert another D4M node before/after this one in
 # the graph. Outer glyph = direction of insertion, inner glyph = "add".
-NAV_Y = CARD_H - 3.95
+# NAV_Y computed from the status row (not a fixed CARD_H offset) so it stays
+# correctly positioned regardless of card height.
+NAV_Y = STATUS_Y - 0.35
 make_text(N("Nav_Left_Arrow"), "←", (0.22, NAV_Y), 0.20, N("NavLeftArrowMat"),
           TEXT_DIM_COL, tier="controls", align='LEFT', strength=1.0, coll=coll)
 make_text(N("Nav_Left_Plus"), "+", (0.46, NAV_Y), 0.20, N("NavLeftPlusMat"),
@@ -218,13 +214,14 @@ DEFAULT_VISIBLE = {
     N("Header_Icon"), N("Header_Title"),
     N("PortA_Unfilled"), N("PortA_Ring"), N("PortA_Label"),
     N("PortOut_Unfilled"), N("PortOut_Ring"), N("PortOut_Label"),
-    N("AddPort_Plus"), N("AddPort_Hint"),
+    N("AddPort_Plus"),
     N("Script_Fill"), N("Script_Outline"), N("Script_Placeholder"),
     N("OutField_Label"), N("OutField_Fill"), N("OutField_Outline"), N("OutField_Value"),
-    N("Button_Disabled"), N("Button_Play_Disabled"), N("Button_Label_Disabled"),
+    *btn_states["disabled"],
     N("Checkbox_Unchecked_Fill"), N("Checkbox_Unchecked_Outline"), N("Checkbox_Label"),
-    N("Script_ScrollTrack"), N("Script_ScrollThumb"), N("Script_ExpandIcon"), N("Script_ExpandHint"),
+    N("Script_ScrollTrack"), N("Script_ScrollThumb"), N("Script_ExpandIcon"),
     N("Nav_Left_Arrow"), N("Nav_Left_Plus"), N("Nav_Right_Plus"), N("Nav_Right_Arrow"),
+    status_objs["idle"][0], status_objs["idle"][1],
 }
 
 for obj in coll.objects:

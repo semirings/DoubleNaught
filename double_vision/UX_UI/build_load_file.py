@@ -17,7 +17,7 @@ Spec (per user, 2026):
 States exposed for VSClaude / implementation reference:
   Card outline:   normal | executing | error
   URL field:      normal | error
-  Load button:    disabled | enabled | lit (pressed/active)
+  Execute button:  disabled | enabled | lit (pressed/active)
   Output port:    unfilled | connected_idle | transmitting
 """
 
@@ -68,39 +68,41 @@ make_filled(N("Port_Yellow"), circle_points(CARD_W, PORT_Y, PORT_R*1.15, 20), N(
 make_text(N("Port_Label"), "parsedPayload", (CARD_W-0.22, PORT_Y), 0.16, N("PortLabelMat"),
           TEXT_DIM_COL, tier="labels", align='RIGHT', coll=coll)
 
-# ---------------- URL field ----------------
+# ---------------- URL field (with file-dialog icon button, matching Save File) ----------------
 FIELD_LABEL_Y = CARD_H - 1.15
 FIELD_Y = CARD_H - 1.55
-FIELD_W, FIELD_H = 3.9, 0.5
+FIELD_H = 0.5
+FIELD_W = CARD_W - 0.4 - 0.5  # leave room for the icon button beside it
+field_cx = 0.25 + FIELD_W/2
 
 make_text(N("Field_Label"), "URL", (0.25, FIELD_LABEL_Y), 0.15, N("FieldLabelMat"), TEXT_DIM_COL,
           tier="labels", align='LEFT', coll=coll)
 
-field_pts = rounded_rect_points(cx, FIELD_Y, FIELD_W, FIELD_H, 0.08, 8)
+field_pts = rounded_rect_points(field_cx, FIELD_Y, FIELD_W, FIELD_H, 0.08, 8)
 make_filled(N("Field_Fill"), field_pts, N("FieldFillMat"), CONTENT_NORMAL_COL, tier="fill", coll=coll)
 make_outline(N("Field_Outline_Normal"), field_pts, N("FieldOutlineNormalMat"), OUTLINE_NORMAL_COL,
              tier="outline", thickness=0.02, strength=0.7, coll=coll)
 make_outline(N("Field_Outline_Error"), field_pts, N("FieldOutlineErrorMat"), STATUS_ERROR_COL,
              tier="outline", thickness=0.025, strength=3.5, coll=coll)
 
+# file-dialog icon button beside the field
+icon_x = CARD_W - 0.20 - 0.20
+make_filled(N("Field_IconBtn_Body"), rounded_rect_points(icon_x, FIELD_Y, 0.34, FIELD_H, 0.08, 8),
+            N("FieldIconBtnBodyMat"), CONTENT_NORMAL_COL, tier="fill", coll=coll)
+make_outline(N("Field_IconBtn_Outline"), rounded_rect_points(icon_x, FIELD_Y, 0.34, FIELD_H, 0.08, 8),
+             N("FieldIconBtnOutlineMat"), OUTLINE_NORMAL_COL, tier="outline", thickness=0.015, strength=0.6, coll=coll)
+make_filled(N("Field_IconBtn_Glyph"), rounded_rect_points(icon_x, FIELD_Y, 0.14, 0.14, 0.02, 6),
+            N("FieldIconBtnGlyphMat"), TEXT_DIM_COL, tier="controls", strength=1.0, coll=coll)
+
 # field starts EMPTY per spec — no placeholder text baked in as a permanent
 # label; error message only, shown in the error state.
 make_text(N("Field_Error_Text"), "Invalid URL", (0.25, CARD_H-1.85), 0.13, N("FieldErrorTextMat"),
           STATUS_ERROR_COL, tier="labels", align='LEFT', strength=2.0, coll=coll)
 
-# ---------------- Load button ----------------
-BTN_W, BTN_H = 2.2, 0.46
+# ---------------- Execute button (renamed from "Load" — every node says
+# Execute now, no exceptions) — shared, standardized: see _template.py ----
 BTN_Y = CARD_H - 2.45
-btn_pts = rounded_rect_points(cx, BTN_Y, BTN_W, BTN_H, 0.18, 8)
-
-make_filled(N("Button_Disabled"), btn_pts, N("ButtonDisabledMat"), BUTTON_DISABLED_COL, tier="fill", strength=0.4, coll=coll)
-make_filled(N("Button_Enabled"), btn_pts, N("ButtonEnabledMat"), BUTTON_NORMAL_COL, tier="fill", strength=0.6, coll=coll)
-make_filled(N("Button_Lit"), btn_pts, N("ButtonLitMat"), BUTTON_LIT_COL, tier="fill", strength=4.0, coll=coll)
-
-make_text(N("Button_Label_Disabled"), "Load", (cx, BTN_Y), 0.18, N("ButtonLabelDisabledMat"),
-          TEXT_DIM_COL, tier="labels", align='CENTER', strength=0.5, coll=coll)
-make_text(N("Button_Label_Active"), "Load", (cx, BTN_Y), 0.18, N("ButtonLabelActiveMat"),
-          TEXT_COL, tier="labels", align='CENTER', strength=1.2, coll=coll)
+btn_states = build_execute_button(coll, N, cx, BTN_Y, w=2.6)
 
 # ---------------- Finalize: convert to real GP + camera/background ----------------
 finalize_node(coll, CARD_W, CARD_H)
@@ -110,7 +112,8 @@ DEFAULT_VISIBLE = {
     N("Card_Fill"), outline_normal_name, N("Header_Divider"), N("Header_Icon"), N("Header_Title"),
     N("Port_Unfilled"), N("Port_Ring"), N("Port_Label"),
     N("Field_Label"), N("Field_Fill"), N("Field_Outline_Normal"),
-    N("Button_Disabled"), N("Button_Label_Disabled"),
+    N("Field_IconBtn_Body"), N("Field_IconBtn_Outline"), N("Field_IconBtn_Glyph"),
+    *btn_states["disabled"],
     N(f"{NODE_KEY}_BG") if False else None,  # placeholder no-op, BG handled by finalize_node
 }
 DEFAULT_VISIBLE.discard(None)
