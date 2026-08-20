@@ -17,6 +17,7 @@ import pyarrow.ipc as ipc
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import d4m_jl_required
 from double_touch.app import app
 from double_touch.ast_extract import (
     SCHEMA_COLUMNS,
@@ -34,43 +35,6 @@ client = TestClient(app)
 julia_required = pytest.mark.skipif(
     shutil.which("julia") is None,
     reason="julia not on PATH — the extractor needs it",
-)
-
-
-def _d4m_jl_available() -> bool:
-    """Whether D4M.jl actually loads via juliacall right now.
-
-    Distinct from `julia_required`: that one checks for the `extract_ast.jl`
-    subprocess dependency (Julia + Arrow.jl on PATH). This checks the
-    in-process D4M.jl bridge (`d4m_ops._julia()`) that `aa_from_table` now
-    routes its AA construction through — a separate, occasionally
-    out-of-sync Julia environment (see `d4m_ops.py`'s LOAD_PATH-based
-    loading).
-
-    Run in a subprocess with a hard timeout, not a plain in-process try/except:
-    a broken Julia environment doesn't necessarily fail fast — it can hang
-    (a stuck precompile lock did exactly this while diagnosing the issue this
-    guard exists for). A skip-check that can itself hang would block
-    collecting this whole file for anyone, which defeats the point.
-    """
-    import subprocess
-    import sys
-
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", "from double_touch.d4m_ops import warm; warm()"],
-            timeout=30,
-            capture_output=True,
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-d4m_jl_required = pytest.mark.skipif(
-    not _d4m_jl_available(),
-    reason="D4M.jl did not load via juliacall — see d4m_ops._julia(); "
-    "skip rather than fail when the Julia environment isn't ready",
 )
 
 
@@ -462,6 +426,14 @@ def test_a_missing_root_names_itself(tmp_path):
         run(AstExtractNode().extract(tmp_path / "absent.jl"))
 
 
+def _cells(aa) -> dict[str, dict[str, str]]:
+    """Group [aa]'s sparse triples back into `{row: {col: val}}`."""
+    cells: dict[str, dict[str, str]] = {}
+    for row, col, val in zip(aa.rows, aa.cols, aa.vals):
+        cells.setdefault(row, {})[col] = val
+    return cells
+
+
 @d4m_jl_required
 def test_aa_from_table_emits_one_row_per_definition():
     table = pa.table(
@@ -476,22 +448,62 @@ def test_aa_from_table_emits_one_row_per_definition():
         }
     )
     aa = ast_aa_from_table(table)
-
-    cells = {}
-    if len(aa.vals) == len(aa.rows) * len(aa.cols):
-        for i, row in enumerate(aa.rows):
-            for j, col in enumerate(aa.cols):
-                cells.setdefault(row, {})[col] = aa.vals[i * len(aa.cols) + j]
-    else:
-        for row, col, val in zip(aa.rows, aa.cols, aa.vals):
-            cells.setdefault(row, {})[col] = val
+    cells = _cells(aa)
 
     assert len(cells) == 2
-    assert set(next(iter(cells.values()))) == set(SCHEMA_COLUMNS)
     # Row keys locate the definition.
     assert "a.jl:1:3" in cells
     assert cells["a.jl:1:3"]["symbol_name"] == "add_one"
     assert cells["a.jl:5:7"]["kind"] == "macro"
+
+
+@d4m_jl_required
+def test_aa_from_table_omits_empty_cells_rather_than_storing_them():
+    """Per the AA spec, an empty value is the absent element for that cell —
+    a definition with no generated docstring yet has no `docstring` entry at
+    all, not an entry holding "". (This also happens to be what D4M.jl's own
+    `find()` requires — it does not tolerate an explicit empty-string value.)
+    """
+    table = pa.table(
+        {
+            "symbol_name": ["add_one"],
+            "kind": ["function"],
+            "file_path": ["a.jl"],
+            "line_range": ["1:3"],
+            "docstring": [""],
+            "raw_code": ["add_one(x) = x"],
+            "better_docstring": [""],
+        }
+    )
+    aa = ast_aa_from_table(table)
+    cells = _cells(aa)
+
+    present = set(cells["a.jl:1:3"])
+    assert present == {"symbol_name", "kind", "file_path", "line_range", "raw_code"}
+    assert "docstring" not in present
+    assert "better_docstring" not in present
+    # Neither empty column exists anywhere in this AA — no row supplied one.
+    assert "docstring" not in aa.cols
+    assert "better_docstring" not in aa.cols
+
+
+@d4m_jl_required
+def test_aa_from_table_keeps_a_docstring_once_one_is_present():
+    table = pa.table(
+        {
+            "symbol_name": ["add_one"],
+            "kind": ["function"],
+            "file_path": ["a.jl"],
+            "line_range": ["1:3"],
+            "docstring": ["Adds one."],
+            "raw_code": ["add_one(x) = x"],
+            "better_docstring": [""],
+        }
+    )
+    aa = ast_aa_from_table(table)
+    cells = _cells(aa)
+    assert cells["a.jl:1:3"]["docstring"] == "Adds one."
+    assert "better_docstring" not in cells["a.jl:1:3"]
 
 
 @d4m_jl_required

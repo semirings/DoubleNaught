@@ -25,6 +25,8 @@ from double_touch.jsonl_formatter_node import (
 from double_touch.models import AssocArray
 from double_touch.save_file import aa_has_jsonl, save_aa_jsonl
 
+from conftest import d4m_jl_required
+
 client = TestClient(app)
 
 
@@ -226,6 +228,7 @@ def test_table_from_aa_can_be_pinned_to_a_column_set():
     assert table.column("file_path").to_pylist() == [""]
 
 
+@d4m_jl_required
 def test_aa_from_table_pads_row_keys_so_lexical_order_matches_line_order():
     """`line:2` must not sort before `line:10` — some consumers sort keys."""
     rows = [dict(ONE_ROW[0], symbol_name=f"f{i}") for i in range(12)]
@@ -304,6 +307,7 @@ def test_save_aa_jsonl_refuses_a_line_containing_a_newline(tmp_path, monkeypatch
         save_aa_jsonl(aa, "broken")
 
 
+@d4m_jl_required
 def test_save_route_writes_jsonl_from_a_formatted_aa(tmp_path, monkeypatch):
     monkeypatch.setattr("double_touch.save_file.storage_out_dir", lambda: tmp_path)
     result = JsonlFormatterNode().format_table(index_table(ONE_ROW * 2))
@@ -325,6 +329,7 @@ def test_save_route_writes_jsonl_from_a_formatted_aa(tmp_path, monkeypatch):
     assert response.json()["bytesWritten"] == written.stat().st_size
 
 
+@d4m_jl_required
 def test_save_route_infers_jsonl_from_a_filename(tmp_path, monkeypatch):
     """A `.jsonl` filename on an AA that carries the column is enough."""
     monkeypatch.setattr("double_touch.save_file.storage_out_dir", lambda: tmp_path)
@@ -381,6 +386,7 @@ def test_arrow_route_rejects_a_table_that_is_not_the_index():
     assert "missing" in response.json()["detail"]
 
 
+@d4m_jl_required
 def test_aa_route_returns_a_wire_aa_and_counts():
     response = client.post(
         "/jsonl/format/aa",
@@ -592,6 +598,7 @@ def test_line_for_returns_none_when_the_row_is_unusable():
 # --- Route: modes ------------------------------------------------------------
 
 
+@d4m_jl_required
 def test_aa_route_honours_the_format_mode():
     response = client.post(
         "/jsonl/format/aa",

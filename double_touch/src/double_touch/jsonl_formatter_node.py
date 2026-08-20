@@ -447,9 +447,29 @@ def aa_from_table(table: pa.Table) -> AssocArray:
     Row keys are ``line:0001``-style so that a consumer sorting keys lexically
     keeps the lines in order; the JSONL saver relies on appearance order instead,
     but nothing else in the codebase promises to.
+
+    Building the `(row, col, val)` triples from the table is data marshalling,
+    not AA algebra, so it happens here in Python. But per this project's D4M/AA
+    rule (see CLAUDE.md), the resulting AA is built by
+    :func:`d4m_ops.build_assoc` — D4M.jl's actual ``Assoc`` constructor —
+    rather than assembled by hand.
+
+    D4M.jl's own ``Assoc``/``find()`` round-trip does not preserve the
+    triples' insertion order — it comes back grouped by column, not by row —
+    so the result is re-sorted by row key before returning. That is exactly
+    what the zero-padded keys above are *for*: :func:`save_file.save_aa_jsonl`
+    relies on appearance order to write lines in sequence, and re-sorting
+    lexically by these keys restores that sequence regardless of what order
+    D4M.jl happened to hand triples back in.
     """
+    from .d4m_ops import build_assoc  # local: avoids a cycle at module import
+
     lines = table.column("json_line").to_pylist()
     symbols = table.column("symbol_name").to_pylist()
+    if not lines:
+        # Trivially a well-formed (empty) AA — nothing to canonicalize.
+        return AssocArray(rows=[], cols=[], vals=[])
+
     width = max(4, len(str(len(lines))))
 
     rows: list[str] = []
@@ -461,4 +481,18 @@ def aa_from_table(table: pa.Table) -> AssocArray:
         cols.extend(["json_line", "symbol_name"])
         vals.extend([line, symbol])
 
-    return AssocArray(rows=rows, cols=cols, vals=vals)
+    return _sorted_by_row(build_assoc(rows, cols, vals))
+
+
+def _sorted_by_row(aa: AssocArray) -> AssocArray:
+    """Re-order [aa]'s triples by `(row, col)` key.
+
+    Restores appearance order after a D4M.jl round-trip that doesn't
+    preserve it — see :func:`aa_from_table`.
+    """
+    order = sorted(range(len(aa.rows)), key=lambda i: (aa.rows[i], aa.cols[i]))
+    return AssocArray(
+        rows=[aa.rows[i] for i in order],
+        cols=[aa.cols[i] for i in order],
+        vals=[aa.vals[i] for i in order],
+    )

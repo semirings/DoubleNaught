@@ -1,56 +1,74 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:double_vision/config/node_registry.dart';
 import 'package:double_vision/models/aa_payload.dart';
 import 'package:double_vision/models/workflow.dart';
-import 'package:double_vision/config/node_registry.dart';
 import 'package:double_vision/pages/workflow_page.dart';
 import 'package:double_vision/services/infobus/input_port.dart';
 import 'package:double_vision/services/infobus/output_port.dart';
 import 'package:double_vision/services/jsonl_formatter_api.dart';
-import 'package:double_vision/widgets/nodes/implementations/jsonl_formatter_node_widget.dart';
+import 'package:double_vision/widgets/nodes/nodes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+http.Response _jsonResponse(Map<String, dynamic> body, [int status = 200]) =>
+    http.Response(jsonEncode(body), status,
+        headers: {'content-type': 'application/json'});
+
+Map<String, dynamic> _resultBody({
+  int lineCount = 2,
+  int skippedNoDoc = 0,
+  int skippedNoCode = 0,
+  String mode = 'chatml',
+  String firstLine = '{"messages":[{"role":"system","content":"You are…"}]}',
+}) {
+  final rows = <String>[];
+  final cols = <String>[];
+  final vals = <String>[];
+  for (var i = 0; i < lineCount; i++) {
+    final key = 'line:${i.toString().padLeft(4, '0')}';
+    rows.addAll([key, key]);
+    cols.addAll(['json_line', 'symbol_name']);
+    vals.addAll([i == 0 ? firstLine : '{"messages":[]}', 'sym$i']);
+  }
+  return {
+    'aa': {'rows': rows, 'cols': cols, 'vals': vals},
+    'formatMode': mode,
+    'lineCount': lineCount,
+    'skippedNoDoc': skippedNoDoc,
+    'skippedNoCode': skippedNoCode,
+  };
+}
+
 /// A backend that answers `/jsonl/format/aa` with a fixed result.
-JsonlFormatterApi _api({
+({JsonlFormatterApi api, List<Map<String, dynamic>> requests}) _api({
   int lineCount = 2,
   int skippedNoDoc = 0,
   int skippedNoCode = 0,
   int httpStatus = 200,
   String mode = 'chatml',
   String firstLine = '{"messages":[{"role":"system","content":"You are…"}]}',
-  void Function(Map<String, dynamic> body)? onRequest,
 }) {
-  return JsonlFormatterApi(
+  final requests = <Map<String, dynamic>>[];
+  final api = JsonlFormatterApi(
     client: MockClient((request) async {
-      onRequest?.call(jsonDecode(request.body) as Map<String, dynamic>);
+      requests.add(jsonDecode(request.body) as Map<String, dynamic>);
       if (httpStatus != 200) {
         return http.Response('{"detail":"nope"}', httpStatus);
       }
-      final rows = <String>[];
-      final cols = <String>[];
-      final vals = <String>[];
-      for (var i = 0; i < lineCount; i++) {
-        final key = 'line:${i.toString().padLeft(4, '0')}';
-        rows.addAll([key, key]);
-        cols.addAll(['json_line', 'symbol_name']);
-        vals.addAll([i == 0 ? firstLine : '{"messages":[]}', 'sym$i']);
-      }
-      return http.Response(
-        jsonEncode({
-          'aa': {'rows': rows, 'cols': cols, 'vals': vals},
-          'formatMode': mode,
-          'lineCount': lineCount,
-          'skippedNoDoc': skippedNoDoc,
-          'skippedNoCode': skippedNoCode,
-        }),
-        200,
-        headers: {'content-type': 'application/json'},
-      );
+      return _jsonResponse(_resultBody(
+        lineCount: lineCount,
+        skippedNoDoc: skippedNoDoc,
+        skippedNoCode: skippedNoCode,
+        mode: mode,
+        firstLine: firstLine,
+      ));
     }),
   );
+  return (api: api, requests: requests);
 }
 
 /// A documented index in wire (triple) form.
@@ -73,6 +91,7 @@ Future<({InputPort input, List<AaPayload> emitted})> _pump(
   Future<void> Function(String)? onCopy,
   void Function(Map<String, String>)? onParams,
   Map<String, String>? initialParams,
+  bool inputConnected = false,
 }) async {
   InputPort? port;
   final emitted = <AaPayload>[];
@@ -83,10 +102,11 @@ Future<({InputPort input, List<AaPayload> emitted})> _pump(
         body: SingleChildScrollView(
           child: JsonlFormatterNodeWidget(
             node: const WorkflowNode(id: 1, type: 'jsonlFormatterNode'),
-            api: api ?? _api(),
+            api: api ?? _api().api,
             initialParams: initialParams,
             onParams: onParams,
             onCopy: onCopy,
+            inputConnected: inputConnected,
             onInputPort: (p) => port = p,
             onOutputPort: (p) => p.connect(emitted.add, emitCurrentState: false),
           ),
@@ -103,90 +123,194 @@ Future<void> _send(WidgetTester tester, InputPort port, AaPayload aa) async {
   await tester.pumpAndSettle();
 }
 
+/// Opens the Format Mode dropdown and picks [label].
+Future<void> _pickMode(WidgetTester tester, String label) async {
+  await tester.tap(find.ancestor(
+    of: find.text('Format Mode'),
+    matching: find.byType(TextField),
+  ));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(label).last);
+  await tester.pumpAndSettle();
+}
+
 void main() {
-  _modeTests();
-
-  group('IndexTally', () {
-    test('counts definitions and how many are documented', () {
-      final tally = IndexTally.of(_index(rows: 5, documented: 2));
-      expect(tally.rows, 5);
-      expect(tally.ready, 2);
-      expect(tally.pending, 3);
-    });
-
-    test('whitespace-only docstrings do not count as documented', () {
-      const aa = AaPayload(
-        rows: ['a', 'a'],
-        cols: ['raw_code', 'better_docstring'],
-        vals: ['f(x) = x', '   \n '],
+  group('catalog registration', () {
+    test('the dropdown offers exactly the three public modes', () {
+      expect(
+        JsonlFormatMode.values.map((m) => m.label),
+        ['ChatML Doc', 'Instruction / Task', 'Passthrough'],
       );
-      expect(IndexTally.of(aa).ready, 0);
-      expect(IndexTally.of(aa).rows, 1);
-    });
-
-    test('accepts the camelCase spelling of the column', () {
-      const aa = AaPayload(
-        rows: ['a'],
-        cols: ['betterDocstring'],
-        vals: ['Docs.'],
+      expect(
+        JsonlFormatMode.values.map((m) => m.wire),
+        ['chatml', 'prompt_completion', 'passthrough'],
       );
-      expect(IndexTally.of(aa).ready, 1);
     });
 
-    test('an empty payload tallies to nothing', () {
-      expect(IndexTally.of(const AaPayload()).isEmpty, isTrue);
+    test('an unknown wire name falls back to ChatML', () {
+      expect(JsonlFormatMode.byWire('nonsense'), JsonlFormatMode.chatml);
+      expect(JsonlFormatMode.byWire(null), JsonlFormatMode.chatml);
+      expect(
+        JsonlFormatMode.byWire('prompt_completion'),
+        JsonlFormatMode.instructionTask,
+      );
     });
   });
 
-  group('JsonlFormatterNodeWidget', () {
-    testWidgets('starts idle with Format disabled and nothing to show',
+  group('readiness', () {
+    testWidgets('starts with Execute disabled and no removed hint text',
         (tester) async {
       await _pump(tester);
 
       expect(find.text('JSONL Formatter'), findsOneWidget);
-      expect(find.text('No index'), findsOneWidget);
-      expect(find.textContaining('Waiting for astIndex'), findsOneWidget);
+      expect(find.text('No index'), findsNothing);
+      expect(find.textContaining('Waiting for astIndex'), findsNothing);
       expect(
-        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-        isNull,
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
       );
     });
 
-    testWidgets('shows the tally of what arrived', (tester) async {
-      final h = await _pump(tester);
-      await _send(tester, h.input, _index(rows: 5, documented: 2));
-
-      expect(find.textContaining('5 rows'), findsOneWidget);
-      expect(find.textContaining('2 ready'), findsOneWidget);
-      expect(find.textContaining('3 pending'), findsOneWidget);
-      expect(
-        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-        isNotNull,
-      );
-    });
-
-    testWidgets('an index with no docstrings keeps Format disabled and says why',
+    testWidgets('any connected payload enables Execute, regardless of mode fit',
         (tester) async {
-      final h = await _pump(tester);
+      final h = await _pump(tester, inputConnected: true);
       await _send(tester, h.input, _index(rows: 3, documented: 0));
 
-      expect(find.textContaining('No rows carry a better_docstring'), findsOneWidget);
       expect(
-        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-        isNull,
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isTrue,
+        reason: 'readiness is "input port has data," not per-mode fitness',
       );
     });
 
-    testWidgets('formatting emits the two-column result and reports the count',
+    testWidgets('defaults to ChatML Doc', (tester) async {
+      await _pump(tester);
+      expect(find.text('ChatML Doc'), findsOneWidget);
+    });
+
+    testWidgets('the saved mode is restored', (tester) async {
+      await _pump(tester, initialParams: const {'formatMode': 'prompt_completion'});
+      expect(find.text('Instruction / Task'), findsOneWidget);
+    });
+  });
+
+  group('Wait/Execute mechanism', () {
+    testWidgets(
+        'reactive (Wait unchecked, the default): fires as soon as a '
+        'payload arrives',
         (tester) async {
-      final h = await _pump(tester, api: _api(lineCount: 2));
+      final backend = _api(lineCount: 2);
+      final h = await _pump(tester, api: backend.api, inputConnected: true);
+
+      expect(
+        tester.widget<WaitCheckbox>(find.byType(WaitCheckbox)).checked,
+        isFalse,
+      );
+
       await _send(tester, h.input, _index());
 
-      await tester.tap(find.text('Format ChatML'));
+      expect(h.emitted, hasLength(1));
+      expect(find.textContaining('done · 2 lines'), findsOneWidget);
+    });
+
+    testWidgets('gated (Wait checked): a ready payload does not auto-fire',
+        (tester) async {
+      final h = await _pump(tester, inputConnected: true);
+
+      await tester.tap(find.byType(WaitCheckbox));
       await tester.pumpAndSettle();
 
+      await _send(tester, h.input, _index());
+
+      expect(h.emitted, isEmpty, reason: 'gated — nothing fires until Execute');
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isTrue,
+        reason: 'Execute enablement is independent of Wait',
+      );
+    });
+
+    testWidgets('clicking Execute fires immediately and unchecks Wait',
+        (tester) async {
+      final h = await _pump(tester, inputConnected: true);
+
+      await tester.tap(find.byType(WaitCheckbox)); // gate it
+      await tester.pumpAndSettle();
+      await _send(tester, h.input, _index());
+
+      await tester.tap(find.byType(ExecuteButton));
+      await tester.pumpAndSettle();
+
+      expect(h.emitted, hasLength(1));
+      expect(
+        tester.widget<WaitCheckbox>(find.byType(WaitCheckbox)).checked,
+        isFalse,
+      );
+    });
+
+    testWidgets(
+        'manually unchecking Wait fires immediately when already ready',
+        (tester) async {
+      final h = await _pump(tester, inputConnected: true);
+
+      await tester.tap(find.byType(WaitCheckbox)); // check: gated
+      await tester.pumpAndSettle();
+      await _send(tester, h.input, _index());
+      expect(h.emitted, isEmpty);
+
+      await tester.tap(find.byType(WaitCheckbox)); // uncheck while ready
+      await tester.pumpAndSettle();
+      expect(h.emitted, hasLength(1));
+    });
+
+    testWidgets(
+        'unchecking Wait while NOT ready just becomes reactive — fires '
+        'later once ready, not immediately',
+        (tester) async {
+      final h = await _pump(tester, inputConnected: true);
+
+      await tester.tap(find.byType(WaitCheckbox)); // check: gated
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(WaitCheckbox)); // uncheck — not ready yet
+      await tester.pumpAndSettle();
+      expect(h.emitted, isEmpty);
+
+      await _send(tester, h.input, _index());
+      expect(h.emitted, hasLength(1), reason: 'now reactive and ready');
+    });
+
+    testWidgets('Wait is locked (unresponsive) while executing', (tester) async {
+      final response = Completer<http.Response>();
+      final api = JsonlFormatterApi(client: MockClient((_) => response.future));
+      final h = await _pump(tester, api: api, inputConnected: true);
+
+      await _send(tester, h.input, _index()); // auto-fires
+
+      expect(
+        tester.widget<WaitCheckbox>(find.byType(WaitCheckbox)).locked,
+        isTrue,
+      );
+      await tester.tap(find.byType(WaitCheckbox));
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<WaitCheckbox>(find.byType(WaitCheckbox)).checked,
+        isFalse,
+        reason: 'locked — the tap must not have toggled it',
+      );
+
+      response.complete(_jsonResponse(_resultBody()));
+      await tester.pumpAndSettle();
+    });
+  });
+
+  group('formatting', () {
+    testWidgets('emits the two-column result and reports the count',
+        (tester) async {
+      final h = await _pump(tester, api: _api(lineCount: 2).api, inputConnected: true);
+      await _send(tester, h.input, _index());
+
       expect(find.textContaining('2 training lines'), findsOneWidget);
-      expect(find.textContaining('complete'), findsOneWidget);
+      expect(find.textContaining('done'), findsOneWidget);
 
       expect(h.emitted, hasLength(1));
       final out = h.emitted.single;
@@ -196,14 +320,10 @@ void main() {
 
     testWidgets('the emitted payload is what Save File needs for .jsonl',
         (tester) async {
-      final h = await _pump(tester);
+      final h = await _pump(tester, inputConnected: true);
       await _send(tester, h.input, _index());
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
 
-      // Save File auto-detects JSONL from exactly this column.
       expect(h.emitted.single.cols, contains('json_line'));
-      // Row keys are zero-padded so line order survives a lexical sort.
       expect(h.emitted.single.distinctRows().first, 'line:0000');
     });
 
@@ -211,12 +331,11 @@ void main() {
       final copied = <String>[];
       final h = await _pump(
         tester,
-        api: _api(firstLine: '{"messages":[{"role":"system"}]}'),
+        api: _api(firstLine: '{"messages":[{"role":"system"}]}').api,
         onCopy: (text) async => copied.add(text),
+        inputConnected: true,
       );
       await _send(tester, h.input, _index());
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
 
       expect(find.text('First line'), findsOneWidget);
       expect(find.text('{"messages":[{"role":"system"}]}'), findsOneWidget);
@@ -230,12 +349,10 @@ void main() {
         (tester) async {
       final h = await _pump(
         tester,
-        api: _api(lineCount: 1, skippedNoDoc: 4, skippedNoCode: 2),
+        api: _api(lineCount: 1, skippedNoDoc: 4, skippedNoCode: 2).api,
+        inputConnected: true,
       );
       await _send(tester, h.input, _index());
-
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
 
       expect(find.textContaining('4 undocumented'), findsOneWidget);
       expect(find.textContaining('2 without code'), findsOneWidget);
@@ -243,237 +360,146 @@ void main() {
 
     testWidgets('a result of zero lines is surfaced as an error, not a success',
         (tester) async {
-      final h = await _pump(tester, api: _api(lineCount: 0, skippedNoDoc: 3));
+      final h = await _pump(
+        tester,
+        api: _api(lineCount: 0, skippedNoDoc: 3).api,
+        inputConnected: true,
+      );
       await _send(tester, h.input, _index());
 
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
-
       expect(find.textContaining('No usable rows'), findsOneWidget);
-      expect(h.emitted, isEmpty,
-          reason: 'nothing useful to send downstream');
+      expect(h.emitted, isEmpty, reason: 'nothing useful to send downstream');
     });
 
     testWidgets('a backend failure is reported and emits nothing',
         (tester) async {
-      final h = await _pump(tester, api: _api(httpStatus: 500));
+      final h = await _pump(
+        tester,
+        api: _api(httpStatus: 500).api,
+        inputConnected: true,
+      );
       await _send(tester, h.input, _index());
-
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
 
       expect(find.textContaining('error'), findsOneWidget);
       expect(find.textContaining('500'), findsOneWidget);
       expect(h.emitted, isEmpty);
     });
 
-    testWidgets('the whole index is sent to the backend', (tester) async {
-      Map<String, dynamic>? sent;
-      final h = await _pump(tester, api: _api(onRequest: (b) => sent = b));
-      await _send(tester, h.input, _index(rows: 3, documented: 2));
-
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
-
-      // Filtering is the backend's job — it owns the contract.
-      final aa = sent!['aa'] as Map<String, dynamic>;
-      expect((aa['cols'] as List), contains('better_docstring'));
-      expect((aa['rows'] as List).length, 9);
-    });
-
-    testWidgets('a fresh index clears the previous result', (tester) async {
-      final h = await _pump(tester);
+    testWidgets(
+        'disconnecting clears the previous result and disables Execute; a '
+        'new payload re-fires fresh',
+        (tester) async {
+      final h = await _pump(tester, inputConnected: true);
       await _send(tester, h.input, _index());
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
       expect(find.text('First line'), findsOneWidget);
 
-      // A second index arrives — the old preview must not linger.
       h.input.disconnect();
+      await tester.pumpAndSettle();
+      expect(find.text('First line'), findsNothing,
+          reason: 'a disconnected wire\'s stale result is dropped');
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+      );
+
       await _send(tester, h.input, _index(rows: 4, documented: 1));
-
-      expect(find.text('First line'), findsNothing);
-      expect(find.textContaining('4 rows'), findsOneWidget);
-    });
-
-    testWidgets('the Node Catalog instantiates it onto the canvas',
-        (tester) async {
-      await tester.pumpWidget(const MaterialApp(home: WorkflowPage()));
-      await tester.tap(find.text('Node Catalog'));
-      await tester.pumpAndSettle();
-
-      final item = find.text('JSONL Formatter').last;
-      await tester.ensureVisible(item);
-      await tester.pumpAndSettle();
-      await tester.tap(item);
-      await tester.pumpAndSettle();
-
-      expect(find.byType(JsonlFormatterNodeWidget), findsOneWidget);
-      expect(find.textContaining('Waiting for astIndex'), findsOneWidget);
-    });
-  });
-}
-
-/// Mode-specific behaviour of the consolidated node.
-void _modeTests() {
-  group('format modes', () {
-    test('the dropdown offers exactly the three public modes', () {
-      expect(
-        JsonlFormatMode.values.map((m) => m.label),
-        ['ChatML (Code/Doc)', 'Prompt / Completion', 'Row Passthrough'],
-      );
-      expect(
-        JsonlFormatMode.values.map((m) => m.wire),
-        ['chatml', 'prompt_completion', 'passthrough'],
-      );
-    });
-
-    test('an unknown wire name falls back to ChatML', () {
-      expect(JsonlFormatMode.byWire('nonsense'), JsonlFormatMode.chatml);
-      expect(JsonlFormatMode.byWire(null), JsonlFormatMode.chatml);
-      expect(
-        JsonlFormatMode.byWire('prompt_completion'),
-        JsonlFormatMode.promptCompletion,
-      );
-    });
-
-    test('readiness is counted per mode, not once', () {
-      // Passages: a completion column, no better_docstring.
-      const passages = AaPayload(
-        rows: ['p1', 'p1', 'p2', 'p2'],
-        cols: ['prompt', 'completion', 'prompt', 'completion'],
-        vals: ['Ask:', 'Answer.', 'Ask:', 'Answer.'],
-      );
-
-      // Useless to ChatML…
-      expect(IndexTally.of(passages, JsonlFormatMode.chatml).ready, 0);
-      // …but perfectly formattable the other two ways.
-      expect(IndexTally.of(passages, JsonlFormatMode.promptCompletion).ready, 2);
-      expect(IndexTally.of(passages, JsonlFormatMode.passthrough).ready, 2);
-    });
-
-    test('passthrough counts any filled cell, and no empty row', () {
-      const sparse = AaPayload(
-        rows: ['a', 'b'],
-        cols: ['whatever', 'whatever'],
-        vals: ['filled', '  '],
-      );
-      final tally = IndexTally.of(sparse, JsonlFormatMode.passthrough);
-      expect(tally.rows, 2);
-      expect(tally.ready, 1);
+      expect(find.text('First line'), findsOneWidget,
+          reason: 'reactive by default — the new payload fires fresh');
     });
   });
 
-  group('mode selection in the widget', () {
-    testWidgets('defaults to ChatML and sends that mode', (tester) async {
-      Map<String, dynamic>? sent;
-      final h = await _pump(tester, api: _api(onRequest: (b) => sent = b));
-      await _send(tester, h.input, _index());
-
-      expect(find.text('ChatML (Code/Doc)'), findsOneWidget);
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
-
-      expect(sent!['formatMode'], 'chatml');
-    });
-
+  group('Format Mode', () {
     testWidgets('choosing a mode sends it and persists it', (tester) async {
-      Map<String, dynamic>? sent;
       Map<String, String>? saved;
+      final backend = _api(mode: 'passthrough');
       final h = await _pump(
         tester,
-        api: _api(mode: 'passthrough', onRequest: (b) => sent = b),
+        api: backend.api,
         onParams: (p) => saved = p,
+        inputConnected: true,
       );
-      // Mount first, then deliver: `initInputPort` calls `onInputPort` before it
-      // subscribes, so connecting in that callback drops the replayed payload.
       await _send(tester, h.input, _index());
 
-      await tester.tap(find.ancestor(
-        of: find.text('Format Mode'),
-        matching: find.byType(TextField),
-      ));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Row Passthrough').last);
-      await tester.pumpAndSettle();
-
+      await _pickMode(tester, 'Passthrough');
       expect(saved!['formatMode'], 'passthrough');
-
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
-      expect(sent!['formatMode'], 'passthrough');
+      // Reactive: picking a new mode re-runs against it immediately.
+      expect(backend.requests.last['formatMode'], 'passthrough');
     });
 
-    testWidgets('the saved mode is restored', (tester) async {
-      await _pump(tester, initialParams: const {'formatMode': 'prompt_completion'});
-      expect(find.text('Prompt / Completion'), findsOneWidget);
-    });
-
-    testWidgets('switching mode re-enables Format for a passage payload',
+    testWidgets('switching mode discards the previous result and re-fires',
         (tester) async {
-      final h = await _pump(tester, api: _api(mode: 'prompt_completion'));
-      // Passages: nothing ChatML can use.
-      await _send(
-        tester,
-        h.input,
-        const AaPayload(
-          rows: ['p1', 'p1'],
-          cols: ['prompt', 'completion'],
-          vals: ['Ask:', 'Answer.'],
-        ),
-      );
-
-      expect(
-        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-        isNull,
-        reason: 'ChatML cannot use a passage payload',
-      );
-
-      await tester.tap(find.ancestor(
-        of: find.text('Format Mode'),
-        matching: find.byType(TextField),
-      ));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Prompt / Completion').last);
-      await tester.pumpAndSettle();
-
-      expect(
-        tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
-        isNotNull,
-        reason: 'prompt_completion can',
-      );
-    });
-
-    testWidgets('switching mode discards the previous result', (tester) async {
-      final h = await _pump(tester);
+      final h = await _pump(tester, inputConnected: true);
       await _send(tester, h.input, _index());
-      await tester.tap(find.text('Format ChatML'));
-      await tester.pumpAndSettle();
       expect(find.text('First line'), findsOneWidget);
 
-      await tester.tap(find.ancestor(
-        of: find.text('Format Mode'),
-        matching: find.byType(TextField),
-      ));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Row Passthrough').last);
-      await tester.pumpAndSettle();
+      await _pickMode(tester, 'Passthrough');
 
-      // Lines built by another mode must not linger as if they were current.
-      expect(find.text('First line'), findsNothing);
+      // A fresh (passthrough) result lands right back — the mode switch
+      // itself does not leave the card empty, it just replaces the result.
+      expect(find.text('First line'), findsOneWidget);
     });
 
-    testWidgets('incomplete rows are reported for non-ChatML modes',
-        (tester) async {
-      final h = await _pump(
-        tester,
-        api: _api(lineCount: 1, mode: 'passthrough', skippedNoDoc: 0),
-      );
+    testWidgets('gated: switching mode does not auto-fire', (tester) async {
+      final backend = _api();
+      final h = await _pump(tester, api: backend.api, inputConnected: true);
+
+      await tester.tap(find.byType(WaitCheckbox)); // gate it
+      await tester.pumpAndSettle();
       await _send(tester, h.input, _index());
-      await tester.tap(find.text('Format ChatML'));
+      expect(h.emitted, isEmpty);
+
+      await _pickMode(tester, 'Passthrough');
+      expect(h.emitted, isEmpty, reason: 'gated — mode change must not fire either');
+    });
+  });
+
+  group('Cancel — hard abort', () {
+    testWidgets(
+        'clicking Cancel reverts to idle immediately, before the request '
+        'resolves — and a later-arriving success is discarded',
+        (tester) async {
+      final response = Completer<http.Response>();
+      final api = JsonlFormatterApi(client: MockClient((_) => response.future));
+      final h = await _pump(tester, api: api, inputConnected: true);
+
+      await _send(tester, h.input, _index()); // auto-fires
+
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).executing,
+        isTrue,
+      );
+      expect(find.text('Cancel'), findsOneWidget);
+
+      await tester.tap(find.byType(ExecuteButton)); // Cancel
+      await tester.pump();
+
+      expect(find.textContaining('idle'), findsOneWidget);
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).executing,
+        isFalse,
+      );
+
+      response.complete(_jsonResponse(_resultBody()));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('1 training lines'), findsOneWidget);
+      expect(h.emitted, isEmpty, reason: 'the cancelled run\'s result must not emit');
+      expect(find.textContaining('idle'), findsOneWidget);
+    });
+
+    testWidgets('cancelling never surfaces error status', (tester) async {
+      final response = Completer<http.Response>();
+      final api = JsonlFormatterApi(client: MockClient((_) => response.future));
+      final h = await _pump(tester, api: api, inputConnected: true);
+
+      await _send(tester, h.input, _index());
+      await tester.tap(find.byType(ExecuteButton)); // Cancel
+      await tester.pump();
+
+      response.completeError(Exception('socket closed'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('error'), findsNothing);
+      expect(find.textContaining('idle'), findsOneWidget);
     });
   });
 
@@ -496,6 +522,22 @@ void _modeTests() {
         isFalse,
         reason: 'not offered for new work',
       );
+    });
+
+    testWidgets('the Node Catalog instantiates it onto the canvas',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(home: WorkflowPage()));
+      await tester.tap(find.text('Node Catalog'));
+      await tester.pumpAndSettle();
+
+      final item = find.text('JSONL Formatter').last;
+      await tester.ensureVisible(item);
+      await tester.pumpAndSettle();
+      await tester.tap(item);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(JsonlFormatterNodeWidget), findsOneWidget);
+      expect(find.textContaining('Waiting for astIndex'), findsNothing);
     });
   });
 }

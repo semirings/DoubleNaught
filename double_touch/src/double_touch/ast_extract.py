@@ -178,7 +178,7 @@ def to_arrow_bytes(table: pa.Table) -> bytes:
 
 
 def aa_from_table(table: pa.Table) -> "AssocArray":
-    """The 7-column index as a wire AA (dense row-major matrix), for the canvas.
+    """The 7-column index as a wire AA, for the canvas.
 
     Row keys are ``<file_path>:<line_range>`` — informative, and unique because the
     walk never descends into a definition's body, so two definitions cannot share a
@@ -192,6 +192,18 @@ def aa_from_table(table: pa.Table) -> "AssocArray":
     algebra, so it happens here in Python. But the resulting AA is built by
     :func:`d4m_ops.build_assoc` — D4M.jl's actual ``Assoc`` constructor — rather
     than assembled by hand, per this project's D4M/AA rule (see CLAUDE.md).
+
+    An empty cell (e.g. ``better_docstring`` before a teacher node has run) is
+    omitted rather than stored as an explicit empty-string triple: per the AA
+    spec, the empty value *is* the absent element for a cell, so a definition
+    with no docstring yet simply has no ``docstring`` entry — not an entry that
+    happens to hold "". (Storing it anyway used to silently violate that, and
+    is also what triggers a `BoundsError` inside D4M.jl's own `find()`, which
+    assumes it never has to represent "present but empty".) A column this
+    still leaves with no entries anywhere — e.g. `docstring` when nothing in
+    the batch has one yet — is genuinely absent from the resulting AA; that is
+    correct, not a regression, and callers must not assume the fixed 7 columns
+    are always all present.
     """
     from .d4m_ops import build_assoc  # local: avoids a cycle at module import
     from .models import AssocArray  # local: avoids a cycle at module import
@@ -214,10 +226,17 @@ def aa_from_table(table: pa.Table) -> "AssocArray":
         if count:
             key = f"{key}#{count}"
         for column in SCHEMA_COLUMNS:
+            value = record.get(column) or ""
+            if not value:
+                continue
             rows.append(key)
             cols.append(column)
-            vals.append(record.get(column) or "")
+            vals.append(value)
 
+    if not rows:
+        # Every record had every column empty — degenerate, but trivially a
+        # well-formed empty AA, same as the no-records case above.
+        return AssocArray(rows=[], cols=[], vals=[])
     return build_assoc(rows, cols, vals)
 
 
