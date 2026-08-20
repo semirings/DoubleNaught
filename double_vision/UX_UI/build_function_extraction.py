@@ -2,34 +2,30 @@
 build_function_extraction.py — Grease Pencil UX mockup for "Function Extraction"
 (renamed from "AST Extract" — see the node rename mapping).
 
-Spec (per user, 2026):
+Spec (per user, 2026 — final state, supersedes several earlier drafts):
   - Remove the "File or Directory" text box entirely.
-  - Button "Extract Definitions" -> "Execute" (matches the Execute-button
-    pattern already used on the D4M node — reused directly for consistency).
-  - Add checkbox "Wait" (same pattern as Preview/D4M — reusing
-    build_status_row-style shared construction; capitalization matches D4M's
-    "Wait", NOT Preview's lowercase "wait" — see open casing question below).
-
-NOT explicitly instructed, flagged rather than silently decided:
-  - The hint text "Wire a Load File node, or type a path" is kept as-is,
-    but "...or type a path" referred to typing into the now-removed text
-    box. This copy may need updating to just "Wire a Load File node" — left
-    unchanged pending confirmation.
-  - The "idle" status row (dot + text) was NOT instructed to be removed
-    here, unlike D4M where removal was explicit. Kept, and built via the
-    new shared build_status_row() helper (idle/running/success/error) so
-    all four states exist for every node that keeps a status row, not just
-    a lone "idle" dot.
-  - OPEN QUESTION carried over from D4M: "wait" (Preview, lowercase) vs
-    "Wait" (D4M, this node, capitalized) — standardizing on "Wait" here
-    since 2 of 3 instructions used that casing. Preview's checkbox has not
-    been updated to match; flag if it should be.
+  - Button "Extract Definitions" -> "Execute" (standard shared component).
+  - Add checkbox "Wait" (standard shared mechanism, capitalized "Wait" —
+    the earlier lowercase/uppercase inconsistency across nodes was
+    resolved project-wide; Preview's checkbox was also corrected to match).
+  - Input port `codebasePath` -> `codebase`; output port `astIndex` ->
+    `functions` (later rename, applied after the initial button/checkbox
+    changes above).
+  - Hint text "Wire a Load File node, or type a path" REMOVED entirely
+    (a later instruction superseded the earlier "kept as-is, flag if it
+    needs updating" note — it doesn't need updating, it's gone).
+  - Wait/Execute vertical order: Wait sits ABOVE Execute, Execute sits
+    directly above the status row — this is the standard project-wide
+    widget order (documented in _template.py), and on this node it was
+    corrected after an initial draft had them reversed.
+  - "idle" status row (dot + text): kept, via the shared build_status_row()
+    helper (idle/running/success/error), matching every other node.
 
 States exposed for VSClaude / implementation reference:
   Card border:     normal | executing | error        (shared convention)
   Input port:       unfilled | connected_idle | transmitting
   Output port:       unfilled | connected_idle | transmitting
-  Execute button:   disabled | enabled | lit
+  Execute button:   disabled | enabled | lit | executing (Cancel — see GLOBAL_UX_CONTRACT.md §2)
   Wait checkbox:    unchecked | checked | disabled (locked, mid-execution)
   Status row:       idle | running | success | error
 """

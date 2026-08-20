@@ -4,12 +4,14 @@ import 'dart:convert';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
 import '../../../services/load_file_api.dart';
 import '../../../services/infobus/output_port.dart';
 import '../base/base_node_widget.dart';
+import '../base/execute_button.dart';
 import '../base/output_connector.dart';
 
 /// A workflow source node that loads files from the backend storage directory
@@ -19,7 +21,12 @@ import '../base/output_connector.dart';
 /// by the backend /load endpoint, which checks for metadata tags and reconstructs
 /// native AA objects. Non-AA files are returned as raw tables/text.
 ///
-/// The path is typed (or filled in with the **Browse…** button, which opens the
+/// This is the canonical **root node**: no input ports at all (see
+/// `UX_UI/EXECUTION_MODEL.md` §1), so it is always manually triggered via
+/// **Execute** rather than reacting to upstream data — there is no Wait
+/// checkbox here (see `UX_UI/prompts/load_file_implementation_prompt.md`).
+///
+/// The URL is typed (or filled in with the **Browse…** button, which opens the
 /// native dialog purely to capture a path — the *backend* still does the
 /// reading, so this only helps when the backend is local).
 ///
@@ -28,20 +35,24 @@ import '../base/output_connector.dart';
 /// for — `.jl` among them. [allowedExtensions] is the filter instead, checked
 /// after selection, and a rejected pick shows an inline badge on the card.
 ///
-/// Emits two output ports:
-/// - `contents` (idx 0): the raw file data as an AA-shaped table
-/// - `aa` (idx 1): the loaded AA if detected, else nothing
+/// Emits one output port, `parsedPayload` (idx 0): the AA the backend
+/// reconstructed for a tabular file, or the single-cell `text` AA for a
+/// source/prose file.
 class LoadFileNode extends BaseNodeWidget {
   final void Function(AaPayload aa)? onAaLoaded;
 
   /// Per-port registration. The canvas keys these by output index so a wire off
-  /// `contents` binds to `contents` and not to whichever port registered last
+  /// `parsedPayload` binds to it and not to whichever port registered last
   /// (see `_aaMultiOutputPorts` in `workflow_page.dart`).
   final void Function(OutputPort port)? onAaOutputPort;
 
   /// File-dialog seam. Defaults to `file_selector`'s [openFile]; overridden by
   /// tests, which cannot drive a platform dialog.
   final Future<XFile?> Function()? pickFile;
+
+  /// Backend seam; defaults to the local `/load` endpoint. Overridden by tests
+  /// with a [LoadFileApi] built from a `MockClient`.
+  final LoadFileApi? api;
 
   const LoadFileNode({
     super.key,
@@ -51,6 +62,7 @@ class LoadFileNode extends BaseNodeWidget {
     this.onAaLoaded,
     this.onAaOutputPort,
     this.pickFile,
+    this.api,
     super.onOutputPort,
     super.connectedOutputs,
   });
@@ -64,7 +76,7 @@ class LoadFileNode extends BaseNodeWidget {
   /// `.csv` is here because the backend reconstructs an AA from one; `.jl` and
   /// `.md` are here because they are plain text a user may legitimately want to
   /// load — note the backend does not yet route those two anywhere and answers
-  /// "Unsupported file format", so they pass selection and fail at Load.
+  /// "Unsupported file format", so they pass selection and fail at Execute.
   static const List<String> allowedExtensions = [
     '.jl',
     '.md',
@@ -97,6 +109,30 @@ class LoadFileNode extends BaseNodeWidget {
   /// Whether [path] is a file type this node will hand to the backend.
   static bool isAllowedPath(String path) =>
       allowedExtensions.contains(extensionOf(path));
+
+  /// The only schemes a URL field accepts — `UX_UI/GLOBAL_UX_CONTRACT.md` §6.
+  /// No `git`, `ftp`, `ssh`, or invented scheme, and no bare/schemeless path:
+  /// the file-dialog button beside this field always produces a proper
+  /// `file://` URL when picking a file, so a bare path can only ever be one
+  /// the user typed directly — which is exactly the malformed-input case
+  /// this field's error state exists for.
+  static const Set<String> allowedUrlSchemes = {'file', 'http', 'https'};
+
+  /// Whether [url] is non-empty, parses as a URI, AND has one of
+  /// [allowedUrlSchemes]. `Uri.tryParse` alone is not sufficient — it accepts
+  /// almost any non-empty string (including a bare relative path with no
+  /// scheme at all), so the scheme is checked explicitly on top of it. This
+  /// is the client-side format check that gates **Execute**
+  /// (`UX_UI/GLOBAL_UX_CONTRACT.md` §2); the backend, which actually reads
+  /// the file, remains the final authority on whether the URL resolves to
+  /// something real.
+  static bool isValidUrl(String url) {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty) return false;
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return false;
+    return allowedUrlSchemes.contains(uri.scheme);
+  }
 
   /// The backend's raw `data` blob as an [AaPayload], so it can travel on the
   /// info bus — [OutputPort] carries [AaPayload] and nothing else.
@@ -150,67 +186,68 @@ class LoadFileNode extends BaseNodeWidget {
   State<LoadFileNode> createState() => _LoadFileNodeState();
 }
 
-enum _SchemaMode {
-  auto('auto'),
-  forceAa('force_aa'),
-  rawTable('raw_table');
-
-  const _SchemaMode(this.wire);
-
-  /// What `/load` expects for `schemaMode`. Distinct from [name], which is the
-  /// Dart identifier and is what gets persisted in the node's params.
-  final String wire;
-}
-
 class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   @override String   get nodeTitle => 'Load File';
   @override IconData get nodeIcon  => Icons.upload_file_outlined;
 
   final OutputPort _aaOut = OutputPort('parsedPayload');
-  final LoadFileApi _api = const LoadFileApi();
+  late final LoadFileApi _api;
 
-  late TextEditingController _filePathController;
-  _SchemaMode _schemaMode = _SchemaMode.auto;
+  late TextEditingController _urlController;
   AaPayload? _aa;
-  bool _isLoading = false;
-  String? _errorMessage;
-  String? _statusMessage;
 
   /// File name of a pick rejected by [LoadFileNode.isAllowedPath] — drives the
   /// inline badge. Non-null only between a bad pick and the next good one.
   String? _rejectedFile;
 
+  /// The transport used by the run currently in flight, held so Cancel can
+  /// hard-abort it (`UX_UI/GLOBAL_UX_CONTRACT.md` §2) rather than merely stop
+  /// watching it. Null whenever nothing is executing.
+  http.Client? _execClient;
+
+  /// Bumped on every new run and on cancel. A completed await whose captured
+  /// generation no longer matches the current one belongs to a superseded or
+  /// cancelled run and must not touch state — this is what makes a stale
+  /// result harmless even though the abort itself is synchronous, not
+  /// dependent on this check.
+  int _execGen = 0;
+
+  bool get _isUrlValid => LoadFileNode.isValidUrl(_urlController.text);
+
+  /// Only shown once there is non-empty text that fails the format check — an
+  /// untouched, empty field is simply disabled, not flagged as an error (see
+  /// `UX_UI/build_load_file.py`'s default-visible state).
+  bool get _showInvalidUrl =>
+      _urlController.text.trim().isNotEmpty && !_isUrlValid;
+
   @override
   void initState() {
     super.initState();
+    _api = widget.api ?? const LoadFileApi();
     // The canonical callback keeps `aa` as the node's headline output (that is
     // the port the Focus Panel re-emits an edited AA on); the indexed callbacks
     // below are what wires actually bind to.
     initOutputPort(_aaOut);
     widget.onAaOutputPort?.call(_aaOut);
 
-    _filePathController = TextEditingController(
-      text: widget.initialParams?['filePath'] ?? 'storage/out/export.parquet',
+    // Starts EMPTY per spec — no placeholder/default value baked into a new
+    // node (UX_UI/GLOBAL_UX_CONTRACT.md §6). A previously saved node restores
+    // its own value, same as any other persisted field.
+    _urlController = TextEditingController(
+      text: widget.initialParams?['filePath'] ?? '',
     );
-
-    final schemaMode = widget.initialParams?['schemaMode'];
-    if (schemaMode != null) {
-      try {
-        _schemaMode = _SchemaMode.values.byName(schemaMode);
-      } catch (_) {
-        _schemaMode = _SchemaMode.auto;
-      }
-    }
+    _urlController.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
-    _filePathController.dispose();
+    _urlController.dispose();
     _aaOut.dispose();
+    _execClient?.close();
     super.dispose();
   }
 
-  /// Open the native dialog to fill in the path field. The picked path is
+  /// Open the native dialog to fill in the URL field. The picked path is
   /// absolute; the backend accepts that as readily as a `storage/…` relative
   /// path, but only because it is reading its own filesystem — a remote backend
   /// would not see the file, which is why this is hidden on web.
@@ -220,11 +257,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
 
     // Validate here, because the dialog no longer can — see [_openNativeDialog].
     if (!LoadFileNode.isAllowedPath(picked.path)) {
-      setState(() {
-        _rejectedFile = picked.name;
-        _statusMessage = null;
-        _errorMessage = null;
-      });
+      setState(() => _rejectedFile = picked.name);
       return;
     }
 
@@ -236,15 +269,11 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
     }
 
     setState(() {
-      _filePathController.text = pathWithUri;
+      _urlController.text = pathWithUri;
       _rejectedFile = null;
-      _errorMessage = null;
-      _statusMessage = null;
     });
-    saveParams({
-      'filePath': pathWithUri,
-      'schemaMode': _schemaMode.name,
-    });
+    setIdle();
+    saveParams({'filePath': pathWithUri});
   }
 
   Future<void> _onBrowseDirectoryPressed() async {
@@ -260,15 +289,11 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
       }
 
       setState(() {
-        _filePathController.text = uri;
+        _urlController.text = uri;
         _rejectedFile = null;
-        _errorMessage = null;
-        _statusMessage = null;
       });
-      saveParams({
-        'filePath': uri,
-        'schemaMode': _schemaMode.name,
-      });
+      setIdle();
+      saveParams({'filePath': uri});
     } catch (e) {
       debugPrint("Warning: Directory picking failed: $e");
     }
@@ -287,77 +312,65 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   /// card rather than silently unselectable.
   static Future<XFile?> _openNativeDialog() => openFile();
 
-  Future<void> _onLoadPressed() async {
-    final filePath = _filePathController.text.trim();
-    if (filePath.isEmpty) {
-      setState(() {
-        _errorMessage = 'Error: Enter a file path';
-        _statusMessage = null;
-      });
-      return;
-    }
+  Future<void> _onExecutePressed() async {
+    final url = _urlController.text.trim();
+    if (url.isEmpty || !_isUrlValid) return;
 
-    setState(() {
-      _isLoading = true;
-      _errorMessage = null;
-      _statusMessage = 'Loading...';
-    });
+    final gen = ++_execGen;
+    setWorking();
+
+    final owns = _api.client == null;
+    final client = _api.client ?? http.Client();
+    _execClient = client;
+    final api = owns ? LoadFileApi(baseUrl: _api.baseUrl, client: client) : _api;
 
     try {
-      final response = await _api.load(
-        filePath: filePath,
-        schemaMode: _schemaMode.wire,
-      );
+      // Schema Mode is gone (removed per the finalized UX spec) — the API
+      // client's own default ('auto') is what the backend already treats as
+      // its default too, so there is nothing to pass here.
+      final response = await api.load(filePath: url);
 
-      if (!mounted) return;
+      if (gen != _execGen || !mounted) return; // cancelled — state is already idle
 
-      // Two ports, two payloads:
-      //
-      //  * `contents` — the raw file. A text file's own string when the backend
-      //    sends one, else the unparsed table view.
-      //  * `aa` — the AA data contract. The backend's reconstructed AA for a
-      //    tabular file, and for a source file the single-cell `text` AA it now
-      //    builds. The `?? contents` fallback keeps this port populated against an
-      //    older backend that returns no AA for text.
-      //
-      // Both are AaPayloads because the info bus carries nothing else; "raw text"
-      // on the bus means a 1x1 AA whose one cell is the file.
-      // One output: the AA. The backend sends it for tabular files and for source
-      // files alike (a single `text` cell); `contentsToAa` is the fallback for an
-      // older backend that returns none, so the port cannot go silent.
+      // The backend sends an AA for tabular files and for source files alike
+      // (a single `text` cell); `contentsToAa` is the fallback for an older
+      // backend that returns none, so the port cannot go silent.
       final parsed = response.aa ??
           (response.contents != null
               ? LoadFileNode.contentsToAa({'text': response.contents})
               : LoadFileNode.contentsToAa(response.data));
-      setState(() {
-        _aa = parsed;
-        _statusMessage = parsed == null
-            ? '${response.message} · nothing to emit'
-            : '${response.message} · emitted on aa';
-        _errorMessage = null;
-      });
+
+      setState(() => _aa = parsed);
 
       if (parsed != null) {
         _aaOut.emit(parsed);
+        setComplete(detail: '${response.message} · emitted on aa');
+      } else {
+        setComplete(detail: '${response.message} · nothing to emit');
       }
 
-      // Save params for persistence.
-      saveParams({
-        'filePath': filePath,
-        'schemaMode': _schemaMode.name,
-      });
+      saveParams({'filePath': url});
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = 'Error: ${e.toString()}';
-          _statusMessage = null;
-        });
-      }
+      if (gen != _execGen || !mounted) return; // discard a cancelled run's error
+      setError(e);
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (gen == _execGen) _execClient = null;
+      if (owns) client.close();
     }
+  }
+
+  /// Execute button's `onPressed` while [NodeStatus.working] — the button
+  /// renders as Cancel in that state (`ExecuteButton.executing`). Hard abort:
+  /// state flips to idle synchronously, right here, not after any awaited
+  /// step notices a flag. `_execGen` guards the in-flight run's own awaits
+  /// against then clobbering that idle state if the request still resolves
+  /// in the background.
+  void _onCancelPressed() {
+    if (status != NodeStatus.working) return;
+    _execGen++;
+    _execClient?.close();
+    _execClient = null;
+    setIdle();
   }
 
   // ── Build overrides ──────────────────────────────────────────────────────
@@ -379,6 +392,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   @override
   Widget buildNodeBody(BuildContext context) {
     final theme = Theme.of(context);
+    final busy = status == NodeStatus.working;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -386,18 +400,19 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
       children: [
         const SizedBox(height: 28),
         Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
               child: TextField(
-                controller: _filePathController,
-                enabled: !_isLoading,
-                decoration: const InputDecoration(
-                  labelText: 'File Path (backend storage)',
-                  hintText: 'storage/out/export.parquet',
+                controller: _urlController,
+                enabled: !busy,
+                decoration: InputDecoration(
+                  labelText: 'URL',
                   isDense: true,
-                  border: OutlineInputBorder(),
+                  border: const OutlineInputBorder(),
                   contentPadding:
-                      EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                  errorText: _showInvalidUrl ? 'Invalid URL' : null,
                 ),
               ),
             ),
@@ -406,7 +421,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
             if (!kIsWeb) ...[
               const SizedBox(width: 4),
               PopupMenuButton<String>(
-                enabled: !_isLoading,
+                enabled: !busy,
                 icon: const Icon(Icons.folder_open, size: 18),
                 tooltip: 'Browse…',
                 padding: EdgeInsets.zero,
@@ -440,49 +455,18 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
             ],
           ],
         ),
-        const SizedBox(height: 8),
-        DropdownMenu<_SchemaMode>(
-          enableSearch: false,
-          label: const Text('Schema Mode'),
-          initialSelection: _schemaMode,
-          onSelected: (mode) {
-            if (mode != null) setState(() => _schemaMode = mode);
-          },
-          dropdownMenuEntries: const [
-            DropdownMenuEntry(
-              value: _SchemaMode.auto,
-              label: 'Auto-Detect',
-            ),
-            DropdownMenuEntry(
-              value: _SchemaMode.forceAa,
-              label: 'Force AA',
-            ),
-            DropdownMenuEntry(
-              value: _SchemaMode.rawTable,
-              label: 'Raw Table',
-            ),
-          ],
-        ),
         const SizedBox(height: 12),
-        SizedBox(
-          height: 40,
-          child: ElevatedButton.icon(
-            onPressed: _isLoading ? null : _onLoadPressed,
-            icon: _isLoading
-                ? const SizedBox(
-                    width: 16, height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.download, size: 16),
-            label: Text(_isLoading ? 'Loading...' : 'Load'),
-          ),
+        ExecuteButton(
+          enabled: _isUrlValid && !busy,
+          executing: busy,
+          onPressed: busy ? _onCancelPressed : _onExecutePressed,
         ),
         if (_rejectedFile != null) ...[
           const SizedBox(height: 8),
           _buildRejectedBadge(theme),
         ],
         const SizedBox(height: 8),
-        _buildStatus(theme),
+        statusRow(),
         if (_aa != null) ...[
           const SizedBox(height: 6),
           _buildAaIndicator(theme),
@@ -493,7 +477,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
 
   /// Inline badge for a file type this node will not send to the backend.
   ///
-  /// Deliberately not an exception and not the status line: the pick failed a
+  /// Deliberately not an exception and not the status row: the pick failed a
   /// local rule, no request was attempted, and the previously chosen path is
   /// untouched — so it reads as a rejected *selection*, not a failed load.
   Widget _buildRejectedBadge(ThemeData theme) {
@@ -564,28 +548,5 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
         ),
       ],
     );
-  }
-
-  Widget _buildStatus(ThemeData theme) {
-    if (_errorMessage != null) {
-      return Text(_errorMessage!,
-          style: TextStyle(color: theme.colorScheme.error, fontSize: 12));
-    }
-    if (_statusMessage != null) {
-      return Row(
-        children: [
-          const Icon(Icons.check_circle_outline, size: 16, color: Colors.green),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(_statusMessage!,
-                style: theme.textTheme.bodySmall
-                    ?.copyWith(color: Colors.green),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis),
-          ),
-        ],
-      );
-    }
-    return const SizedBox.shrink();
   }
 }

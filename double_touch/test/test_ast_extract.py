@@ -37,6 +37,43 @@ julia_required = pytest.mark.skipif(
 )
 
 
+def _d4m_jl_available() -> bool:
+    """Whether D4M.jl actually loads via juliacall right now.
+
+    Distinct from `julia_required`: that one checks for the `extract_ast.jl`
+    subprocess dependency (Julia + Arrow.jl on PATH). This checks the
+    in-process D4M.jl bridge (`d4m_ops._julia()`) that `aa_from_table` now
+    routes its AA construction through — a separate, occasionally
+    out-of-sync Julia environment (see `d4m_ops.py`'s LOAD_PATH-based
+    loading).
+
+    Run in a subprocess with a hard timeout, not a plain in-process try/except:
+    a broken Julia environment doesn't necessarily fail fast — it can hang
+    (a stuck precompile lock did exactly this while diagnosing the issue this
+    guard exists for). A skip-check that can itself hang would block
+    collecting this whole file for anyone, which defeats the point.
+    """
+    import subprocess
+    import sys
+
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "from double_touch.d4m_ops import warm; warm()"],
+            timeout=30,
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+d4m_jl_required = pytest.mark.skipif(
+    not _d4m_jl_available(),
+    reason="D4M.jl did not load via juliacall — see d4m_ops._julia(); "
+    "skip rather than fail when the Julia environment isn't ready",
+)
+
+
 def run(coro):
     return asyncio.run(coro)
 
@@ -425,6 +462,7 @@ def test_a_missing_root_names_itself(tmp_path):
         run(AstExtractNode().extract(tmp_path / "absent.jl"))
 
 
+@d4m_jl_required
 def test_aa_from_table_emits_one_row_per_definition():
     table = pa.table(
         {
@@ -456,6 +494,7 @@ def test_aa_from_table_emits_one_row_per_definition():
     assert cells["a.jl:5:7"]["kind"] == "macro"
 
 
+@d4m_jl_required
 def test_aa_from_table_disambiguates_a_repeated_location():
     """A duplicate row key would silently merge two definitions into one row."""
     table = pa.table(

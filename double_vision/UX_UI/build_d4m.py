@@ -16,24 +16,37 @@ Spec (per user, 2026):
     from port management. Restored at the bottom of the card.
   - Output port renamed from "evaluatedResult" -> "Out".
   - "Execute" button centered (previously paired side-by-side with Preview).
-  - "idle" status indicator removed entirely — no status row on this node.
   - Script box is a real code editor surface:
       - Shows scrollbar chrome (track + thumb) since content can overflow.
       - Double-click opens the FULL editor in the app's right-hand display
         panel (outside this node card — not drawn here, since it's a
         different UI surface). Small expand-glyph hint drawn in the box's
-        corner to signal this.
+        corner to signal this. (An earlier "double-click to expand..."
+        caption line was later removed as redundant with the icon itself —
+        do not re-add explanatory text here, the icon alone is the hint.)
       - The inline box and the full editor are BIDIRECTIONAL — editing
         either updates the other. This is a data-binding/behavior spec for
         implementation, not something extra to draw in the mockup itself.
+  - REVISION: the status row was originally removed entirely, then
+    RE-ADDED per a later consistency pass — D4M now has the standard
+    idle/running/success/error status row, same as every other node. Do
+    not remove it; the "no status row" instruction above is superseded.
+  - REVISION: Execute button was originally a left-side play-triangle icon
+    unique to this node; replaced with the shared standard component
+    (text + right-side arrowhead), identical to every other node's
+    Execute button. Do not reintroduce a bespoke icon for this node.
+  - REVISION: an "add port" hint caption ("add port", next to the "+") was
+    later removed as redundant — the "+" glyph alone is the affordance,
+    no accompanying text.
 
 States exposed for VSClaude / implementation reference:
-  Card border:    normal | executing | error         (shared convention)
-  Input port A:   unfilled | connected_idle | transmitting
-  Output port:    unfilled | connected_idle | transmitting
-  Add-port (+):   default | hover                    (hover not yet modeled)
-  Execute button: disabled | enabled | lit
-  Wait checkbox:  unchecked | checked | disabled (locked, mid-execution)
+  Card border:     normal | executing | error        (shared convention)
+  Input port A:     unfilled | connected_idle | transmitting
+  Output port:       unfilled | connected_idle | transmitting
+  Add-port (+):     default only (hover state not modeled in mockup)
+  Wait checkbox:    unchecked | checked | disabled (locked, mid-execution)
+  Execute button:   disabled | enabled | lit | executing (Cancel — see GLOBAL_UX_CONTRACT.md §2)          (shared component)
+  Status row:       idle | running | success | error  (shared component)
 """
 
 import sys, os

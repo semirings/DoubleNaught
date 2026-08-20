@@ -10,7 +10,16 @@ import 'base_node.dart'
         kPortSpacing,
         kPortDotRadius,
         kPortRowHeight,
-        kTitleBarHeight;
+        kTitleBarHeight,
+        kBorderNormalColor,
+        kBorderExecutingColor,
+        kBorderErrorColor;
+
+/// The three card-border states every node cycles through — see
+/// `UX_UI/GLOBAL_UX_CONTRACT.md` §1. [BaseNodeState.build] derives this from
+/// its [NodeStatus] automatically, so individual node widgets never set this
+/// themselves.
+enum CardBorderState { normal, executing, error }
 
 /// The universal node shell — the compositional successor to the (now
 /// deprecated) `BaseNode` inheritance model. See the "Architecture Rules"
@@ -46,6 +55,11 @@ class DoubleNaughtNodeWrapper extends StatelessWidget {
   /// Card width; defaults to the canvas-wide [kNodeWidth].
   final double width;
 
+  /// Which of the three fixed border states (§1) this card is currently in.
+  /// Defaults to [CardBorderState.normal] for the (rare) caller that builds a
+  /// wrapper directly without going through [BaseNodeState].
+  final CardBorderState borderState;
+
   const DoubleNaughtNodeWrapper({
     super.key,
     required this.title,
@@ -54,12 +68,18 @@ class DoubleNaughtNodeWrapper extends StatelessWidget {
     this.inputPorts = const [],
     this.outputPorts = const [],
     this.width = kNodeWidth,
+    this.borderState = CardBorderState.normal,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final (borderColor, borderWidth) = switch (borderState) {
+      CardBorderState.normal => (kBorderNormalColor, 1.0),
+      CardBorderState.executing => (kBorderExecutingColor, 2.0),
+      CardBorderState.error => (kBorderErrorColor, 2.0),
+    };
 
     // Clamp text scaling for the whole subtree so no descendant label can be
     // blown past the fixed card width by the OS font-size setting — the
@@ -75,7 +95,7 @@ class DoubleNaughtNodeWrapper extends StatelessWidget {
           children: [
             Card(
               // Outline-first per the design system: no shadow — depth comes
-              // from the cobalt border against the dark surface.
+              // from the border against the dark surface.
               elevation: 0,
               // Zero margin so the card edge == SizedBox edge == port anchor.
               margin: EdgeInsets.zero,
@@ -83,7 +103,7 @@ class DoubleNaughtNodeWrapper extends StatelessWidget {
               clipBehavior: Clip.antiAlias,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(kNodeRadius),
-                side: BorderSide(color: scheme.primary, width: 1),
+                side: BorderSide(color: borderColor, width: borderWidth),
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,

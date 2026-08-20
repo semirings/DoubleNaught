@@ -8,8 +8,11 @@ export 'base/base_node.dart';
 export 'base/base_node_widget.dart';
 export 'base/connection_drag_scope.dart';
 export 'base/double_naught_node_wrapper.dart';
+export 'base/execute_button.dart';
 export 'base/input_connector.dart';
 export 'base/output_connector.dart';
+export 'base/wait_checkbox.dart';
+export 'base/wait_gated_execution.dart';
 
 // Concrete canvas node widgets (and the SAM3 node's supporting panel/model).
 export 'implementations/aa2jsonl_node.dart';

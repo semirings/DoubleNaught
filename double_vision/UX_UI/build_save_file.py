@@ -26,7 +26,7 @@ States exposed for VSClaude / implementation reference:
   Card border:     normal | executing | error         (shared convention)
   Input port:        unfilled | connected_idle | transmitting
   Format picklist:  closed only (value: Parquet)
-  Execute button:   disabled | enabled | lit
+  Execute button:   disabled | enabled | lit | executing (Cancel — see GLOBAL_UX_CONTRACT.md §2)
   Wait checkbox:    unchecked | checked | disabled (locked, mid-execution)
   Status row:       idle | running | success | error (standard, shared)
 """

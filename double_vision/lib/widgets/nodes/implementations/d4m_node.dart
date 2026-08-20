@@ -1,16 +1,19 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
+import '../../focus_panel.dart' show FocusContent;
 import '../../../services/d4m_api.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../base/base_node.dart' show kPortSpacing;
 import '../base/base_node_widget.dart';
+import '../base/execute_button.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
+import '../base/wait_checkbox.dart';
+import '../base/wait_gated_execution.dart';
 
 // ---------------------------------------------------------------------------
 // Port data model
@@ -33,9 +36,11 @@ class _D4mPort {
 ///
 /// * Input ports default to 1, expandable via the `+` button; each supports
 ///   inline rename.
+/// * Wait/Execute: reactive by default (fires the instant every declared port
+///   has data and the script is non-empty); Wait gates that — see
+///   `UX_UI/GLOBAL_UX_CONTRACT.md` §3.
 /// * Execute: ingests each port's AA into server-side handles, runs the script,
 ///   stores output handle, emits the first 10 000 triples on the port bus.
-/// * Preview: paginated AA table modal.
 /// * Left/Right: spawn adjacent D4M nodes.
 /// * Merge: combine selected D4M nodes' scripts.
 class D4mNode extends BaseNodeWidget {
@@ -56,6 +61,12 @@ class D4mNode extends BaseNodeWidget {
   final bool canMerge;
   final VoidCallback? onMerge;
 
+  /// Pushes the expanded script editor into the Focus Panel as this node's tab.
+  final void Function(int nodeId, FocusContent content)? onContent;
+
+  /// Opens (and selects) this node's Focus Panel tab.
+  final void Function(int nodeId)? onView;
+
   final D4mApi api;
 
   const D4mNode({
@@ -74,6 +85,8 @@ class D4mNode extends BaseNodeWidget {
     this.onToggleMerge,
     this.canMerge = false,
     this.onMerge,
+    this.onContent,
+    this.onView,
     this.api = const D4mApi(),
   });
 
@@ -81,7 +94,8 @@ class D4mNode extends BaseNodeWidget {
   State<D4mNode> createState() => _D4mNodeState();
 }
 
-class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
+class _D4mNodeState extends BaseNodeState<D4mNode>
+    with WidgetsBindingObserver, WaitGatedExecution<D4mNode> {
   // ── Required base overrides ────────────────────────────────────────────────
   @override String   get nodeTitle    => 'D4M';
   @override IconData get nodeIcon     => Icons.functions;
@@ -91,7 +105,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
   late List<_D4mPort> _ports;
   final Map<int, AaPayload> _portData = {};
 
-  final OutputPort _out = OutputPort('evaluatedResult');
+  final OutputPort _out = OutputPort('Out');
 
   late final TextEditingController _scriptCtrl;
   late final TextEditingController _outSymCtrl;
@@ -104,11 +118,26 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
   // restore focus on the next resumed event.
   bool _restoreFocusOnResume = false;
 
-  String? _error;
+  /// Whether the Focus Panel tab exists yet. Only an explicit user action
+  /// (double-clicking the script box, or the corner expand icon) sets this;
+  /// without the guard, restoring `script` from `initialParams` would throw
+  /// the Focus Panel open on load — see `PromptNodeWidget`'s identical guard.
+  bool _editorMounted = false;
+
   D4mExecResult? _lastExec;
   String? _outputHandleId;
-  bool _cancelled = false;
-  bool _previewOpen = false;
+
+  /// The transport used by the run currently in flight, held so Cancel can
+  /// hard-abort it (`UX_UI/GLOBAL_UX_CONTRACT.md` §2) rather than merely stop
+  /// watching it. Null whenever nothing is executing.
+  http.Client? _execClient;
+
+  /// Bumped on every new run and on cancel. A completed await whose captured
+  /// generation no longer matches the current one belongs to a superseded or
+  /// cancelled run and must not touch state — this is what makes a stale
+  /// result harmless even though the abort itself is synchronous, not
+  /// dependent on this check.
+  int _execGen = 0;
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -154,12 +183,22 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
     for (var i = 0; i < _ports.length; i++) {
       _nameCtrl[i] = TextEditingController(text: _ports[i].name);
       widget.onPort?.call(i, _ports[i].inputPort);
-      final idx = i;
-      _ports[i].inputPort.onDataArrived.listen((payload) {
-        if (!mounted) return;
-        setState(() => _portData[idx] = payload);
-      });
+      _listenPort(_ports[i]);
     }
+  }
+
+  /// Looks up [port]'s *current* list position on each arrival rather than
+  /// capturing a fixed index at listener-registration time — removing an
+  /// earlier port shifts every later one down, and a captured index would
+  /// silently go stale, writing arrived data under the wrong key.
+  void _listenPort(_D4mPort port) {
+    port.inputPort.onDataArrived.listen((payload) {
+      if (!mounted) return;
+      final idx = _ports.indexOf(port);
+      if (idx < 0) return; // removed since this arrival was queued
+      setState(() => _portData[idx] = payload);
+      maybeAutoFire();
+    });
   }
 
   @override
@@ -175,6 +214,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
     for (final c in _nameCtrl.values) {
       c.dispose();
     }
+    _execClient?.close();
     super.dispose();
   }
 
@@ -207,12 +247,13 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
       _ports.add(port);
       _nameCtrl[idx] = TextEditingController(text: _ports.last.name);
       widget.onPort?.call(idx, port.inputPort);
-      port.inputPort.onDataArrived.listen((payload) {
-        if (!mounted) return;
-        setState(() => _portData[idx] = payload);
-      });
+      _listenPort(port);
     });
     _saveParams();
+    // A newly-added, unsatisfied port can only ever make isReady FALSE, never
+    // true — but calling this consistently at every port-management mutation
+    // point avoids re-deriving that reasoning by hand at each call site.
+    maybeAutoFire();
   }
 
   void _removePort(int idx) {
@@ -220,15 +261,29 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
     setState(() {
       _ports[idx].inputPort.dispose();
       _ports.removeAt(idx);
-      _nameCtrl.remove(idx);
+      _nameCtrl.remove(idx)?.dispose();
       _portData.remove(idx);
-      // Re-index controllers above the removed slot.
+      // Shift everything above the removed slot down by one — the name
+      // controller, any arrived data, AND re-notify the canvas of each
+      // surviving port's new index. The re-notify is required: the canvas's
+      // registry is index-keyed too, and nothing else tells it a port's
+      // *rendered* connector index just changed (only [_listenPort]'s live
+      // lookup self-corrects; `onPort` does not).
       for (var i = idx; i < _ports.length; i++) {
         _nameCtrl[i] = _nameCtrl.remove(i + 1) ??
             TextEditingController(text: _ports[i].name);
+        final shifted = _portData.remove(i + 1);
+        if (shifted != null) {
+          _portData[i] = shifted;
+        } else {
+          _portData.remove(i);
+        }
+        widget.onPort?.call(i, _ports[i].inputPort);
       }
     });
     _saveParams();
+    // Removing an unsatisfied port can flip readiness from false to true.
+    maybeAutoFire();
   }
 
   void _renamePort(int idx, String name) {
@@ -250,84 +305,125 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
   }
 
   // ---------------------------------------------------------------------------
-  // Execute
+  // Wait/Execute readiness
   // ---------------------------------------------------------------------------
 
-  bool get _canExec =>
-      _scriptCtrl.text.trim().isNotEmpty &&
-      status != NodeStatus.working &&
-      _portData.isNotEmpty;
-
-  void _cancel() {
-    _cancelled = true;
-    setState(() => _error = null);
-    setIdle();
+  bool get _allPortsSatisfied {
+    for (var i = 0; i < _ports.length; i++) {
+      if (!_portData.containsKey(i)) return false;
+    }
+    return true;
   }
 
+  @override
+  bool get isReady => _scriptCtrl.text.trim().isNotEmpty && _allPortsSatisfied;
+
+  // ---------------------------------------------------------------------------
+  // Execute / Cancel
+  // ---------------------------------------------------------------------------
+
+  @override
+  void fire() => _execute();
+
   Future<void> _execute() async {
-    if (!_canExec) return;
-    _cancelled = false;
-    setState(() => _error = null);
+    if (!isReady || status == NodeStatus.working) return;
+    final gen = ++_execGen;
     setWorking();
+
+    final owns = widget.api.client == null;
+    final client = widget.api.client ?? http.Client();
+    _execClient = client;
+    final api =
+        owns ? D4mApi(baseUrl: widget.api.baseUrl, client: client) : widget.api;
+
     try {
       // Ingest each port's AA that has data.
       final inputHandles = <String, String>{};
       for (var i = 0; i < _ports.length; i++) {
-        if (_cancelled) return;
         final data = _portData[i];
         if (data == null) continue;
-        final ingest = await widget.api.ingest(data);
-        if (_cancelled) return;
+        final ingest = await api.ingest(data);
+        if (gen != _execGen) return; // cancelled — state is already idle
         _ports[i].handleId = ingest.handleId;
         inputHandles[_ports[i].name] = ingest.handleId;
       }
 
-      if (_cancelled) return;
-      final execResult = await widget.api.exec(
+      final execResult = await api.exec(
         inputs: inputHandles,
         script: _scriptCtrl.text.trim(),
         outputSymbol: _outSymCtrl.text.trim().isEmpty
             ? 'Out'
             : _outSymCtrl.text.trim(),
       );
-
-      if (!mounted || _cancelled) return;
+      if (gen != _execGen || !mounted) return;
       _lastExec = execResult;
       _outputHandleId = execResult.handleId;
 
       // Emit first 10 000 triples on the port bus.
-      final preview = await widget.api.preview(
+      final preview = await api.preview(
         handleId: execResult.handleId,
         page: 0,
         pageSize: 10000,
       );
-      if (!mounted || _cancelled) return;
+      if (gen != _execGen || !mounted) return;
       _out.emit(preview.aa);
-      setComplete();
+      setComplete(
+        detail: '${execResult.numRows}×${execResult.numCols}  '
+            'nnz=${execResult.nnz}',
+      );
       _saveParams();
     } catch (e) {
-      if (!mounted || _cancelled) return;
-      setState(() => _error = cleanError(e));
+      if (gen != _execGen || !mounted) return; // discard a cancelled run's error
       setError(e);
+    } finally {
+      if (gen == _execGen) _execClient = null;
+      if (owns) client.close();
     }
   }
 
+  /// Execute button's `onPressed` while [NodeStatus.working] — the button
+  /// renders as Cancel in that state (`ExecuteButton.executing`). Hard abort:
+  /// state flips to idle synchronously, right here, not after any awaited
+  /// step notices a flag. `_execGen` guards the in-flight run's own awaits
+  /// against then clobbering that idle state if the request still resolves
+  /// in the background.
+  void _onCancelPressed() {
+    if (status != NodeStatus.working) return;
+    _execGen++;
+    _execClient?.close();
+    _execClient = null;
+    setIdle();
+  }
+
   // ---------------------------------------------------------------------------
-  // Preview modal
+  // Focus Panel — script editor bidirectional sync
   // ---------------------------------------------------------------------------
 
-  void _showPreview() {
-    final hid = _outputHandleId;
-    if (hid == null) return;
-    if (_previewOpen) return; // already on top (modal)
-    setState(() => _previewOpen = true);
-    showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (_) => _PreviewDialog(api: widget.api, handleId: hid),
-    ).whenComplete(() {
-      if (mounted) setState(() => _previewOpen = false);
-    });
+  void _openEditor() {
+    _editorMounted = true;
+    _republishEditor();
+    widget.onView?.call(widget.node.id);
+  }
+
+  /// Refresh the Focus Panel tab's subtitle. The editor itself needs no push —
+  /// it holds the live controller — but the subtitle is a snapshot.
+  ///
+  /// No-op until the tab exists, so state changes never conjure the panel.
+  void _republishEditor() {
+    if (!_editorMounted) return;
+    widget.onContent?.call(
+      widget.node.id,
+      FocusContent.promptEditor(_scriptCtrl, subtitle: _scriptSummary),
+    );
+  }
+
+  String get _scriptSummary {
+    final lines =
+        _scriptCtrl.text.isEmpty ? 0 : _scriptCtrl.text.split('\n').length;
+    final shape = _lastExec != null
+        ? ' · ${_lastExec!.numRows}×${_lastExec!.numCols}'
+        : '';
+    return '$lines line${lines == 1 ? '' : 's'}$shape';
   }
 
   // ---------------------------------------------------------------------------
@@ -348,7 +444,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
   @override
   List<Widget> buildOutputConnectors(BuildContext context) => [
         OutputConnector(
-          label: 'evaluatedResult',
+          label: 'Out',
           idx: 0,
           active: _outputHandleId != null || widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),
@@ -358,7 +454,6 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
   @override
   Widget buildNodeBody(BuildContext context) {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
     final busy = status == NodeStatus.working;
 
     return Column(
@@ -370,23 +465,52 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
         const Divider(height: 12, thickness: 0.5),
 
         // --- Script editor ---
-        TextField(
-          controller: _scriptCtrl,
-          focusNode: _scriptFocusNode,
-          minLines: 6,
-          maxLines: 16,
-          style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
-          decoration: const InputDecoration(
-            labelText: 'Julia D4M Script',
-            hintText: 'Out = A + B\nOut = Out[sw"chunk:", :]',
-            isDense: true,
-            border: OutlineInputBorder(),
-            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-          ),
-          onChanged: (v) {
-            setState(() {});
-            _saveParams();
-          },
+        //
+        // The expand icon is a Stack SIBLING of the double-tap detector, not
+        // a descendant of it: nesting an IconButton inside a
+        // GestureDetector.onDoubleTap subtree puts both recognizers in the
+        // same gesture arena, and a single tap on the icon can be held for
+        // the double-tap timeout before resolving. Keeping them disjoint
+        // means each area resolves its own gesture with no competition.
+        Stack(
+          children: [
+            GestureDetector(
+              onDoubleTap: _openEditor,
+              child: TextField(
+                controller: _scriptCtrl,
+                focusNode: _scriptFocusNode,
+                minLines: 6,
+                maxLines: 16,
+                scrollPhysics: const ClampingScrollPhysics(),
+                style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+                decoration: const InputDecoration(
+                  labelText: 'Julia D4M Script',
+                  hintText: 'Out = A + B\nOut = Out[sw"chunk:", :]',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                ),
+                onChanged: (v) {
+                  setState(() {});
+                  _saveParams();
+                  _republishEditor();
+                  maybeAutoFire();
+                },
+              ),
+            ),
+            Positioned(
+              top: 4,
+              right: 4,
+              child: IconButton(
+                onPressed: _openEditor,
+                icon: const Icon(Icons.open_in_full, size: 14),
+                tooltip: 'Expand Editor',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 6),
 
@@ -415,40 +539,15 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
         ),
         const SizedBox(height: 8),
 
-        // --- Execute + Preview ---
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: busy ? _cancel : (_canExec ? _execute : null),
-                icon: busy
-                    ? const Icon(Icons.stop_rounded, size: 16)
-                    : const Icon(Icons.play_arrow_rounded, size: 16),
-                label: Text(busy ? 'Cancel' : 'Execute'),
-                style: OutlinedButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            OutlinedButton.icon(
-              onPressed: _outputHandleId != null ? _showPreview : null,
-              icon: Icon(
-                _previewOpen ? Icons.table_view : Icons.table_view_outlined,
-                size: 16,
-              ),
-              label: const Text('Preview'),
-              style: OutlinedButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                foregroundColor:
-                    _previewOpen ? scheme.primary : null,
-              ),
-            ),
-          ],
+        // --- Wait / Execute ---
+        WaitCheckbox(checked: wait, onChanged: onWaitChanged, locked: busy),
+        const SizedBox(height: 6),
+        ExecuteButton(
+          enabled: isReady && !busy,
+          executing: busy,
+          onPressed: busy ? _onCancelPressed : onExecutePressed,
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 8),
 
         // --- Adjacent node buttons ---
         Row(
@@ -465,7 +564,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
               ),
             ),
             if (widget.inMergeSet || widget.canMerge)
-              _mergeButton(theme, scheme),
+              _mergeButton(theme, theme.colorScheme),
             TextButton(
               onPressed: widget.onAddRight,
               style: TextButton.styleFrom(
@@ -487,7 +586,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
         const SizedBox(height: 4),
 
         // --- Status row ---
-        _statusRow(theme, scheme),
+        statusRow(),
       ],
     );
   }
@@ -591,212 +690,6 @@ class _D4mNodeState extends BaseNodeState<D4mNode> with WidgetsBindingObserver {
         widget.inMergeSet
             ? (widget.canMerge ? 'Merge' : 'Selected')
             : 'Select',
-      ),
-    );
-  }
-
-  Widget _statusRow(ThemeData theme, ColorScheme scheme) {
-    final (color, label) = switch (status) {
-      NodeStatus.idle     => (scheme.outline, 'idle'),
-      NodeStatus.working  => (scheme.primary, 'executing'),
-      NodeStatus.complete => (Colors.green,   'complete'),
-      NodeStatus.error    => (scheme.error,   'error'),
-    };
-    final meta = _lastExec != null
-        ? '  ${_lastExec!.numRows}×${_lastExec!.numCols}  nnz=${_lastExec!.nnz}'
-        : '';
-    final detail = status == NodeStatus.error && _error != null
-        ? ' · $_error'
-        : meta;
-
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Container(
-          margin: const EdgeInsets.only(top: 3),
-          width: 7,
-          height: 7,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            '$label$detail',
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(color: color),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Preview dialog
-// ---------------------------------------------------------------------------
-
-class _PreviewDialog extends StatefulWidget {
-  final D4mApi api;
-  final String handleId;
-
-  const _PreviewDialog({required this.api, required this.handleId});
-
-  @override
-  State<_PreviewDialog> createState() => _PreviewDialogState();
-}
-
-class _PreviewDialogState extends State<_PreviewDialog> {
-  static const _pageSize = 200;
-
-  int _page = 0;
-  D4mPreviewResult? _result;
-  bool _loading = true;
-  String? _error;
-
-  @override
-  void initState() {
-    super.initState();
-    _fetchPage(0);
-  }
-
-  Future<void> _fetchPage(int page) async {
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final r = await widget.api.preview(
-        handleId: widget.handleId,
-        page: page,
-        pageSize: _pageSize,
-      );
-      if (!mounted) return;
-      setState(() {
-        _result = r;
-        _page = page;
-        _loading = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = '$e';
-        _loading = false;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final r = _result;
-    final totalPages =
-        r == null ? 1 : ((r.totalNnz + _pageSize - 1) ~/ _pageSize);
-
-    return Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 600, maxHeight: 500),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Header
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      'Preview  ${r != null ? "${r.totalNnz} triples" : ""}',
-                      style: theme.textTheme.titleSmall,
-                    ),
-                  ),
-                  if (r != null)
-                    Text('page ${_page + 1} / $totalPages',
-                        style: theme.textTheme.bodySmall),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, size: 18),
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(
-                        minWidth: 28, minHeight: 28),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-
-            // Table
-            Expanded(
-              child: _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _error != null
-                      ? Center(
-                          child: Text(_error!,
-                              style: TextStyle(
-                                  color: theme.colorScheme.error)))
-                      : _table(theme, r!.aa),
-            ),
-
-            // Pagination
-            if (!_loading && _error == null && r != null && totalPages > 1)
-              Padding(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 12, vertical: 6),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    TextButton(
-                      onPressed:
-                          _page > 0 ? () => _fetchPage(_page - 1) : null,
-                      child: const Text('‹ Prev'),
-                    ),
-                    const SizedBox(width: 8),
-                    TextButton(
-                      onPressed: _page < totalPages - 1
-                          ? () => _fetchPage(_page + 1)
-                          : null,
-                      child: const Text('Next ›'),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _table(ThemeData theme, AaPayload aa) {
-    if (aa.rows.isEmpty) {
-      return Center(
-          child: Text('Empty result',
-              style: theme.textTheme.bodySmall));
-    }
-    return SingleChildScrollView(
-      child: DataTable(
-        headingRowHeight: 28,
-        dataRowMinHeight: 22,
-        dataRowMaxHeight: 28,
-        columnSpacing: 12,
-        columns: const [
-          DataColumn(label: Text('row')),
-          DataColumn(label: Text('col')),
-          DataColumn(label: Text('val')),
-        ],
-        rows: [
-          for (var i = 0; i < aa.rows.length; i++)
-            DataRow(cells: [
-              DataCell(Text(aa.rows[i],
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(fontFamily: 'monospace'))),
-              DataCell(Text(aa.cols[i],
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(fontFamily: 'monospace'))),
-              DataCell(Text('${aa.vals[i]}',
-                  style: theme.textTheme.bodySmall
-                      ?.copyWith(fontFamily: 'monospace'))),
-            ]),
-        ],
       ),
     );
   }

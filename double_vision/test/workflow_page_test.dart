@@ -43,7 +43,10 @@ void main() {
     await _add(tester, 'Preview');
 
     // Preview starts unwired.
-    expect(find.text('Connect an AA source'), findsOneWidget);
+    expect(
+      tester.widget<InputConnector>(find.byType(InputConnector).first).active,
+      isFalse,
+    );
 
     // Nodes are already 360 px apart horizontally (grid layout), so only move
     // Preview down to make sure its input port doesn't overlap the title bar.
@@ -62,8 +65,11 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
 
-    // The input is now wired: the unconnected hint is gone.
+    // The input is now wired.
     expect(find.byType(PreviewNode), findsOneWidget);
-    expect(find.text('Connect an AA source'), findsNothing);
+    expect(
+      tester.widget<InputConnector>(find.byType(InputConnector).first).active,
+      isTrue,
+    );
   });
 }

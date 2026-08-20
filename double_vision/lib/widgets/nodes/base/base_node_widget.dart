@@ -5,7 +5,16 @@ import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import 'base_node.dart'
-    show kNodeWidth, kPortLaneTop, kPortSpacing, kTitleBarHeight, kPortDotRadius;
+    show
+        kNodeWidth,
+        kPortLaneTop,
+        kPortSpacing,
+        kTitleBarHeight,
+        kPortDotRadius,
+        kStatusIdleColor,
+        kStatusRunningColor,
+        kStatusSuccessColor,
+        kStatusErrorColor;
 import 'double_naught_node_wrapper.dart';
 import 'input_connector.dart';
 import 'output_connector.dart';
@@ -214,9 +223,11 @@ abstract class BaseNodeState<T extends BaseNodeWidget> extends State<T> {
 
   /// Verb shown in the status row while [NodeStatus.working].
   ///
-  /// Default: `'working'`.  Override with the domain verb for this node:
-  /// `'chunking'`, `'executing'`, `'fetching'`, `'tokenizing'`, etc.
-  String get workingLabel => 'working';
+  /// Default: `'running'` — the fixed generic label from
+  /// `UX_UI/GLOBAL_UX_CONTRACT.md` §5 for a node with no more specific verb
+  /// of its own.  Override with a domain verb where one reads better:
+  /// `'chunking'`, `'fetching'`, `'tokenizing'`, etc.
+  String get workingLabel => 'running';
 
   /// Card width.  Default: [kNodeWidth] (240).
   ///
@@ -283,24 +294,25 @@ abstract class BaseNodeState<T extends BaseNodeWidget> extends State<T> {
   /// Pre-built status dot + label row.
   ///
   /// Renders the current [_status] with the canonical dimensions:
-  /// 8×8 dot, `margin: EdgeInsets.only(top: 4)`, `SizedBox(width: 8)`.
+  /// 8×8 dot, `margin: EdgeInsets.only(top: 4)`, `SizedBox(width: 8)`. Colors
+  /// are the fixed literal palette from `UX_UI/GLOBAL_UX_CONTRACT.md` §5, not
+  /// theme-derived — identical across every node.
   ///
   ///   idle     → grey dot    `'idle'`
-  ///   working  → primary dot [workingLabel]
-  ///   complete → green dot   `'complete'` [` · detail`]
-  ///   error    → error dot   `'error'`    [` · detail`]
+  ///   working  → violet dot  [workingLabel] (domain verb, e.g. `'parsing'`)
+  ///   complete → green dot   `'done'` [` · detail`]
+  ///   error    → red dot     `'error'` [` · detail`]
   ///
   /// Call this inside [buildNodeBody] wherever the status row belongs.
   /// Nodes that have no execution state simply do not call it.
   Widget statusRow() {
     final theme = Theme.of(context);
-    final scheme = theme.colorScheme;
 
     final (color, label) = switch (_status) {
-      NodeStatus.idle => (scheme.outline, 'idle'),
-      NodeStatus.working => (scheme.primary, workingLabel),
-      NodeStatus.complete => (Colors.green, 'complete'),
-      NodeStatus.error => (scheme.error, 'error'),
+      NodeStatus.idle => (kStatusIdleColor, 'idle'),
+      NodeStatus.working => (kStatusRunningColor, workingLabel),
+      NodeStatus.complete => (kStatusSuccessColor, 'done'),
+      NodeStatus.error => (kStatusErrorColor, 'error'),
     };
 
     final detail = _statusDetail;
@@ -437,6 +449,15 @@ abstract class BaseNodeState<T extends BaseNodeWidget> extends State<T> {
         title: nodeTitle,
         icon: nodeIcon,
         width: nodeWidth,
+        // Every node's border follows its own status automatically — see
+        // `UX_UI/GLOBAL_UX_CONTRACT.md` §1. Subclasses never set this
+        // themselves; it falls out of the same NodeStatus that drives
+        // [statusRow].
+        borderState: switch (_status) {
+          NodeStatus.working => CardBorderState.executing,
+          NodeStatus.error => CardBorderState.error,
+          NodeStatus.idle || NodeStatus.complete => CardBorderState.normal,
+        },
         inputPorts: buildInputConnectors(context),
         outputPorts: buildOutputConnectors(context),
         child: buildNodeBody(context),

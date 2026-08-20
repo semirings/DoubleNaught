@@ -8,20 +8,30 @@ Spec (per user, 2026):
   - Button "Format" -> "Execute" (standard Execute button pattern).
   - Remove "Waiting for astIndex — wire a documented AST index" text
     entirely.
-  - Pick list ("Format Mode", reusing the dropdown pattern introduced on
-    LLM Documenter) item renames:
-        ChatML              -> Conversational Chat
+  - Pick list ("Format Mode" — a standard dropdown field, same kind of
+    element as LLM Documenter's Model field, but independently populated
+    with its own option set; not a shared component between the two)
+    item renames — FINAL, resolved after a round of back-and-forth on the
+    first item's exact label:
+        ChatML (Code/Doc)   -> ChatML Doc   (final — NOT "Conversational
+                                              Chat"; an earlier draft of
+                                              this spec considered that
+                                              rename and even a
+                                              "Conversational Chat
+                                              (Code/Doc)" hybrid; neither
+                                              is correct, use "ChatML Doc")
         Prompt / Completion -> Instruction / Task
         Row Passthrough     -> Passthrough
+    "Passthrough" MODE BEHAVIOR (confirmed): passes the input data into a
+    JSON object WITHOUT modification — no reshaping, no AA-structure
+    changes, purely a wrapping/serialization step. This distinguishes it
+    from the other two modes, which do restructure the data into a
+    specific chat/instruction format.
     RESOLVED: the open/expanded dropdown state (showing all three options
     at once) is DELIBERATELY not designed in Blender — same rule as LLM
     Documenter's Model field: every node has exactly one card
     representation, no separate "open" card layout. VSClaude implements the
     open list using the platform's standard dropdown/select widget.
-    Default selection shown here is the renamed first item,
-    "Conversational Chat" (dropped the original "(Code/Doc)" suffix since
-    the new name wasn't specified with one — flag if it should be kept,
-    e.g. "Conversational Chat (Code/Doc)").
   - "No index" text: REMOVED (later instruction superseded the earlier
     "keep as-is" note). Format Mode field moved up to close the resulting gap.
   - Execute button: now built via the shared build_execute_button() helper
@@ -34,7 +44,7 @@ States exposed for VSClaude / implementation reference:
   Output port:          unfilled | connected_idle | transmitting
   Format Mode picklist: closed only (options: Conversational Chat,
                         Instruction / Task, Passthrough)
-  Execute button:      disabled | enabled | lit
+  Execute button:      disabled | enabled | lit | executing (Cancel — see GLOBAL_UX_CONTRACT.md §2)
   Wait checkbox:       unchecked | checked | disabled (locked, mid-execution)
   Status row:          idle | running | success | error
 """
@@ -107,7 +117,7 @@ fm_pts = rounded_rect_points(cx, FM_BOX_Y, FM_BOX_W, FM_BOX_H, 0.08, 8)
 make_filled(N("FormatMode_Fill"), fm_pts, N("FormatModeFillMat"), CONTENT_NORMAL_COL, tier="fill", coll=coll)
 make_outline(N("FormatMode_Outline"), fm_pts, N("FormatModeOutlineMat"), OUTLINE_NORMAL_COL,
              tier="outline", thickness=0.02, strength=0.7, coll=coll)
-make_text(N("FormatMode_Value"), "Conversational Chat", (0.40, FM_BOX_Y), 0.19,
+make_text(N("FormatMode_Value"), "ChatML Doc", (0.40, FM_BOX_Y), 0.19,
           N("FormatModeValueMat"), TEXT_COL, tier="labels", align='LEFT', coll=coll)
 make_text(N("FormatMode_Chevron"), "\u25be", (CARD_W-0.35, FM_BOX_Y), 0.18, N("FormatModeChevronMat"),
           TEXT_DIM_COL, tier="controls", align='LEFT', strength=1.0, coll=coll)

@@ -44,3 +44,20 @@ const double kPortRowHeight = 20;
 /// clear of the title bar.
 const double kTitleBarHeight = 34;
 
+/// Fixed card-border-state colors — identical across every node, per
+/// `UX_UI/GLOBAL_UX_CONTRACT.md` §1 ("There is no per-node variation on
+/// border color or meaning"). Not theme-derived: the design system fixes
+/// these literally, matching `UX_UI/_template.py`'s
+/// OUTLINE_NORMAL_COL/OUTLINE_EXECUTING_COL/STATUS_ERROR_COL.
+const Color kBorderNormalColor = Color.fromRGBO(148, 148, 158, 1);
+const Color kBorderExecutingColor = Colors.white;
+const Color kBorderErrorColor = Color.fromRGBO(235, 71, 71, 1);
+
+/// Fixed status-row colors — identical across every node, per
+/// `UX_UI/GLOBAL_UX_CONTRACT.md` §5. Matches `UX_UI/_template.py`'s
+/// STATUS_IDLE_COL/STATUS_RUNNING_COL/STATUS_SUCCESS_COL/STATUS_ERROR_COL.
+const Color kStatusIdleColor = Color.fromRGBO(133, 133, 143, 1);
+const Color kStatusRunningColor = Color.fromRGBO(204, 148, 255, 1);
+const Color kStatusSuccessColor = Color.fromRGBO(89, 217, 122, 1);
+const Color kStatusErrorColor = Color.fromRGBO(235, 71, 71, 1);
+

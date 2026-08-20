@@ -8,7 +8,10 @@ import '../models/aa_payload.dart';
 class LoadFileApi {
   final String baseUrl;
 
-  const LoadFileApi({this.baseUrl = 'http://127.0.0.1:8000'});
+  /// Injected in tests. When null, each call uses (and closes) its own client.
+  final http.Client? client;
+
+  const LoadFileApi({this.baseUrl = 'http://127.0.0.1:8000', this.client});
 
   /// Load a file from the backend storage directory.
   ///
@@ -22,20 +25,26 @@ class LoadFileApi {
       'schemaMode': schemaMode,
     };
 
-    final response = await http.post(
-      Uri.parse('$baseUrl/load'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(payload),
-    );
-
-    if (response.statusCode != 200) {
-      throw Exception(
-        'Load failed: ${response.statusCode} - ${response.body}',
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      final response = await transport.post(
+        Uri.parse('$baseUrl/load'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
       );
-    }
 
-    final json = jsonDecode(response.body) as Map<String, dynamic>;
-    return LoadFileResponse.fromJson(json);
+      if (response.statusCode != 200) {
+        throw Exception(
+          'Load failed: ${response.statusCode} - ${response.body}',
+        );
+      }
+
+      final json = jsonDecode(response.body) as Map<String, dynamic>;
+      return LoadFileResponse.fromJson(json);
+    } finally {
+      own?.close();
+    }
   }
 }
 

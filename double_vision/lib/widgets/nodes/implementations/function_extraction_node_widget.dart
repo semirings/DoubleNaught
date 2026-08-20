@@ -1,17 +1,21 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../../../models/aa_payload.dart';
 import '../../../services/ast_extract_api.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../base/base_node_widget.dart';
+import '../base/execute_button.dart';
+import '../base/wait_checkbox.dart';
+import '../base/wait_gated_execution.dart';
 
 /// Indexes every function and macro in a Julia source tree — see `DESIGN.md` →
 /// "Function Extraction node".
 ///
-/// Ports: `codebasePath` (idx 0) supplies the path to parse, `astIndex` (idx 0) carries the
-/// 7-column definition index. The path can also be typed directly, so the node is
-/// usable with nothing wired into it.
+/// Ports: `codebase` (in) supplies the path to parse, `functions` (out) carries
+/// the 7-column definition index. This node has no free-text field of its own —
+/// per the finalized UX spec it operates purely on its wired input port.
 ///
 /// It **parses**, it does not run. `Polyglot Exec` is the node that executes a
 /// file; this one reads it and answers "what does it define?".
@@ -36,7 +40,9 @@ class FunctionExtractionNodeWidget extends BaseNodeWidget {
   State<FunctionExtractionNodeWidget> createState() => _FunctionExtractionNodeWidgetState();
 }
 
-class _FunctionExtractionNodeWidgetState extends BaseNodeState<FunctionExtractionNodeWidget> {
+class _FunctionExtractionNodeWidgetState
+    extends BaseNodeState<FunctionExtractionNodeWidget>
+    with WaitGatedExecution<FunctionExtractionNodeWidget> {
   @override String   get nodeTitle    => 'Function Extraction';
   @override IconData get nodeIcon     => Icons.account_tree_outlined;
   @override double   get nodeWidth    => 320;
@@ -56,24 +62,22 @@ class _FunctionExtractionNodeWidgetState extends BaseNodeState<FunctionExtractio
 
   late final AstExtractApi _api;
   late final InputPort _in;
-  final OutputPort _out = OutputPort('astIndex');
+  final OutputPort _out = OutputPort('functions');
 
-  late TextEditingController _path;
-
-  /// Path taken from `codebasePath`, if one arrived. Shown as the placeholder so it is
-  /// obvious the node will use it when the box is empty.
+  /// Path taken from `codebase`, if the arriving AA carries one.
   String? _upstreamPath;
   AaPayload? _incomingPayload;
-
-
   AstExtractResult? _result;
-  bool _busy = false;
 
-  /// The path that will actually be parsed: what was typed, else what arrived.
-  String get _effectivePath {
-    final typed = _path.text.trim();
-    return typed.isNotEmpty ? typed : (_upstreamPath ?? '');
-  }
+  /// The transport used by the run currently in flight, held so Cancel can
+  /// hard-abort it (`UX_UI/GLOBAL_UX_CONTRACT.md` §2) rather than merely stop
+  /// watching it. Null whenever nothing is executing.
+  http.Client? _execClient;
+
+  /// Bumped on every new run and on cancel. A completed await whose captured
+  /// generation no longer matches the current one belongs to a superseded or
+  /// cancelled run and must not touch state.
+  int _execGen = 0;
 
   bool get _hasIncomingPath {
     if (_incomingPayload == null) return false;
@@ -85,24 +89,44 @@ class _FunctionExtractionNodeWidgetState extends BaseNodeState<FunctionExtractio
     return false;
   }
 
-  bool get _canExtract => !_busy && (_effectivePath.isNotEmpty || _hasIncomingPath);
+  bool get _hasText {
+    if (_incomingPayload == null) return false;
+    return _incomingPayload!.cols.contains('text') ||
+        _incomingPayload!.cols.contains('raw_text');
+  }
+
+  @override
+  bool get isReady => _hasIncomingPath || _hasText;
 
   @override
   void initState() {
     super.initState();
     _api = widget.api ?? const AstExtractApi();
-    _path = TextEditingController(text: widget.initialParams?['rootPath'] ?? '');
-    _in = InputPort('codebasePath');
+    _in = InputPort('codebase');
     initInputPort(_in, _onIngress);
+    _in.onDisconnected.listen((_) => _dropIncoming());
     initOutputPort(_out);
   }
 
   @override
   void dispose() {
-    _path.dispose();
     _in.dispose();
     _out.dispose();
+    _execClient?.close();
     super.dispose();
+  }
+
+  /// Drop the retained payload when the `codebase` wire is cut or re-pointed,
+  /// so [isReady] genuinely reflects "is there live data to act on" rather
+  /// than lingering on a since-disconnected upstream's last delivery.
+  void _dropIncoming() {
+    if (!mounted || (_upstreamPath == null && _incomingPayload == null)) return;
+    setState(() {
+      _upstreamPath = null;
+      _incomingPayload = null;
+      _result = null;
+    });
+    setIdle();
   }
 
   /// Read a path out of the arriving payload.
@@ -112,8 +136,6 @@ class _FunctionExtractionNodeWidgetState extends BaseNodeState<FunctionExtractio
   /// straight back.
   void _onIngress(AaPayload payload) {
     if (!mounted) return;
-    debugPrint("[DEBUG Function Extraction Node] Ingress payload received on codebasePath!");
-    debugPrint("[DEBUG Function Extraction Node] Payload dimensions: rows: ${payload.rows.length}, cols: ${payload.cols.length}, vals: ${payload.vals.length}");
 
     String? found;
     for (var i = 0; i < payload.cols.length && i < payload.vals.length; i++) {
@@ -131,74 +153,69 @@ class _FunctionExtractionNodeWidgetState extends BaseNodeState<FunctionExtractio
       // A new payload invalidates the previous index.
       _result = null;
     });
+    maybeAutoFire();
+  }
 
-    // Automatically trigger extraction on incoming port data when connected!
-    // We can auto-extract if there is a path OR if the payload contains text!
-    final hasText = payload.cols.contains('text') || payload.cols.contains('raw_text');
-    final hasPath = found != null;
+  @override
+  void fire() => _extract();
 
-    debugPrint("[DEBUG Function Extraction] _onIngress triggered. inputConnected=${widget.inputConnected}, hasPath=$hasPath, hasText=$hasText");
-    if (widget.inputConnected && (hasPath || hasText)) {
-      debugPrint("[DEBUG Function Extraction] Dispatching to _extract()...");
-      _extract();
-    } else {
-      debugPrint("[DEBUG Function Extraction] Skipped _extract(). inputConnected failed or no text/path found.");
-      setIdle();
+  Future<void> _extract() async {
+    if (!isReady || status == NodeStatus.working) return;
+    final gen = ++_execGen;
+    setWorking();
+
+    final owns = _api.client == null;
+    final client = _api.client ?? http.Client();
+    _execClient = client;
+    final api =
+        owns ? AstExtractApi(baseUrl: _api.baseUrl, client: client) : _api;
+
+    try {
+      final res = await api.extract(_upstreamPath ?? '', parsedPayload: _incomingPayload);
+      if (gen != _execGen || !mounted) return;
+
+      setState(() => _result = res);
+
+      if (res.definitionCount == 0) {
+        setError('No definitions found in ${(_upstreamPath ?? '').split('/').last}');
+      } else {
+        _out.emit(res.aa);
+        setComplete(detail: '${res.definitionCount} definitions');
+      }
+    } catch (e) {
+      if (gen != _execGen || !mounted) return;
+      setError(e);
+    } finally {
+      if (gen == _execGen) _execClient = null;
+      if (owns) client.close();
     }
   }
 
-  Future<void> _extract() async {
-    debugPrint("[DEBUG Function Extraction] ENTERING _extract()");
-    if (!mounted) return;
-    if (_incomingPayload == null && _upstreamPath == null && _path.text.trim().isEmpty) {
-      debugPrint("[DEBUG Function Extraction] Aborting: Both _incomingPayload and _upstreamPath/manual path are empty.");
-      return;
-    }
-
-    setState(() => _busy = true);
-    setWorking();
-
-    try {
-      debugPrint("[DEBUG Function Extraction] Invoking backend API extract...");
-      final res = await _api.extract(_effectivePath, parsedPayload: _incomingPayload);
-
-      debugPrint("[DEBUG Function Extraction] RPC SUCCESS. Extracted ${res.aa.rows.length} rows, ${res.aa.cols.length} cols.");
-      if (mounted) {
-        setState(() {
-          _result = res;
-          _busy = false;
-        });
-
-        if (res.definitionCount == 0) {
-          setError('No definitions found in ${_effectivePath.split('/').last}');
-        } else {
-          // Explicitly emit the extracted multi-row result downstream
-          _out.emit(res.aa);
-          setComplete(detail: '${res.definitionCount} definitions');
-        }
-        saveParams({'rootPath': _path.text.trim()});
-      }
-    } catch (e, stack) {
-      debugPrint("[ERROR Function Extraction] RPC failed inside _extract(): $e\n$stack");
-      if (mounted) {
-        setState(() => _busy = false);
-        setIdle();
-        setError(e);
-      }
-    }
+  /// Execute button's `onPressed` while [NodeStatus.working] — the button
+  /// renders as Cancel in that state (`ExecuteButton.executing`). Hard abort:
+  /// state flips to idle synchronously, right here, not after any awaited
+  /// step notices a flag. `_execGen` guards the in-flight run's own awaits
+  /// against then clobbering that idle state if the request still resolves
+  /// in the background.
+  void _onCancelPressed() {
+    if (status != NodeStatus.working) return;
+    _execGen++;
+    _execClient?.close();
+    _execClient = null;
+    setIdle();
   }
 
   // ── Ports ────────────────────────────────────────────────────────────────
 
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
-        singleInputConnector(label: 'codebasePath'),
+        singleInputConnector(label: 'codebase'),
       ];
 
   @override
   List<Widget> buildOutputConnectors(BuildContext context) => [
         singleOutputConnector(
-          label: 'astIndex',
+          label: 'functions',
           idx: 0,
           hasData: (_result?.definitionCount ?? 0) > 0,
         ),
@@ -210,75 +227,20 @@ class _FunctionExtractionNodeWidgetState extends BaseNodeState<FunctionExtractio
   Widget buildNodeBody(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final busy = status == NodeStatus.working;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SizedBox(height: BaseNodeState.portLaneClearance(1)),
-        if (widget.inputConnected) ...[
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              color: theme.colorScheme.surfaceVariant.withOpacity(0.5),
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: theme.colorScheme.outlineVariant),
-            ),
-            child: Row(
-              children: [
-                Icon(Icons.link_rounded, size: 16, color: theme.colorScheme.primary),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: const Text(
-                    'Bound: parsedPayload',
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ] else ...[
-          TextField(
-            controller: _path,
-            enabled: !_busy,
-            onChanged: (_) => setState(() {}),
-            decoration: InputDecoration(
-              labelText: 'File or directory',
-              hintText: _upstreamPath ?? '/path/to/src',
-              helperText: _upstreamPath != null && _path.text.trim().isEmpty
-                  ? 'from codebasePath'
-                  : null,
-              helperStyle: theme.textTheme.labelSmall?.copyWith(color: scheme.primary),
-              isDense: true,
-              border: const OutlineInputBorder(),
-            ),
-          ),
-        ],
-        const SizedBox(height: 10),
-        SizedBox(
-          height: 38,
-          child: FilledButton.icon(
-            onPressed: _canExtract ? _extract : null,
-            icon: _busy
-                ? const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.account_tree_outlined, size: 16),
-            label: Text(_busy ? 'Parsing…' : 'Extract Definitions'),
-          ),
+        WaitCheckbox(checked: wait, onChanged: onWaitChanged, locked: busy),
+        const SizedBox(height: 6),
+        ExecuteButton(
+          enabled: isReady && !busy,
+          executing: busy,
+          onPressed: busy ? _onCancelPressed : onExecutePressed,
         ),
-        if (_effectivePath.isEmpty) ...[
-          const SizedBox(height: 6),
-          Text(
-            'Wire a Load File node, or type a path',
-            style: theme.textTheme.labelSmall
-                ?.copyWith(color: scheme.onSurfaceVariant),
-          ),
-        ],
         const SizedBox(height: 8),
         statusRow(),
         if (_result case final result?) ...[
@@ -300,7 +262,7 @@ class _FunctionExtractionNodeWidgetState extends BaseNodeState<FunctionExtractio
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // The count itself is the status row's job (`complete · N definitions`);
+        // The count itself is the status row's job (`done · N definitions`);
         // repeating it here said the same thing twice on one card.
         Text(
           '${result.filesScanned} file${result.filesScanned == 1 ? '' : 's'} scanned',

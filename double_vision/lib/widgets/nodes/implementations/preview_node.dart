@@ -1,18 +1,21 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 
 import '../../../models/aa_payload.dart';
-import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../focus_panel.dart' show FocusContent;
 import '../base/base_node_widget.dart';
+import '../base/execute_button.dart';
 import '../base/input_connector.dart';
+import '../base/wait_checkbox.dart';
+import '../base/wait_gated_execution.dart';
 
 /// A universal **display** sink. It has one input — a `previewData` port (a D4M
 /// associative array) — and renders whatever arrives in the right-hand
 /// **Focus Panel** (as a tab), *not* inside the node. The node itself stays a
-/// compact routing box showing a one-line summary and a "View in panel" button.
+/// compact routing box showing a one-line summary plus the standard
+/// Wait/Execute/status trio (`UX_UI/GLOBAL_UX_CONTRACT.md` §§2–3, 5) — Preview
+/// is not an exception to that mechanism (see `UX_UI/build_preview.py`'s v3
+/// revision note).
 class PreviewNode extends BaseNodeWidget {
   /// Filename of the byte source, when known (carried out-of-band).
   final String? fileName;
@@ -23,9 +26,6 @@ class PreviewNode extends BaseNodeWidget {
   /// Retracts this node's Focus Panel tab when its inputs go dead.
   final void Function(int nodeId)? onContentCleared;
 
-  /// Opens the Focus Panel and selects this node's tab.
-  final void Function(int nodeId)? onView;
-
   const PreviewNode({
     super.key,
     required super.node,
@@ -35,21 +35,28 @@ class PreviewNode extends BaseNodeWidget {
     this.fileName,
     this.onContent,
     this.onContentCleared,
-    this.onView,
   });
 
   @override
   State<PreviewNode> createState() => _PreviewNodeState();
 }
 
-class _PreviewNodeState extends BaseNodeState<PreviewNode> {
+class _PreviewNodeState extends BaseNodeState<PreviewNode>
+    with WaitGatedExecution<PreviewNode> {
   @override String   get nodeTitle => 'Preview';
   @override IconData get nodeIcon  => Icons.preview_outlined;
 
   final InputPort _in = InputPort('previewData');
-  AaPayload?      _aa;
 
-  bool get _hasContent => _aa != null;
+  /// Arrived but not yet published — differs from [_aa] only while gated
+  /// (Wait checked) and not yet fired.
+  AaPayload? _pending;
+
+  /// Published — what the Focus Panel tab and the summary reflect.
+  AaPayload? _aa;
+
+  @override
+  bool get isReady => _pending != null;
 
   @override
   void initState() {
@@ -66,32 +73,34 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode> {
 
   void _onAa(AaPayload payload) {
     if (!mounted) return;
-    setState(() => _aa = payload);
-    _report();
+    setState(() => _pending = payload);
+    maybeAutoFire();
   }
 
-  /// Drop the retained AA when the `previewData` wire is cut or re-pointed, so the node
-  /// stops advertising an upstream it is no longer fed by.
+  /// Publish [_pending] — reactive nodes never see an intermediate "working"
+  /// frame: there is no async step here, so faking one would misrepresent
+  /// real backend state (`UX_UI/GLOBAL_UX_CONTRACT.md` §5).
+  @override
+  void fire() {
+    setState(() => _aa = _pending);
+    widget.onContent?.call(widget.node.id, _buildContent()!);
+    setComplete();
+  }
+
+  /// Drop the retained AA when the `previewData` wire is cut or re-pointed, so
+  /// the node stops advertising an upstream it is no longer fed by.
   ///
   /// Re-pointing emits the departure and then immediately replays the new
   /// upstream's retained payload, so this clears only when the new source has
   /// nothing to give.
   void _dropAa() {
-    if (!mounted || _aa == null) return;
-    setState(() => _aa = null);
-    _report();
-  }
-
-  /// Push the current content to the Focus Panel — or retract this node's tab
-  /// once there is nothing left to show, so a dead payload cannot linger there
-  /// after the node summary has cleared.
-  void _report() {
-    final content = _buildContent();
-    if (content != null) {
-      widget.onContent?.call(widget.node.id, content);
-    } else {
-      widget.onContentCleared?.call(widget.node.id);
-    }
+    if (!mounted || (_aa == null && _pending == null)) return;
+    setState(() {
+      _aa = null;
+      _pending = null;
+    });
+    setIdle();
+    widget.onContentCleared?.call(widget.node.id);
   }
 
   FocusContent? _buildContent() {
@@ -124,6 +133,7 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode> {
   @override
   Widget buildNodeBody(BuildContext context) {
     final theme = Theme.of(context);
+    final busy = status == NodeStatus.working;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -132,15 +142,14 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode> {
         const SizedBox(height: 28),
         _summary(theme),
         const SizedBox(height: 10),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            onPressed:
-                _hasContent ? () => widget.onView?.call(widget.node.id) : null,
-            icon: const Icon(Icons.open_in_new, size: 16),
-            label: const Text('View in panel'),
-          ),
+        WaitCheckbox(checked: wait, onChanged: onWaitChanged, locked: busy),
+        const SizedBox(height: 6),
+        ExecuteButton(
+          enabled: isReady && !busy,
+          onPressed: onExecutePressed,
         ),
+        const SizedBox(height: 8),
+        statusRow(),
       ],
     );
   }
@@ -149,17 +158,10 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode> {
     final muted = theme.textTheme.bodySmall
         ?.copyWith(color: theme.colorScheme.onSurfaceVariant);
 
-    if (!widget.inputConnected) {
-      return Text('Connect an AA source', style: muted);
-    }
-
-    final String kind;
-    if (_aa != null) {
-      kind = 'AA · ${_aa!.distinctRows().length} rows × '
-          '${_distinctColCount(_aa!)} cols';
-    } else {
-      kind = 'Waiting for data…';
-    }
+    final kind = _aa != null
+        ? 'AA · ${_aa!.distinctRows().length} rows × '
+            '${_distinctColCount(_aa!)} cols'
+        : 'Waiting for data…';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

@@ -71,6 +71,11 @@ CONTENT_LIT_COL     = (0.42, 0.28, 0.62, 1)
 BUTTON_NORMAL_COL   = (0.20, 0.19, 0.27, 1)
 BUTTON_LIT_COL      = (0.58, 0.34, 0.98, 1)
 BUTTON_DISABLED_COL = (0.13, 0.13, 0.15, 1)
+BUTTON_CANCEL_COL   = (0.95, 0.55, 0.20, 1)  # amber/orange — deliberately
+                                              # NOT the same red as the
+                                              # error state, so "you can
+                                              # cancel this" never reads as
+                                              # "something failed"
 STATUS_IDLE_COL     = (0.52, 0.52, 0.56, 1)
 STATUS_RUNNING_COL  = (0.80, 0.58, 1.0, 1)
 STATUS_SUCCESS_COL  = (0.35, 0.85, 0.48, 1)
@@ -254,11 +259,16 @@ def status_row_y(execute_btn_y):
 
 # ============================================================
 # Standard Execute button — text + arrowhead (arrow ALWAYS to the right of
-# the label), three states (disabled/enabled/lit). Previously each node
-# built its own Execute button by hand: D4M had a play-triangle icon on the
-# LEFT, every other node had no icon at all. Standardized here: always use
-# this function so every node's Execute button matches exactly, with no
-# per-node variation possible.
+# the label). FOUR states: disabled / enabled / lit (brief press flash) /
+# executing (the button becomes a CANCEL button for the full duration of
+# execution — relabeled "Cancel", amber/orange, arrowhead replaced with a
+# stop-square icon; clicking it immediately aborts the in-flight operation
+# and the button reverts to its normal Execute state on completion or
+# cancellation). Previously each node built its own Execute button by
+# hand: D4M had a play-triangle icon on the LEFT, every other node had no
+# icon at all. Standardized here: always use this function so every
+# node's Execute/Cancel button matches exactly, with no per-node variation
+# possible.
 # ============================================================
 def build_execute_button(coll, N, cx, y, w=3.6, h=None):
     h = h if h is not None else EXECUTE_BTN_H
@@ -267,24 +277,34 @@ def build_execute_button(coll, N, cx, y, w=3.6, h=None):
     make_filled(N("Button_Disabled"), btn_pts, N("ButtonDisabledMat"), BUTTON_DISABLED_COL, tier="fill", strength=0.4, coll=coll)
     make_filled(N("Button_Enabled"), btn_pts, N("ButtonEnabledMat"), BUTTON_NORMAL_COL, tier="fill", strength=0.6, coll=coll)
     make_filled(N("Button_Lit"), btn_pts, N("ButtonLitMat"), BUTTON_LIT_COL, tier="fill", strength=4.0, coll=coll)
+    make_filled(N("Button_Cancel"), btn_pts, N("ButtonCancelMat"), BUTTON_CANCEL_COL, tier="fill", strength=3.0, coll=coll)
 
-    # Label shifted slightly left of button-center so the (label + arrow)
-    # group as a whole reads as centered, with the arrowhead to the right.
+    # Label shifted slightly left of button-center so the (label + icon)
+    # group as a whole reads as centered, with the icon to the right.
     label_x = cx - 0.20
     make_text(N("Button_Label_Disabled"), "Execute", (label_x, y), 0.18, N("ButtonLabelDisabledMat"),
               TEXT_DIM_COL, tier="labels", align='CENTER', strength=0.5, coll=coll)
     make_text(N("Button_Label_Active"), "Execute", (label_x, y), 0.18, N("ButtonLabelActiveMat"),
               TEXT_COL, tier="labels", align='CENTER', strength=1.2, coll=coll)
+    make_text(N("Button_Label_Cancel"), "Cancel", (label_x, y), 0.18, N("ButtonLabelCancelMat"),
+              TEXT_COL, tier="labels", align='CENTER', strength=1.2, coll=coll)
 
-    arrow_x = cx + 0.62
-    tri_pts = [(arrow_x-0.065, y-0.09), (arrow_x-0.065, y+0.09), (arrow_x+0.075, y)]
+    icon_x = cx + 0.62
+    # arrowhead (Execute states)
+    tri_pts = [(icon_x-0.065, y-0.09), (icon_x-0.065, y+0.09), (icon_x+0.075, y)]
     make_filled(N("Button_Arrow_Disabled"), tri_pts, N("ButtonArrowDisabledMat"), TEXT_DIM_COL, tier="labels", strength=0.5, coll=coll)
     make_filled(N("Button_Arrow_Active"), tri_pts, N("ButtonArrowActiveMat"), TEXT_COL, tier="labels", strength=1.2, coll=coll)
+    # stop-square (Cancel state) — deliberately NOT an arrow shape, since
+    # "point forward" makes no sense for a stop action
+    sq_r = 0.07
+    stop_pts = [(icon_x-sq_r, y-sq_r), (icon_x+sq_r, y-sq_r), (icon_x+sq_r, y+sq_r), (icon_x-sq_r, y+sq_r)]
+    make_filled(N("Button_Stop_Icon"), stop_pts, N("ButtonStopIconMat"), TEXT_COL, tier="labels", strength=1.4, coll=coll)
 
     return {
-        "disabled": [N("Button_Disabled"), N("Button_Label_Disabled"), N("Button_Arrow_Disabled")],
-        "enabled":  [N("Button_Enabled"),  N("Button_Label_Active"),   N("Button_Arrow_Active")],
-        "lit":      [N("Button_Lit"),      N("Button_Label_Active"),   N("Button_Arrow_Active")],
+        "disabled":  [N("Button_Disabled"), N("Button_Label_Disabled"), N("Button_Arrow_Disabled")],
+        "enabled":   [N("Button_Enabled"),  N("Button_Label_Active"),   N("Button_Arrow_Active")],
+        "lit":       [N("Button_Lit"),      N("Button_Label_Active"),   N("Button_Arrow_Active")],
+        "executing": [N("Button_Cancel"),   N("Button_Label_Cancel"),   N("Button_Stop_Icon")],
     }
 
 

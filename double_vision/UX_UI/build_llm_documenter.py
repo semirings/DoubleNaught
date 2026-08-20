@@ -39,7 +39,7 @@ States exposed for VSClaude / implementation reference:
   Input port:        unfilled | connected_idle | transmitting
   Output port:        unfilled | connected_idle | transmitting
   Model picklist:    closed only (single item: mlx-community/Phi-4-mini-instruct)
-  Execute button:    disabled | enabled | lit
+  Execute button:    disabled | enabled | lit | executing (Cancel — see GLOBAL_UX_CONTRACT.md §2)
   Wait checkbox:     unchecked | checked | disabled (locked, mid-execution)
   Status row:        idle | running | success | error
 """

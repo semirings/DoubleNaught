@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:double_vision/models/aa_payload.dart';
 import 'package:double_vision/models/workflow.dart';
 import 'package:double_vision/services/infobus/output_port.dart';
@@ -7,13 +10,14 @@ import 'package:double_vision/services/load_file_api.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
-/// The current text of the node's path field. Read from the controller rather
-/// than via find.text(), which also matches the identical hintText — and scoped
-/// by label, since the Schema Mode DropdownMenu is a TextField too.
+/// The current text of the node's URL field. Read from the controller rather
+/// than via find.text(), which would also match an identical hint/error text.
 String _pathField(WidgetTester tester) => tester
     .widget<TextField>(find.ancestor(
-      of: find.text('File Path (backend storage)'),
+      of: find.text('URL'),
       matching: find.byType(TextField),
     ))
     .controller!
@@ -103,7 +107,8 @@ void main() {
         ),
       ));
 
-      expect(_pathField(tester), 'storage/out/export.parquet');
+      // Starts empty — no default/placeholder value baked in.
+      expect(_pathField(tester), '');
 
       // tapAt(getCenter(...)) rather than tap(finder): Flutter 3.44's tap()
       // resolves a view via _maybeViewOf, which fails inside the node card.
@@ -131,7 +136,329 @@ void main() {
       await tester.tap(find.text('Select File'));
       await tester.pumpAndSettle();
 
-      expect(_pathField(tester), 'storage/out/export.parquet');
+      expect(_pathField(tester), '');
+    });
+  });
+
+  group('URL validation and Execute', () {
+    testWidgets('an empty URL leaves Execute disabled with no error shown',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(node: WorkflowNode(id: 1, type: 'load_file')),
+        ),
+      ));
+
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+      );
+      expect(find.text('Invalid URL'), findsNothing);
+    });
+
+    testWidgets(
+        'a URL that fails Uri.tryParse outright shows the error state',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(node: WorkflowNode(id: 1, type: 'load_file')),
+        ),
+      ));
+
+      // `Uri.tryParse` rejects this outright (bare colons, no valid scheme).
+      await tester.enterText(find.byType(TextField), '::::');
+      await tester.pump();
+
+      expect(find.text('Invalid URL'), findsOneWidget);
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+      );
+    });
+
+    testWidgets(
+        'a bare/schemeless path parses fine but is still Invalid URL — '
+        'GLOBAL_UX_CONTRACT.md §6 requires a scheme, always',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(node: WorkflowNode(id: 1, type: 'load_file')),
+        ),
+      ));
+
+      // Uri.tryParse happily accepts this (empty scheme) — the field must
+      // reject it anyway. No "resolve against a storage root" exception.
+      await tester.enterText(find.byType(TextField), 'storage/out/export.parquet');
+      await tester.pump();
+
+      expect(find.text('Invalid URL'), findsOneWidget);
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+      );
+    });
+
+    testWidgets(
+        'a disallowed scheme (git/ftp/ssh) parses fine but is still Invalid URL',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(node: WorkflowNode(id: 1, type: 'load_file')),
+        ),
+      ));
+
+      await tester.enterText(
+          find.byType(TextField), 'git://example.com/repo.git');
+      await tester.pump();
+
+      expect(find.text('Invalid URL'), findsOneWidget);
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+      );
+    });
+
+    testWidgets('a file:// URL enables Execute and shows no error',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(node: WorkflowNode(id: 1, type: 'load_file')),
+        ),
+      ));
+
+      await tester.enterText(
+          find.byType(TextField), 'file:///tmp/out/export.parquet');
+      await tester.pump();
+
+      expect(find.text('Invalid URL'), findsNothing);
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isTrue,
+      );
+    });
+
+    testWidgets('an https:// URL enables Execute and shows no error',
+        (tester) async {
+      await tester.pumpWidget(const MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(node: WorkflowNode(id: 1, type: 'load_file')),
+        ),
+      ));
+
+      await tester.enterText(
+          find.byType(TextField), 'https://example.com/data.json');
+      await tester.pump();
+
+      expect(find.text('Invalid URL'), findsNothing);
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isTrue,
+      );
+    });
+  });
+
+  group('Execute — load lifecycle', () {
+    /// The current border state, read straight off the live [DoubleNaughtNodeWrapper].
+    CardBorderState border(WidgetTester tester) => tester
+        .widget<DoubleNaughtNodeWrapper>(find.byType(DoubleNaughtNodeWrapper))
+        .borderState;
+
+    testWidgets(
+        'successful load: executing border/status, then done and the port emits',
+        (tester) async {
+      final emitted = <AaPayload>[];
+      // A Completer, not an immediately-resolving handler: MockClient's
+      // response otherwise resolves within the same pump() that triggers the
+      // tap, so the transient "executing" frame is never actually observable
+      // — this holds the response open until the test explicitly completes it.
+      final response = Completer<http.Response>();
+      final api = LoadFileApi(client: MockClient((request) => response.future));
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            api: api,
+            onAaOutputPort: (p) =>
+                p.connect(emitted.add, emitCurrentState: false),
+          ),
+        ),
+      ));
+
+      await tester.enterText(find.byType(TextField), 'file:///tmp/a.txt');
+      await tester.pump();
+
+      await tester.tapAt(tester.getCenter(find.byType(ExecuteButton)));
+      await tester.pump();
+
+      expect(border(tester), CardBorderState.executing);
+      expect(find.text('running'), findsOneWidget);
+
+      response.complete(http.Response(
+        jsonEncode({
+          'aa': {
+            'rows': ['0'],
+            'cols': ['text'],
+            'vals': ['hello'],
+          },
+          'contents': 'hello',
+          'data': {'text': 'hello'},
+          'payloadType': 'text',
+          'message': 'Loaded text from a.txt',
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(border(tester), CardBorderState.normal);
+      expect(find.textContaining('done'), findsOneWidget);
+      expect(emitted, hasLength(1));
+      expect(emitted.single.value('text'), 'hello');
+    });
+
+    testWidgets('failed load: executing border/status, then error',
+        (tester) async {
+      final response = Completer<http.Response>();
+      final api = LoadFileApi(client: MockClient((request) => response.future));
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            api: api,
+          ),
+        ),
+      ));
+
+      await tester.enterText(find.byType(TextField), 'file:///tmp/a.txt');
+      await tester.pump();
+
+      await tester.tapAt(tester.getCenter(find.byType(ExecuteButton)));
+      await tester.pump();
+
+      expect(border(tester), CardBorderState.executing);
+
+      response.complete(http.Response('{"detail":"nope"}', 500));
+      await tester.pumpAndSettle();
+
+      expect(border(tester), CardBorderState.error);
+      expect(find.textContaining('error'), findsOneWidget);
+    });
+
+    testWidgets(
+        'clicking Cancel reverts to idle immediately, before the request '
+        'resolves — and a later-arriving success is discarded',
+        (tester) async {
+      final emitted = <AaPayload>[];
+      final response = Completer<http.Response>();
+      final api = LoadFileApi(client: MockClient((request) => response.future));
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            api: api,
+            onAaOutputPort: (p) =>
+                p.connect(emitted.add, emitCurrentState: false),
+          ),
+        ),
+      ));
+
+      await tester.enterText(find.byType(TextField), 'file:///tmp/a.txt');
+      await tester.pump();
+      await tester.tapAt(tester.getCenter(find.byType(ExecuteButton)));
+      await tester.pump();
+
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).executing,
+        isTrue,
+      );
+      expect(find.text('Cancel'), findsOneWidget);
+
+      await tester.tapAt(tester.getCenter(find.byType(ExecuteButton))); // Cancel
+      await tester.pump();
+
+      expect(border(tester), CardBorderState.normal);
+      expect(find.textContaining('idle'), findsOneWidget);
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).executing,
+        isFalse,
+      );
+
+      // The request finally resolves, well after cancel — must be ignored.
+      response.complete(http.Response(
+        jsonEncode({
+          'aa': {
+            'rows': ['0'],
+            'cols': ['text'],
+            'vals': ['hello'],
+          },
+          'message': 'Loaded text from a.txt',
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(emitted, isEmpty, reason: 'the cancelled run\'s result must not emit');
+      expect(find.textContaining('idle'), findsOneWidget);
+    });
+
+    testWidgets('cancelling never surfaces error status', (tester) async {
+      final response = Completer<http.Response>();
+      final api = LoadFileApi(client: MockClient((request) => response.future));
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            api: api,
+          ),
+        ),
+      ));
+
+      await tester.enterText(find.byType(TextField), 'file:///tmp/a.txt');
+      await tester.pump();
+      await tester.tapAt(tester.getCenter(find.byType(ExecuteButton)));
+      await tester.pump();
+
+      await tester.tapAt(tester.getCenter(find.byType(ExecuteButton))); // Cancel
+      await tester.pump();
+
+      // Even if the in-flight call eventually throws (aborted transport),
+      // that must not read as a failure.
+      response.completeError(Exception('socket closed'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('error'), findsNothing);
+      expect(find.textContaining('idle'), findsOneWidget);
+    });
+
+    testWidgets('Execute is re-enabled (not stuck as Cancel) after cancelling',
+        (tester) async {
+      final response = Completer<http.Response>();
+      final api = LoadFileApi(client: MockClient((request) => response.future));
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            api: api,
+          ),
+        ),
+      ));
+
+      await tester.enterText(find.byType(TextField), 'file:///tmp/a.txt');
+      await tester.pump();
+      await tester.tapAt(tester.getCenter(find.byType(ExecuteButton)));
+      await tester.pump();
+      await tester.tapAt(tester.getCenter(find.byType(ExecuteButton))); // Cancel
+      await tester.pump();
+
+      final button = tester.widget<ExecuteButton>(find.byType(ExecuteButton));
+      expect(button.executing, isFalse);
+      expect(button.enabled, isTrue, reason: 'the URL is still valid');
     });
   });
 
@@ -206,7 +533,7 @@ void main() {
       // Reported, not thrown — and the previous path is untouched.
       expect(find.text('Unsupported file type: .png'), findsOneWidget);
       expect(find.textContaining('Allowed: .jl .md'), findsOneWidget);
-      expect(_pathField(tester), 'storage/out/export.parquet');
+      expect(_pathField(tester), '');
       expect(tester.takeException(), isNull);
     });
 

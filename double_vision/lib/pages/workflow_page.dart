@@ -37,7 +37,8 @@ double _nodeWidthFor(String type) {
   if (type == NodeGroup.type) { return 260; }
   if (type == 'polyglotExecNode') { return 320; }
   if (type == 'jsonlFormatterNode') { return 320; }
-  if (type == 'astExtractNode') { return 320; }
+  if (type == 'functionExtractionNode') { return 320; }
+  if (type == 'astExtractNode') { return 320; } // backward compat: old registry type
   if (type == 'inventory' ||
       type == 'review' ||
       type == 'load_model' ||
@@ -2311,6 +2312,9 @@ class _WorkflowPageState extends State<WorkflowPage>
           onToggleMerge: () => _toggleD4mMerge(node.id),
           canMerge: _d4mMergeSet.length >= 2,
           onMerge: _d4mMergeSet.length >= 2 ? _mergeD4mNodes : null,
+          // The expanded script editor is this node's Focus Panel tab.
+          onContent: _pushFocusContent,
+          onView: _openFocusTab,
         );
       case 'review':
         return ReviewNode(
@@ -2343,7 +2347,6 @@ class _WorkflowPageState extends State<WorkflowPage>
           // retract that tab once the node's inputs go dead.
           onContent: _pushFocusContent,
           onContentCleared: _clearFocusContent,
-          onView: _openFocusTab,
         );
       case 'promptNode':
       case 'prompt_node': // tolerate a snake_case spelling in saved workflows

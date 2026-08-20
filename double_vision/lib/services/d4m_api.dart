@@ -71,7 +71,10 @@ class D4mPreviewResult {
 class D4mApi {
   final String baseUrl;
 
-  const D4mApi({this.baseUrl = 'http://localhost:8000'});
+  /// Injected in tests. When null, each call uses (and closes) its own client.
+  final http.Client? client;
+
+  const D4mApi({this.baseUrl = 'http://localhost:8000', this.client});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 
@@ -80,21 +83,39 @@ class D4mApi {
   // Ingest and preview are pure Python — should be fast.
   static const _fastTimeout = Duration(seconds: 30);
 
+  Future<http.Response> _post(
+    String path,
+    Map<String, dynamic> body, {
+    required Duration timeout,
+  }) async {
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      return await transport
+          .post(
+            Uri.parse('$baseUrl$path'),
+            headers: _jsonHeaders,
+            body: jsonEncode(body),
+          )
+          .timeout(timeout,
+              onTimeout: () =>
+                  throw D4mApiException(path, 408, 'Request timed out'));
+    } finally {
+      own?.close();
+    }
+  }
+
   /// Legacy: evaluate a single D4M expression over full AA inputs.
   Future<AaPayload> eval({
     required Map<String, AaPayload> inputs,
     required String expression,
   }) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/d4m/eval'),
-      headers: _jsonHeaders,
-      body: jsonEncode({
-        'inputs': {
-          for (final entry in inputs.entries) entry.key: entry.value.toJson(),
-        },
-        'expression': expression,
-      }),
-    );
+    final response = await _post('/d4m/eval', {
+      'inputs': {
+        for (final entry in inputs.entries) entry.key: entry.value.toJson(),
+      },
+      'expression': expression,
+    }, timeout: _execTimeout);
     if (response.statusCode == 200) {
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       return AaPayload.fromJson(body['aa'] as Map<String, dynamic>);
@@ -104,15 +125,11 @@ class D4mApi {
 
   /// Store an AA in the server-side handle store; returns handle id + nnz.
   Future<D4mIngestResult> ingest(AaPayload aa) async {
-    final response = await http
-        .post(
-          Uri.parse('$baseUrl/d4m/ingest'),
-          headers: _jsonHeaders,
-          body: jsonEncode({'aa': aa.toJson()}),
-        )
-        .timeout(_fastTimeout,
-            onTimeout: () =>
-                throw D4mApiException('/d4m/ingest', 408, 'Request timed out'));
+    final response = await _post(
+      '/d4m/ingest',
+      {'aa': aa.toJson()},
+      timeout: _fastTimeout,
+    );
     if (response.statusCode == 200) {
       return D4mIngestResult.fromJson(
           jsonDecode(response.body) as Map<String, dynamic>);
@@ -130,19 +147,11 @@ class D4mApi {
     required String script,
     required String outputSymbol,
   }) async {
-    final response = await http
-        .post(
-          Uri.parse('$baseUrl/d4m/exec'),
-          headers: _jsonHeaders,
-          body: jsonEncode({
-            'inputs': inputs,
-            'script': script,
-            'outputSymbol': outputSymbol,
-          }),
-        )
-        .timeout(_execTimeout,
-            onTimeout: () =>
-                throw D4mApiException('/d4m/exec', 408, 'Request timed out'));
+    final response = await _post('/d4m/exec', {
+      'inputs': inputs,
+      'script': script,
+      'outputSymbol': outputSymbol,
+    }, timeout: _execTimeout);
     if (response.statusCode == 200) {
       return D4mExecResult.fromJson(
           jsonDecode(response.body) as Map<String, dynamic>);
@@ -156,19 +165,11 @@ class D4mApi {
     int page = 0,
     int pageSize = 200,
   }) async {
-    final response = await http
-        .post(
-          Uri.parse('$baseUrl/d4m/preview'),
-          headers: _jsonHeaders,
-          body: jsonEncode({
-            'handleId': handleId,
-            'page': page,
-            'pageSize': pageSize,
-          }),
-        )
-        .timeout(_fastTimeout,
-            onTimeout: () =>
-                throw D4mApiException('/d4m/preview', 408, 'Request timed out'));
+    final response = await _post('/d4m/preview', {
+      'handleId': handleId,
+      'page': page,
+      'pageSize': pageSize,
+    }, timeout: _fastTimeout);
     if (response.statusCode == 200) {
       return D4mPreviewResult.fromJson(
           jsonDecode(response.body) as Map<String, dynamic>);

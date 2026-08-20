@@ -111,12 +111,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Getting set up.md",
+                "file": "Clippings/NGA LLC.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Getting set up"
+              "title": "NGA LLC"
             }
           }
         ],
@@ -286,8 +286,10 @@
   },
   "active": "81e52416bbd39dfe",
   "lastOpenFiles": [
-    "Burn Notice.md",
+    "Clippings/NGA Strategy.md",
+    "Clippings/NGA LLC.md",
     "Getting set up.md",
+    "Burn Notice.md",
     "UX_UI prompt template.md",
     "Node Renaming.md",
     "Clippings/Gemini models.md",
@@ -311,8 +313,6 @@
     "GCC corpus impl.md",
     "D4M.jl Performance & Optimization Report.md",
     "D4M.jl Macro Surface Design.md",
-    "Clippings/Input port trigger.md",
-    "Clippings/D4M in DN.md",
     "Pasted image 20260618111442.png",
     "Clippings",
     "Untitled.canvas",

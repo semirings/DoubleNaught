@@ -176,6 +176,24 @@ def _preprocess(expression: str, input_names: set[str]) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+def build_assoc(rows: list[str], cols: list[str], vals: list) -> AssocArray:
+    """Construct a well-formed AA from parallel triples via D4M.jl's real
+    ``Assoc`` constructor, rather than hand-assembling the wire triples.
+
+    For callers (e.g. ``ast_extract.aa_from_table``) that flatten some other
+    data shape into AA triples themselves: the flattening step is not AA
+    algebra and doesn't need D4M.jl, but the resulting AA object should still
+    be the one D4M.jl actually produces, not a from-scratch Python
+    reimplementation of what an Assoc is.
+
+    Callers remain responsible for ensuring ``(row, col)`` pairs are unique
+    before calling this — D4M.jl's ``Assoc`` constructor combines duplicate
+    entries via its own default operator, which callers assembling e.g. a
+    multi-column definition index will not generally want applied silently.
+    """
+    return _from_julia_assoc(_to_julia_assoc(AssocArray(rows=rows, cols=cols, vals=vals)))
+
+
 def eval_script(
     inputs: dict[str, AssocArray],
     script: str,

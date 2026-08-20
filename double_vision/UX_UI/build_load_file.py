@@ -15,10 +15,12 @@ Spec (per user, 2026):
   - "Schema Mode" (Auto-Detect) dropdown REMOVED per this iteration.
 
 States exposed for VSClaude / implementation reference:
-  Card outline:   normal | executing | error
-  URL field:      normal | error
-  Execute button:  disabled | enabled | lit (pressed/active)
-  Output port:    unfilled | connected_idle | transmitting
+  Card outline:    normal | executing | error
+  URL field:       normal | error
+  Wait checkbox:   unchecked | checked | disabled (locked, mid-execution)
+  Execute button:  disabled | enabled | lit | executing (Cancel — see GLOBAL_UX_CONTRACT.md §2) (pressed/active)
+  Status row:      idle | running | success | error
+  Output port:     unfilled | connected_idle | transmitting
 """
 
 import sys, os
@@ -31,7 +33,7 @@ NODE_KEY = "LoadFile"
 def N(suffix):
     return f"{NODE_KEY}_{suffix}"
 
-CARD_W, CARD_H = 4.4, 3.0
+CARD_W, CARD_H = 4.4, 3.9  # grown to fit the newly-added Wait checkbox + status row
 cx = CARD_W / 2
 
 coll = new_node_collection("Load_File")
@@ -99,10 +101,55 @@ make_filled(N("Field_IconBtn_Glyph"), rounded_rect_points(icon_x, FIELD_Y, 0.14,
 make_text(N("Field_Error_Text"), "Invalid URL", (0.25, CARD_H-1.85), 0.13, N("FieldErrorTextMat"),
           STATUS_ERROR_COL, tier="labels", align='LEFT', strength=2.0, coll=coll)
 
+# ---- Wait / Execute / Status vertical positions — COMPUTED from the
+# lowest content above them (the URL field's error-text row, which is the
+# lowest thing that can appear there, even conditionally). Never
+# hand-picked. ----
+_field_area_bottom = (CARD_H - 1.85) - TEXT_ROW_HALF
+CHK_Y = wait_checkbox_y(_field_area_bottom)
+BTN_Y = execute_button_y(CHK_Y)
+STATUS_Y = status_row_y(BTN_Y)
+
+# ---------------- "Wait" checkbox ----------------
+# Root nodes generalize the same reactive/gated mechanism as any other
+# node: "required inputs satisfied" here means "a valid URL has been
+# entered" rather than "an upstream port has data" — same underlying
+# behavior, different readiness condition. Added for full consistency
+# with every other node (previously Load File was the one Execute-only
+# exception; see GLOBAL_UX_CONTRACT.md for the resolution).
+CHK_X = 0.32
+CHK_SIZE = WAIT_CHK_SIZE
+chk_pts = [
+    (CHK_X - CHK_SIZE/2, CHK_Y - CHK_SIZE/2),
+    (CHK_X + CHK_SIZE/2, CHK_Y - CHK_SIZE/2),
+    (CHK_X + CHK_SIZE/2, CHK_Y + CHK_SIZE/2),
+    (CHK_X - CHK_SIZE/2, CHK_Y + CHK_SIZE/2),
+]
+
+make_filled(N("Checkbox_Unchecked_Fill"), chk_pts, N("ChkUncheckedFillMat"), CONTENT_NORMAL_COL, tier="fill", strength=0.5, coll=coll)
+make_outline(N("Checkbox_Unchecked_Outline"), chk_pts, N("ChkUncheckedOutlineMat"), OUTLINE_NORMAL_COL,
+             tier="outline", thickness=0.016, strength=1.2, coll=coll)
+
+make_filled(N("Checkbox_Checked_Fill"), chk_pts, N("ChkCheckedFillMat"), CONTENT_LIT_COL, tier="controls_fx", strength=3.0, coll=coll)
+make_outline(N("Checkbox_Checked_Outline"), chk_pts, N("ChkCheckedOutlineMat"), (0.78,0.55,1.0,1),
+             tier="controls_fx", thickness=0.016, strength=3.0, coll=coll)
+make_outline(N("Checkbox_Checkmark"),
+             [(CHK_X-0.06, CHK_Y-0.005), (CHK_X-0.015, CHK_Y-0.06), (CHK_X+0.075, CHK_Y+0.07)],
+             N("ChkCheckmarkMat"), TEXT_COL, tier="labels", thickness=0.012, strength=1.5, cyclic=False, coll=coll)
+
+make_filled(N("Checkbox_Disabled_Fill"), chk_pts, N("ChkDisabledFillMat"), (0.10,0.10,0.12,1), tier="fill", strength=0.3, coll=coll)
+make_outline(N("Checkbox_Disabled_Outline"), chk_pts, N("ChkDisabledOutlineMat"), (0.32,0.32,0.35,1),
+             tier="outline", thickness=0.016, strength=0.5, coll=coll)
+
+make_text(N("Checkbox_Label"), "Wait", (CHK_X + CHK_SIZE/2 + 0.14, CHK_Y), 0.18, N("ChkLabelMat"),
+          TEXT_COL, tier="labels", align='LEFT', coll=coll)
+
 # ---------------- Execute button (renamed from "Load" — every node says
 # Execute now, no exceptions) — shared, standardized: see _template.py ----
-BTN_Y = CARD_H - 2.45
 btn_states = build_execute_button(coll, N, cx, BTN_Y, w=2.6)
+
+# ---------------- Status row (idle / running / success / error) ----------------
+status_objs = build_status_row(coll, N, 0.32, STATUS_Y)
 
 # ---------------- Finalize: convert to real GP + camera/background ----------------
 finalize_node(coll, CARD_W, CARD_H)
@@ -113,10 +160,10 @@ DEFAULT_VISIBLE = {
     N("Port_Unfilled"), N("Port_Ring"), N("Port_Label"),
     N("Field_Label"), N("Field_Fill"), N("Field_Outline_Normal"),
     N("Field_IconBtn_Body"), N("Field_IconBtn_Outline"), N("Field_IconBtn_Glyph"),
+    N("Checkbox_Unchecked_Fill"), N("Checkbox_Unchecked_Outline"), N("Checkbox_Label"),
     *btn_states["disabled"],
-    N(f"{NODE_KEY}_BG") if False else None,  # placeholder no-op, BG handled by finalize_node
+    status_objs["idle"][0], status_objs["idle"][1],
 }
-DEFAULT_VISIBLE.discard(None)
 
 for obj in coll.objects:
     if obj.type == 'CAMERA' or obj.name.endswith("_BG"):

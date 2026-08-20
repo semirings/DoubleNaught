@@ -17,15 +17,25 @@ Future<void> _add(WidgetTester tester, String name) async {
 
 /// Tap a node widget by its Finder, with optional Shift held down.
 ///
-/// Uses tapAt(getCenter(...)) rather than tap(finder) because Flutter 3.44's
-/// tap() calls _maybeViewOf which fails for widgets inside the canvas Transform.
+/// Uses tapAt(...) rather than tap(finder) because Flutter 3.44's tap() calls
+/// _maybeViewOf which fails for widgets inside the canvas Transform. The tap
+/// point is the title bar, not the bare geometric center: a node's body
+/// content (a TextField, a button, …) varies per node and can occupy the
+/// center of a short card, stealing focus instead of letting the selection
+/// `Listener` in `workflow_page.dart` register the click — the title bar is
+/// always chrome, never body content, so it is a safe target regardless of
+/// what a given node renders inside it.
 Future<void> _tapNode(WidgetTester tester, Finder node,
     {bool shift = false}) async {
+  final topLeft = tester.getTopLeft(node);
+  final width = tester.getSize(node).width;
+  final tapPoint = topLeft + Offset(width / 2, 15);
+
   if (shift) {
     await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
     await tester.pump();
   }
-  await tester.tapAt(tester.getCenter(node));
+  await tester.tapAt(tapPoint);
   await tester.pump();
   if (shift) {
     await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);

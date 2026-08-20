@@ -187,14 +187,20 @@ def aa_from_table(table: pa.Table) -> "AssocArray":
 
     Dart has no Arrow reader, which is the whole reason this exists; the Arrow route
     stays the canonical one for the backend pipeline.
+
+    Flattening the table into per-cell triples is plain data marshalling, not AA
+    algebra, so it happens here in Python. But the resulting AA is built by
+    :func:`d4m_ops.build_assoc` — D4M.jl's actual ``Assoc`` constructor — rather
+    than assembled by hand, per this project's D4M/AA rule (see CLAUDE.md).
     """
+    from .d4m_ops import build_assoc  # local: avoids a cycle at module import
     from .models import AssocArray  # local: avoids a cycle at module import
 
     records = table.select(list(SCHEMA_COLUMNS)).to_pylist()
     if not records:
-        out_aa_pydantic = AssocArray(rows=[], cols=[], vals=[])
-        print(f"[TRACE DT] Julia extraction complete. Empty table.")
-        return out_aa_pydantic
+        # Trivially a well-formed (empty) AA — no rows/cols exist to violate
+        # either invariant, so there is nothing for D4M.jl to canonicalize.
+        return AssocArray(rows=[], cols=[], vals=[])
 
     rows: list[str] = []
     cols: list[str] = []
@@ -212,19 +218,7 @@ def aa_from_table(table: pa.Table) -> "AssocArray":
             cols.append(column)
             vals.append(record.get(column) or "")
 
-    out_aa_pydantic = AssocArray(rows=rows, cols=cols, vals=vals)
-
-    # Map to dict to support .get() safely and run the exact requested print statements
-    out_aa = {
-        "rows": out_aa_pydantic.rows,
-        "cols": out_aa_pydantic.cols,
-        "vals": out_aa_pydantic.vals
-    }
-    print(f"[TRACE DT] Julia extraction complete.")
-    print(f"[TRACE DT] Output row_keys count: {len(out_aa.row_keys if hasattr(out_aa, 'row_keys') else out_aa.get('rows', []))}")
-    print(f"[TRACE DT] Output col_keys: {out_aa.col_keys if hasattr(out_aa, 'col_keys') else out_aa.get('cols', [])}")
-
-    return out_aa_pydantic
+    return build_assoc(rows, cols, vals)
 
 
 class AstExtractNode:
