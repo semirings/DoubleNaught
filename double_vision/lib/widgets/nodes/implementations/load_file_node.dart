@@ -12,6 +12,7 @@ import '../../../services/load_file_api.dart';
 import '../../../services/infobus/output_port.dart';
 import '../base/base_node_widget.dart';
 import '../base/execute_button.dart';
+import '../base/io_support.dart';
 import '../base/output_connector.dart';
 
 /// A workflow source node that loads files from the backend storage directory
@@ -110,30 +111,6 @@ class LoadFileNode extends BaseNodeWidget {
   static bool isAllowedPath(String path) =>
       allowedExtensions.contains(extensionOf(path));
 
-  /// The only schemes a URL field accepts — `UX_UI/GLOBAL_UX_CONTRACT.md` §6.
-  /// No `git`, `ftp`, `ssh`, or invented scheme, and no bare/schemeless path:
-  /// the file-dialog button beside this field always produces a proper
-  /// `file://` URL when picking a file, so a bare path can only ever be one
-  /// the user typed directly — which is exactly the malformed-input case
-  /// this field's error state exists for.
-  static const Set<String> allowedUrlSchemes = {'file', 'http', 'https'};
-
-  /// Whether [url] is non-empty, parses as a URI, AND has one of
-  /// [allowedUrlSchemes]. `Uri.tryParse` alone is not sufficient — it accepts
-  /// almost any non-empty string (including a bare relative path with no
-  /// scheme at all), so the scheme is checked explicitly on top of it. This
-  /// is the client-side format check that gates **Execute**
-  /// (`UX_UI/GLOBAL_UX_CONTRACT.md` §2); the backend, which actually reads
-  /// the file, remains the final authority on whether the URL resolves to
-  /// something real.
-  static bool isValidUrl(String url) {
-    final trimmed = url.trim();
-    if (trimmed.isEmpty) return false;
-    final uri = Uri.tryParse(trimmed);
-    if (uri == null) return false;
-    return allowedUrlSchemes.contains(uri.scheme);
-  }
-
   /// The backend's raw `data` blob as an [AaPayload], so it can travel on the
   /// info bus — [OutputPort] carries [AaPayload] and nothing else.
   ///
@@ -212,13 +189,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   /// dependent on this check.
   int _execGen = 0;
 
-  bool get _isUrlValid => LoadFileNode.isValidUrl(_urlController.text);
-
-  /// Only shown once there is non-empty text that fails the format check — an
-  /// untouched, empty field is simply disabled, not flagged as an error (see
-  /// `UX_UI/build_load_file.py`'s default-visible state).
-  bool get _showInvalidUrl =>
-      _urlController.text.trim().isNotEmpty && !_isUrlValid;
+  bool get _isUrlValid => IOSupport.isValidUrl(_urlController.text);
 
   @override
   void initState() {
@@ -261,12 +232,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
       return;
     }
 
-    final String pathWithUri;
-    if (picked.path.startsWith('file://')) {
-      pathWithUri = picked.path;
-    } else {
-      pathWithUri = Uri.file(picked.path).toString();
-    }
+    final pathWithUri = IOSupport.pathToFileUri(picked.path);
 
     setState(() {
       _urlController.text = pathWithUri;
@@ -281,12 +247,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
       final String? selectedDirectory = await getDirectoryPath();
       if (selectedDirectory == null || !mounted) return;
 
-      final String uri;
-      if (selectedDirectory.startsWith('file://')) {
-        uri = selectedDirectory;
-      } else {
-        uri = Uri.file(selectedDirectory).toString();
-      }
+      final uri = IOSupport.pathToFileUri(selectedDirectory);
 
       setState(() {
         _urlController.text = uri;
@@ -399,61 +360,46 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         const SizedBox(height: 28),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _urlController,
-                enabled: !busy,
-                decoration: InputDecoration(
-                  labelText: 'URL',
-                  isDense: true,
-                  border: const OutlineInputBorder(),
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                  errorText: _showInvalidUrl ? 'Invalid URL' : null,
+        IOSupport.field(
+          controller: _urlController,
+          enabled: !busy,
+          // Web has no real paths to hand the backend — the picker there
+          // yields a blob URL, so the field is the only way in.
+          trailing: kIsWeb
+              ? null
+              : PopupMenuButton<String>(
+                  enabled: !busy,
+                  icon: const Icon(Icons.folder_open, size: 18),
+                  tooltip: 'Browse…',
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 32, minHeight: 32),
+                  onSelected: (mode) {
+                    if (mode == 'file') {
+                      _onBrowseFilePressed();
+                    } else {
+                      _onBrowseDirectoryPressed();
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    const PopupMenuItem(
+                      value: 'file',
+                      child: ListTile(
+                        leading: Icon(Icons.insert_drive_file_outlined),
+                        title: Text('Select File'),
+                        dense: true,
+                      ),
+                    ),
+                    const PopupMenuItem(
+                      value: 'dir',
+                      child: ListTile(
+                        leading: Icon(Icons.folder_outlined),
+                        title: Text('Select Directory'),
+                        dense: true,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-            ),
-            // Web has no real paths to hand the backend — the picker there
-            // yields a blob URL, so the field is the only way in.
-            if (!kIsWeb) ...[
-              const SizedBox(width: 4),
-              PopupMenuButton<String>(
-                enabled: !busy,
-                icon: const Icon(Icons.folder_open, size: 18),
-                tooltip: 'Browse…',
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                onSelected: (mode) {
-                  if (mode == 'file') {
-                    _onBrowseFilePressed();
-                  } else {
-                    _onBrowseDirectoryPressed();
-                  }
-                },
-                itemBuilder: (context) => [
-                  const PopupMenuItem(
-                    value: 'file',
-                    child: ListTile(
-                      leading: Icon(Icons.insert_drive_file_outlined),
-                      title: Text('Select File'),
-                      dense: true,
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: 'dir',
-                    child: ListTile(
-                      leading: Icon(Icons.folder_outlined),
-                      title: Text('Select Directory'),
-                      dense: true,
-                    ),
-                  ),
-                ],
-              ),
-            ],
-          ],
         ),
         const SizedBox(height: 12),
         ExecuteButton(

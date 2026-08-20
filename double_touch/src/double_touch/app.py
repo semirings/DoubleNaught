@@ -99,6 +99,8 @@ from .models import (
     PolyglotExecRequest,
     PolyglotExecResponse,
     LoadFileResponse,
+    SaveCleanupRequest,
+    SaveCleanupResponse,
     SaveFileRequest,
     SaveFileResponse,
     SegmentResponse,
@@ -131,7 +133,7 @@ from .review import ReviewStore
 from .sessions import PromptRecord, Session, SessionStore
 from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
-from .save_file import execute_save
+from .save_file import delete_output, execute_save
 from .load_file import load_file
 from .ast_extract import (
     AstExtractError,
@@ -1590,6 +1592,7 @@ async def save_file(request: SaveFileRequest) -> SaveFileResponse:
             request.image_base64,
             request.filename,
             request.format,
+            request.url,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -1601,5 +1604,24 @@ async def save_file(request: SaveFileRequest) -> SaveFileResponse:
         bytes_written=bytes_written,
         message=f"Saved {bytes_written} bytes to {out_path.name}",
     )
+
+
+@app.post("/save/cancel", response_model=SaveCleanupResponse)
+async def save_file_cancel(request: SaveCleanupRequest) -> SaveCleanupResponse:
+    """Cancel's cleanup follow-up (`GLOBAL_UX_CONTRACT.md` §2 + the Save File
+    implementation prompt's Cancel section): the write itself can't be
+    interrupted mid-flight once dispatched to the threadpool, so this
+    removes whatever it produced after the fact, if anything. Never a 4xx —
+    "there was nothing to remove" is an expected, not exceptional, outcome.
+    """
+    removed = await run_in_threadpool(
+        delete_output,
+        request.url,
+        request.filename,
+        request.format,
+        request.payload_kind,
+        request.has_jsonl_column,
+    )
+    return SaveCleanupResponse(removed=removed)
 
 

@@ -111,12 +111,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Clippings/NGA LLC.md",
+                "file": "Clippings/Leases.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "NGA LLC"
+              "title": "Leases"
             }
           }
         ],
@@ -286,8 +286,9 @@
   },
   "active": "81e52416bbd39dfe",
   "lastOpenFiles": [
-    "Clippings/NGA Strategy.md",
     "Clippings/NGA LLC.md",
+    "Clippings/Leases.md",
+    "Clippings/NGA Strategy.md",
     "Getting set up.md",
     "Burn Notice.md",
     "UX_UI prompt template.md",
@@ -312,7 +313,6 @@
     "InputPort.dart.md",
     "GCC corpus impl.md",
     "D4M.jl Performance & Optimization Report.md",
-    "D4M.jl Macro Surface Design.md",
     "Pasted image 20260618111442.png",
     "Clippings",
     "Untitled.canvas",

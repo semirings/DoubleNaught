@@ -13,6 +13,7 @@ from typing import Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from .io_support import IOSupport
 from .models import AssocArray
 
 
@@ -287,12 +288,135 @@ def _table_to_aa(table: pa.Table) -> AssocArray:
     return AssocArray(rows=rows, cols=cols, vals=vals)
 
 
+#: Extensions any of the savers below might append — stripped up front from a
+#: URL-derived base name so a real extension already present (e.g. a save
+#: dialog's own pick, or a URL typed with one) never doubles up with the one
+#: the selected Format appends. Each saver also still strips its own specific
+#: suffix internally (unchanged, for the legacy bare-``filename`` callers),
+#: which is a harmless no-op once this has already run.
+_KNOWN_EXTENSIONS = (
+    ".parquet", ".jsonl", ".json", ".csv", ".txt", ".jpeg", ".jpg", ".png",
+)
+
+
+def _strip_known_extension(name: str) -> str:
+    lower = name.lower()
+    for ext in _KNOWN_EXTENSIONS:
+        if lower.endswith(ext):
+            return name[: -len(ext)]
+    return name
+
+
+def _resolve_base(url: Optional[str], filename: str) -> str:
+    """The base name (no extension) the savers below receive as ``filename``.
+
+    Resolved from *url* when given (stripping the ``file://`` scheme down to
+    a filesystem path — an absolute one overrides ``storage_out_dir()``
+    entirely per ``pathlib``'s own join behavior, so this transparently
+    supports both a relative name under ``storage/out/`` and an absolute
+    destination picked via a save dialog); otherwise the legacy bare
+    *filename*. Shared with :func:`resolve_output_path` so the real write and
+    the Cancel-cleanup delete can never disagree about where a request lands.
+
+    Raises:
+        ValueError: *url* is not a ``file://`` (or schemeless-local) URL —
+            saving to ``http``/``https`` is not yet implemented.
+    """
+    if url is not None:
+        parsed = IOSupport.parse_url(url)
+        if parsed.scheme in ("http", "https"):
+            raise ValueError(
+                f"Saving to a remote {parsed.scheme}:// URL is not yet "
+                "implemented — only a local file:// URL (or bare path) is "
+                "supported."
+            )
+        base = IOSupport.local_path(url)
+    else:
+        base = filename
+    return _strip_known_extension(base)
+
+
+def resolve_output_path(
+    url: Optional[str] = None,
+    filename: str = "export",
+    format: str = "parquet",
+    payload_kind: str = "aa",
+    has_jsonl_column: bool = False,
+) -> Path:
+    """The exact ``Path`` :func:`execute_save` would write to for these
+    inputs, without writing anything.
+
+    Exists for the Cancel-cleanup route (:func:`delete_output`): the backend
+    write itself can't be interrupted mid-flight (a client giving up on the
+    HTTP request doesn't stop the already-dispatched threadpool call), so
+    "cancelling leaves no partial file behind" can only be made true by
+    deleting after the fact — which requires recomputing where a since-
+    abandoned request would have landed.
+
+    Args:
+        payload_kind: ``"aa"``, ``"text"``, or ``"image"`` — which of
+            :func:`execute_save`'s three payload arguments the request
+            carried; the extension a bare ``format`` alone doesn't
+            disambiguate (e.g. text is always ``.txt`` regardless of
+            ``format``).
+        has_jsonl_column: Whether the AA carried a ``json_line`` column —
+            only meaningful for ``payload_kind="aa"``.
+    """
+    base = _resolve_base(url, filename)
+    raw = url if url is not None else filename
+
+    if payload_kind == "text":
+        ext = ".txt"
+    elif payload_kind == "image":
+        ext = ".png" if format == "png" else ".jpg"
+    elif format == "jsonl" or (has_jsonl_column and raw.endswith(".jsonl")):
+        ext = ".jsonl"
+    elif format == "csv":
+        ext = ".csv"
+    elif format in ("json", "json5"):
+        ext = ".json"
+    else:
+        ext = ".parquet"
+
+    return storage_out_dir() / f"{base}{ext}"
+
+
+def delete_output(
+    url: Optional[str] = None,
+    filename: str = "export",
+    format: str = "parquet",
+    payload_kind: str = "aa",
+    has_jsonl_column: bool = False,
+) -> bool:
+    """Best-effort Cancel cleanup: remove whatever a since-abandoned
+    :func:`execute_save` call would have written, if it landed on disk after
+    all (see :func:`resolve_output_path`).
+
+    Returns:
+        Whether a file was actually removed (``False`` — not an error — when
+        nothing was there, e.g. the write genuinely hadn't finished yet).
+    """
+    path = resolve_output_path(
+        url=url,
+        filename=filename,
+        format=format,
+        payload_kind=payload_kind,
+        has_jsonl_column=has_jsonl_column,
+    )
+    try:
+        path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def execute_save(
     aa: Optional[AssocArray] = None,
     text: Optional[str] = None,
     image_base64: Optional[str] = None,
     filename: str = "export",
     format: str = "parquet",
+    url: Optional[str] = None,
 ) -> tuple[Path, int]:
     """Execute the Save File node logic.
 
@@ -302,33 +426,43 @@ def execute_save(
         aa: AssocArray payload (if present).
         text: Text payload (if present).
         image_base64: Base64-encoded image bytes (if present).
-        filename: Output filename (without extension).
+        filename: Legacy bare output filename (without extension), resolved
+            under ``storage_out_dir()``. Superseded by *url* when given.
         format: Output format ("parquet", "csv", "json", "jsonl", "txt", "png",
             "jpg").
+        url: A ``file://`` URL (or bare local path) naming the destination —
+            the "URL" field's value (``GLOBAL_UX_CONTRACT.md`` §6). Takes
+            precedence over *filename* when given. ``http``/``https`` are
+            valid URL schemes generally but not yet implemented as a save
+            destination — see :func:`_resolve_base`.
 
     Returns:
         Tuple of (output Path, bytes written).
 
     Raises:
-        ValueError: If no data provided, the format does not match the payload, or
-            a JSONL write was asked for without a ``json_line`` column.
+        ValueError: If no data provided, *url* names an unimplemented remote
+            scheme, the format does not match the payload, or a JSONL write
+            was asked for without a ``json_line`` column.
     """
+    base = _resolve_base(url, filename)
+    raw = url if url is not None else filename
+
     if aa is not None:
-        if format == "jsonl" or (aa_has_jsonl(aa) and filename.endswith(".jsonl")):
+        if format == "jsonl" or (aa_has_jsonl(aa) and raw.endswith(".jsonl")):
             # Pre-formatted training lines: write them as-is rather than as a
-            # matrix. Triggered by an explicit format or by a .jsonl filename on an
+            # matrix. Triggered by an explicit format or by a .jsonl name on an
             # AA that actually carries the column.
-            out_path = save_aa_jsonl(aa, filename)
+            out_path = save_aa_jsonl(aa, base)
         elif format == "csv":
-            out_path = save_aa_csv(aa, filename)
+            out_path = save_aa_csv(aa, base)
         elif format in ("json", "json5"):
-            out_path = save_aa_json(aa, filename)
+            out_path = save_aa_json(aa, base)
         else:  # Default to parquet for AA.
-            out_path = save_aa_parquet(aa, filename)
+            out_path = save_aa_parquet(aa, base)
     elif text is not None:
-        out_path = save_text(text, filename)
+        out_path = save_text(text, base)
     elif image_base64 is not None:
-        out_path = save_image(image_base64, filename, format)
+        out_path = save_image(image_base64, base, format)
     else:
         raise ValueError("No data provided (aa, text, or image_base64)")
 

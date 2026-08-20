@@ -27,6 +27,7 @@ import urllib.request
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from .io_support import IOSupport
 from .models import AssocArray
 from .save_file import load_parquet_with_auto_detect, _table_to_aa
 
@@ -52,9 +53,9 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
     Returns (AssocArray, raw_representation).
     """
     # 1. Parse URL/File Path
-    parsed = urllib.parse.urlparse(file_path)
+    parsed = IOSupport.parse_url(file_path)
     temp_dir = None
-    
+
     if parsed.scheme in ("file", ""):
         # standard local file or unquoted file:// path
         path_str = urllib.parse.unquote(parsed.path)
@@ -66,13 +67,13 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
         temp_path = Path(temp_dir_obj.name)
         filename = Path(parsed.path).name or "download.zip"
         download_target = temp_path / filename
-        
+
         try:
             urllib.request.urlretrieve(file_path, str(download_target))
         except Exception as exc:
             temp_dir_obj.cleanup()
             raise ValueError(f"Failed to download remote file: {exc}")
-            
+
         if download_target.suffix.lower() == ".zip":
             unpack_dir = temp_path / "unpacked"
             unpack_dir.mkdir(parents=True, exist_ok=True)
@@ -85,8 +86,6 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
                 raise ValueError(f"Failed to unpack zip: {exc}")
         else:
             resolved_path = download_target
-    else:
-        raise ValueError(f"Unsupported URL scheme: {parsed.scheme}")
 
     # 2. Check for Directory or Glob Expansion
     files = []

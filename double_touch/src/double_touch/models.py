@@ -632,7 +632,12 @@ class SaveFileRequest(CamelModel):
     text: Optional[str] = None
     # Image bytes as base64-encoded string.
     image_base64: Optional[str] = None
-    # Output filename (without extension). Defaults to "export".
+    # The "URL" field's value (GLOBAL_UX_CONTRACT.md §6) — a file:// URL (or
+    # bare local path). Takes precedence over `filename` when given; `http`/
+    # `https` validate as URLs but are not yet implemented as a destination.
+    url: Optional[str] = None
+    # Legacy bare output filename (without extension), resolved under
+    # storage/out/. Superseded by `url`; kept for older callers/workflows.
     filename: str = "export"
     # Output format: "parquet" (AA only), "csv", "json", "txt", "png", "jpg".
     # Ignored if auto-detected from incoming data. Default: "parquet".
@@ -646,6 +651,31 @@ class SaveFileResponse(CamelModel):
     bytes_written: int
     # Status message for UI display.
     message: str
+
+
+class SaveCleanupRequest(CamelModel):
+    """What Cancel sends after aborting the wait on a `/save` request, so the
+    backend can remove whatever the abandoned write might have produced —
+    see `save_file.resolve_output_path` for why this needs the same
+    resolution inputs the original request carried, not just a raw path.
+    """
+
+    url: Optional[str] = None
+    filename: str = "export"
+    format: str = "parquet"
+    # "aa" | "text" | "image" — which of SaveFileRequest's three payload
+    # fields the cancelled request carried.
+    payload_kind: str = "aa"
+    # Whether the AA carried a `json_line` column — only meaningful when
+    # payload_kind is "aa".
+    has_jsonl_column: bool = False
+
+
+class SaveCleanupResponse(CamelModel):
+    # Whether a file was actually removed — false is not an error, it just
+    # means the write hadn't landed (or was never something with a resolvable
+    # local path, e.g. a remote scheme).
+    removed: bool
 
 
 # --- Polyglot Exec node (PolyglotExecNode) -----------------------------------

@@ -39,6 +39,9 @@ double _nodeWidthFor(String type) {
   if (type == 'jsonlFormatterNode') { return 320; }
   if (type == 'functionExtractionNode') { return 320; }
   if (type == 'astExtractNode') { return 320; } // backward compat: old registry type
+  if (type == 'llmDocumenterNode') { return 320; }
+  if (type == 'remoteServiceNode') { return 320; } // backward compat: old registry type
+  if (type == 'save_file') { return 320; }
   if (type == 'inventory' ||
       type == 'review' ||
       type == 'load_model' ||
@@ -368,8 +371,9 @@ class _WorkflowPageState extends State<WorkflowPage>
         // `categoryIn` (AA, idx 2).
         return const [0, 1, 2];
       case 'save_file':
-        // Three inputs: `dataToSave` (AA, idx 0), `textIn` (String, idx 1),
-        // `imageIn` (bytes, idx 2).
+        // `dataIn` (AA, idx 0) is the one visible port; `textIn` (String,
+        // idx 1) and `imageIn` (bytes, idx 2) are still valid dependency
+        // inputs for a workflow saved before the port collapse to one.
         return const [0, 1, 2];
       case NodeGroup.type:
         // One input per boundary the group exposes.
@@ -2444,15 +2448,16 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // `aaIn` input (idx 0) — associative array over the port bus.
-          aaConnected: _hasIncomingEdgeAt(node.id, 0),
-          onAaConnect: (source) => _connectAt(source, node.id, 0),
+          // `dataIn` (AA, idx 0) — the node's one visible port.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          // `textIn` input (idx 1) — text stream from upstream.
+          // `textIn` (idx 1) / `imageIn` (idx 2) — raw streams, not drawn as
+          // separate connectors per the finalized UX spec, but still wired
+          // exactly as before so a workflow saved with either keeps working.
           textConnected: _hasIncomingEdgeAt(node.id, 1),
           onTextConnect: (source) => _connectAt(source, node.id, 1),
           textInput: _locationInputForAt(node.id, 1),
-          // `imageIn` input (idx 2) — image bytes stream from upstream.
           imageConnected: _hasIncomingEdgeAt(node.id, 2),
           onImageConnect: (source) => _connectAt(source, node.id, 2),
           imageInput: _inputForAt(node.id, 2),

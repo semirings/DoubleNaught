@@ -5,36 +5,51 @@ import 'dart:typed_data';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 import '../../../models/aa_payload.dart';
 import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/save_file_api.dart';
 import '../base/base_node_widget.dart';
-import '../base/input_connector.dart';
+import '../base/execute_button.dart';
+import '../base/io_support.dart';
+import '../base/wait_checkbox.dart';
+import '../base/wait_gated_execution.dart';
 
 /// Save format for the output file, auto-detected or manually selected.
 enum _SaveFormat { parquet, csv, json, jsonl, txt, png, jpg }
 
-/// A workflow sink node that saves incoming port data (AA, text, or image)
-/// to local disk with format selection and save-location controls.
+/// Extensions any `_SaveFormat` (or a save dialog's own pick) might carry —
+/// stripped from a suggested/typed name before appending the real one, so
+/// e.g. a `.csv` pick with Format still on Parquet doesn't double up as
+/// `.csv.parquet`. Mirrors the backend's own `_KNOWN_EXTENSIONS` in
+/// `save_file.py`.
+const _knownExtensions = [
+  '.parquet', '.jsonl', '.json', '.csv', '.txt', '.jpeg', '.jpg', '.png',
+];
+
+String _stripKnownExtension(String name) {
+  final lower = name.toLowerCase();
+  for (final ext in _knownExtensions) {
+    if (lower.endsWith(ext)) return name.substring(0, name.length - ext.length);
+  }
+  return name;
+}
+
+/// The canvas's only file-writing sink — see `DESIGN.md` → "Save File node".
 ///
-/// Provides three input ports:
-/// - `aaIn`    (idx 0): Associative Array (D4M dict) on the AA port bus
-/// - `textIn`  (idx 1): Plain text stream from upstream
-/// - `imageIn` (idx 2): Raw image bytes stream from upstream
-///
-/// The node includes file path text input with a save-location icon beside it
-/// (the counterpart of Load File's Browse icon — it opens the native save
-/// dialog to fill the field in), a format dropdown, a "Save / Export" button,
-/// and status display.
-///
-/// A bare name is written under the backend's `storage/out/`; an absolute path
-/// — which is what the dialog yields — is written there instead, so the icon
-/// only does something useful while the backend is local.
+/// One input port, `dataIn` (idx 0), carries an AA. `textIn`/`imageIn` are
+/// also still accepted as raw `Stream`s — unchanged wiring from before this
+/// node had a Wait/Execute mechanism at all — so a previously-saved workflow
+/// wired to either keeps working; the card itself now shows only the one
+/// port per the finalized UX spec. No output port: this is a sink.
 class SaveFileNode extends BaseNodeWidget {
-  // aaIn (AA, idx 0) — the "canonical" input uses base's inputConnected/onInputConnect
-  // onInputPort used for aaIn registration
+  /// Called when an edge is dropped on `textIn`.
+  final void Function(PortRef source)? onTextConnect;
+
+  /// Called when an edge is dropped on `imageIn`.
+  final void Function(PortRef source)? onImageConnect;
 
   /// Whether `textIn` has an incoming edge.
   final bool textConnected;
@@ -42,17 +57,14 @@ class SaveFileNode extends BaseNodeWidget {
   /// Whether `imageIn` has an incoming edge.
   final bool imageConnected;
 
-  /// Called when an edge is dropped on `textIn`.
-  final void Function(PortRef source)? onTextConnect;
-
-  /// Called when an edge is dropped on `imageIn`.
-  final void Function(PortRef source)? onImageConnect;
-
   /// Text stream wired from upstream nodes.
   final Stream<String>? textInput;
 
   /// Image bytes stream wired from upstream nodes.
   final Stream<Uint8List>? imageInput;
+
+  /// Backend seam; defaults to the local `/save` + `/save/cancel` endpoints.
+  final SaveFileApi? api;
 
   /// Save-dialog seam. Defaults to `file_selector`'s [getSaveLocation];
   /// overridden by tests, which cannot drive a platform dialog.
@@ -62,29 +74,34 @@ class SaveFileNode extends BaseNodeWidget {
   const SaveFileNode({
     super.key,
     required super.node,
-    bool aaConnected = false,
-    void Function(PortRef source)? onAaConnect,
-    super.onInputPort,   // registers aaIn
-    this.textConnected = false,
-    this.imageConnected = false,
-    this.onTextConnect,
-    this.onImageConnect,
-    this.textInput,
-    this.imageInput,
-    this.pickSaveLocation,
     super.initialParams,
     super.onParams,
-  }) : super(inputConnected: aaConnected, onInputConnect: onAaConnect);
+    super.onInputPort,
+    super.inputConnected,
+    super.onInputConnect,
+    this.onTextConnect,
+    this.onImageConnect,
+    this.textConnected = false,
+    this.imageConnected = false,
+    this.textInput,
+    this.imageInput,
+    this.api,
+    this.pickSaveLocation,
+  });
 
   @override
   State<SaveFileNode> createState() => _SaveFileNodeState();
 }
 
-class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
-  @override String   get nodeTitle => 'Save File';
-  @override IconData get nodeIcon  => Icons.save_outlined;
+class _SaveFileNodeState extends BaseNodeState<SaveFileNode>
+    with WaitGatedExecution<SaveFileNode> {
+  @override String   get nodeTitle    => 'Save File';
+  @override IconData get nodeIcon     => Icons.save_outlined;
+  @override double   get nodeWidth    => 320;
+  @override String   get workingLabel => 'saving';
 
-  late final InputPort _aaIn;
+  late final SaveFileApi _api;
+  late final InputPort _dataIn;
   StreamSubscription<String>?    _textSub;
   StreamSubscription<Uint8List>? _imageSub;
 
@@ -92,26 +109,45 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
   String?    _incomingText;
   Uint8List? _incomingImage;
 
-  late TextEditingController _filePathController;
+  late final TextEditingController _urlController;
   _SaveFormat _selectedFormat = _SaveFormat.parquet;
-  String _statusMessage = 'Ready to save';
-  bool   _statusIsError = false;
-  bool   _isSaving      = false;
+  SaveFileResponse? _result;
 
-  final _api = const SaveFileApi();
+  /// The transport used by the run currently in flight, held so Cancel can
+  /// hard-abort it (`UX_UI/GLOBAL_UX_CONTRACT.md` §2) rather than merely
+  /// stop watching it. Null whenever nothing is executing.
+  http.Client? _execClient;
+
+  /// Bumped on every new run and on cancel. A completed await whose captured
+  /// generation no longer matches the current one belongs to a superseded or
+  /// cancelled run and must not touch state.
+  int _execGen = 0;
+
+  bool get _isUrlValid => IOSupport.isValidUrl(_urlController.text);
+  bool get _hasData =>
+      _incomingAa != null || _incomingText != null || _incomingImage != null;
+
+  @override
+  bool get isReady => _hasData && _isUrlValid;
 
   @override
   void initState() {
     super.initState();
-    _aaIn = InputPort('dataToSave');
-    initInputPort(_aaIn, _onAaData);
+    _api = widget.api ?? const SaveFileApi();
+    _dataIn = InputPort('dataIn');
+    initInputPort(_dataIn, _onAaData);
+    _dataIn.onDisconnected.listen((_) => _dropAa());
 
     _subscribeText();
     _subscribeImage();
 
-    _filePathController = TextEditingController(
-      text: widget.initialParams?['filePath'] ?? 'storage/out/export',
+    // Starts EMPTY per spec — no placeholder/default value baked into a new
+    // node (UX_UI/GLOBAL_UX_CONTRACT.md §6). A previously saved node
+    // restores its own value, same as any other persisted field.
+    _urlController = TextEditingController(
+      text: widget.initialParams?['url'] ?? '',
     );
+    _urlController.addListener(_onUrlEdited);
     _loadFormatFromParams();
   }
 
@@ -124,10 +160,12 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
 
   @override
   void dispose() {
-    _filePathController.dispose();
-    _aaIn.dispose();
+    _urlController.removeListener(_onUrlEdited);
+    _urlController.dispose();
+    _dataIn.dispose();
     _textSub?.cancel();
     _imageSub?.cancel();
+    _execClient?.close();
     super.dispose();
   }
 
@@ -156,22 +194,51 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
     }
   }
 
+  /// Drop the retained AA when the `dataIn` wire is cut or re-pointed, so
+  /// [isReady] genuinely reflects "is there live data to act on" rather
+  /// than lingering on a since-disconnected upstream's last delivery.
+  void _dropAa() {
+    if (!mounted || (_incomingAa == null && _result == null)) return;
+    setState(() {
+      _incomingAa = null;
+      _result = null;
+    });
+    setIdle();
+  }
+
   void _onAaData(AaPayload payload) {
     if (!mounted) return;
-    setState(() => _incomingAa = payload);
+    setState(() {
+      _incomingAa = payload;
+      _result = null;
+    });
     _updateFormat();
+    maybeAutoFire();
   }
 
   void _onTextData(String text) {
     if (!mounted) return;
-    setState(() => _incomingText = text);
+    setState(() {
+      _incomingText = text;
+      _result = null;
+    });
     _updateFormat();
+    maybeAutoFire();
   }
 
   void _onImageData(Uint8List bytes) {
     if (!mounted) return;
-    setState(() => _incomingImage = bytes);
+    setState(() {
+      _incomingImage = bytes;
+      _result = null;
+    });
     _updateFormat();
+    maybeAutoFire();
+  }
+
+  void _onUrlEdited() {
+    setState(() {});
+    maybeAutoFire();
   }
 
   _SaveFormat _autoDetectFormat() {
@@ -207,92 +274,139 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
     return null;
   }
 
-  Future<void> _onSavePressed() async {
-    setState(() => _isSaving = true);
+  /// Switching the format explicitly drops the previous result and, in
+  /// reactive mode, re-runs immediately against the format just picked —
+  /// mirrors JSONL Formatter's Format Mode dropdown.
+  void _onFormatChanged(_SaveFormat format) {
+    setState(() {
+      _selectedFormat = format;
+      _result = null;
+    });
+    saveParams({'url': _urlController.text.trim(), 'format': format.name});
+    setIdle();
+    maybeAutoFire();
+  }
+
+  String get _payloadKind => _incomingImage != null
+      ? 'image'
+      : _incomingText != null
+          ? 'text'
+          : 'aa';
+
+  bool get _hasJsonlColumn => _incomingAa?.cols.contains('json_line') ?? false;
+
+  @override
+  void fire() => _save();
+
+  Future<void> _save() async {
+    if (!isReady || status == NodeStatus.working) return;
+    final gen = ++_execGen;
+    setWorking();
+
+    final owns = _api.client == null;
+    final client = _api.client ?? http.Client();
+    _execClient = client;
+    final api = owns ? SaveFileApi(baseUrl: _api.baseUrl, client: client) : _api;
+
+    final url = _urlController.text.trim();
+    final imageBase64 =
+        _incomingImage != null ? base64Encode(_incomingImage!) : null;
+
     try {
-      var filename = _filePathController.text.trim();
-      if (filename.isEmpty) {
-        setState(() {
-          _statusMessage = 'Error: Enter a file path';
-          _statusIsError = true;
-        });
-        return;
-      }
-
-      // Strip "storage/out/" prefix if present (backend adds it automatically)
-      if (filename.startsWith('storage/out/')) {
-        filename = filename.substring('storage/out/'.length);
-      }
-
-      if (_incomingAa == null && _incomingText == null && _incomingImage == null) {
-        setState(() {
-          _statusMessage = 'Error: No data to save';
-          _statusIsError = true;
-        });
-        return;
-      }
-
-      // Convert image to base64 if present
-      String? imageBase64;
-      if (_incomingImage != null) {
-        imageBase64 = base64Encode(_incomingImage!);
-      }
-
-      final response = await _api.save(
+      final response = await api.save(
         aa: _incomingAa,
         text: _incomingText,
         imageBase64: imageBase64,
-        filename: filename,
+        url: url,
         format: _selectedFormat.name,
       );
+      if (gen != _execGen || !mounted) return;
 
-      saveParams({'filePath': filename, 'format': _selectedFormat.name});
-
-      setState(() {
-        _statusMessage = response.message;
-        _statusIsError = false;
-      });
+      setState(() => _result = response);
+      saveParams({'url': url, 'format': _selectedFormat.name});
+      setComplete(detail: response.message);
     } catch (e) {
-      setState(() {
-        _statusMessage = 'Error: ${e.toString()}';
-        _statusIsError = true;
-      });
+      if (gen != _execGen || !mounted) return;
+      setError(e);
     } finally {
-      setState(() => _isSaving = false);
+      if (gen == _execGen) _execClient = null;
+      if (owns) client.close();
     }
   }
 
-  /// Open the native save dialog to fill in the destination field.
+  /// Execute button's `onPressed` while [NodeStatus.working] — the button
+  /// renders as Cancel in that state (`ExecuteButton.executing`). Hard
+  /// abort, synchronously: state flips to idle right here, not after any
+  /// awaited step notices a flag. `_execGen` guards the in-flight run's own
+  /// awaits against then clobbering that idle state if the request still
+  /// resolves in the background.
   ///
-  /// The backend is still what writes the file, so this only captures a path.
-  /// The chosen extension picks the format and is then stripped, because the
-  /// savers append the extension for the selected format themselves.
-  Future<void> _onPickLocationPressed() async {
-    final base = _filePathController.text.trim().split('/').last;
-    final location = await (widget.pickSaveLocation ?? _openNativeDialog)(
-      '${base.isEmpty ? 'export' : base}.${_extensionOf(_selectedFormat)}',
+  /// Save File specific: the write itself can't be interrupted mid-flight
+  /// (the backend's threadpool call keeps running once dispatched, unaware
+  /// the client gave up), so a plain abort alone can leave a fully-written
+  /// file behind despite the UI showing idle. [_cleanupAfterCancel] is the
+  /// best-effort follow-up that actually removes it, per this node's Cancel
+  /// spec.
+  void _onCancelPressed() {
+    if (status != NodeStatus.working) return;
+    _execGen++;
+    _execClient?.close();
+    _execClient = null;
+    setIdle();
+    _cleanupAfterCancel();
+  }
+
+  Future<void> _cleanupAfterCancel() async {
+    final url = _urlController.text.trim();
+    if (url.isEmpty) return;
+    await _api.cancelCleanup(
+      url: url,
+      format: _selectedFormat.name,
+      payloadKind: _payloadKind,
+      hasJsonlColumn: _hasJsonlColumn,
     );
+  }
+
+  // ── Save-location dialog ────────────────────────────────────────────────
+
+  /// Open the native save dialog to fill in the URL field.
+  ///
+  /// The backend is still what writes the file, so this only captures a
+  /// destination. The dialog's own suggested name/extension also picks the
+  /// Format — the backend normalises any mismatch between a picked/typed
+  /// extension and the selected Format itself (see `save_file.py`'s
+  /// `_strip_known_extension`), so nothing needs stripping client-side
+  /// beyond what's needed to suggest a sane default name.
+  Future<void> _onPickLocationPressed() async {
+    final current = _urlController.text.trim();
+    final currentBase = current.isEmpty
+        ? 'export'
+        : _stripKnownExtension(
+            Uri.tryParse(current)?.pathSegments.lastOrNull ?? 'export');
+    final suggested = '$currentBase.${_extensionOf(_selectedFormat)}';
+
+    final location =
+        await (widget.pickSaveLocation ?? _openNativeDialog)(suggested);
     if (location == null || !mounted) return;
 
     final format = _formatOfPath(location.path) ?? _selectedFormat;
-    final path = location.path.endsWith('.${_extensionOf(format)}')
-        ? location.path
-            .substring(0, location.path.length - _extensionOf(format).length - 1)
-        : location.path;
+    final url = IOSupport.pathToFileUri(location.path);
 
     setState(() {
-      _filePathController.text = path;
+      _urlController.text = url;
       _selectedFormat = format;
-      _statusMessage = 'Saving to $path.${_extensionOf(format)}';
-      _statusIsError = false;
+      _result = null;
     });
-    saveParams({'filePath': path, 'format': format.name});
+    saveParams({'url': url, 'format': format.name});
+    setIdle();
+    maybeAutoFire();
   }
 
   static Future<FileSaveLocation?> _openNativeDialog(String suggestedName) =>
       getSaveLocation(suggestedName: suggestedName);
 
-  /// The on-disk extension for [format] — the same suffix the backend appends.
+  /// The on-disk extension for [format] — the same suffix the backend
+  /// appends.
   static String _extensionOf(_SaveFormat format) => format.name;
 
   /// The format implied by [path]'s extension, or null when unrecognised.
@@ -316,108 +430,77 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode> {
         _SaveFormat.jpg     => 'JPEG',
       };
 
-  // ── Build overrides ──────────────────────────────────────────────────────
+  // ── Ports ────────────────────────────────────────────────────────────────
 
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
-        InputConnector(
-          label: 'dataToSave',
-          idx: 0,
-          active: widget.inputConnected,
-          onConnect: widget.onInputConnect,
-        ),
-        InputConnector(
-          label: 'textIn',
-          idx: 1,
-          active: widget.textConnected,
-          onConnect: widget.onTextConnect,
-        ),
-        InputConnector(
-          label: 'imageIn',
-          idx: 2,
-          active: widget.imageConnected,
-          onConnect: widget.onImageConnect,
-        ),
+        singleInputConnector(label: 'dataIn'),
       ];
+
+  // ── Body ─────────────────────────────────────────────────────────────────
 
   @override
   Widget buildNodeBody(BuildContext context) {
-    final theme   = Theme.of(context);
-    final hasData = _incomingAa != null || _incomingText != null || _incomingImage != null;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final busy = status == NodeStatus.working;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        const SizedBox(height: 52),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _filePathController,
-                enabled: !_isSaving,
-                decoration: const InputDecoration(
-                  labelText: 'File Path (storage/out/ or absolute)',
-                  hintText: 'export',
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                  contentPadding:
-                      EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+        SizedBox(height: BaseNodeState.portLaneClearance(1)),
+        IOSupport.field(
+          controller: _urlController,
+          enabled: !busy,
+          // Web has no real paths to hand the backend, so the field is the
+          // only way in there.
+          trailing: kIsWeb
+              ? null
+              : IconButton(
+                  onPressed: busy ? null : _onPickLocationPressed,
+                  icon: const Icon(Icons.save_as_outlined, size: 18),
+                  tooltip: 'Choose location…',
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints:
+                      const BoxConstraints(minWidth: 32, minHeight: 32),
                 ),
-              ),
-            ),
-            // Web has no real paths to hand the backend, so the field is the
-            // only way in there.
-            if (!kIsWeb) ...[
-              const SizedBox(width: 4),
-              IconButton(
-                onPressed: _isSaving ? null : _onPickLocationPressed,
-                icon: const Icon(Icons.save_as_outlined, size: 18),
-                tooltip: 'Choose location…',
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              ),
-            ],
-          ],
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
         DropdownMenu<_SaveFormat>(
           enableSearch: false,
+          expandedInsets: EdgeInsets.zero,
+          enabled: !busy,
           label: const Text('Format'),
           initialSelection: _selectedFormat,
-          onSelected: (format) {
-            if (format != null) setState(() => _selectedFormat = format);
-          },
-          dropdownMenuEntries: _SaveFormat.values
-              .map((f) => DropdownMenuEntry(value: f, label: _formatLabel(f)))
-              .toList(),
+          onSelected: (f) => f == null ? null : _onFormatChanged(f),
+          dropdownMenuEntries: [
+            for (final f in _SaveFormat.values)
+              DropdownMenuEntry(value: f, label: _formatLabel(f)),
+          ],
         ),
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          height: 40,
-          child: ElevatedButton.icon(
-            onPressed: (!hasData || _isSaving) ? null : _onSavePressed,
-            icon: _isSaving
-                ? const SizedBox(
-                    width: 16, height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.save, size: 16),
-            label: Text(_isSaving ? 'Saving...' : 'Save / Export'),
-          ),
+        const SizedBox(height: 10),
+        WaitCheckbox(checked: wait, onChanged: onWaitChanged, locked: busy),
+        const SizedBox(height: 6),
+        ExecuteButton(
+          enabled: isReady && !busy,
+          executing: busy,
+          onPressed: busy ? _onCancelPressed : onExecutePressed,
         ),
         const SizedBox(height: 8),
-        _buildStatusDisplay(theme),
+        statusRow(),
+        if (_result case final result?) ...[
+          const SizedBox(height: 6),
+          Text(
+            '${result.bytesWritten} bytes · ${result.filePath.split('/').last}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
       ],
     );
-  }
-
-  Widget _buildStatusDisplay(ThemeData theme) {
-    final color     = _statusIsError ? theme.colorScheme.error : Colors.green;
-    final textStyle = theme.textTheme.bodySmall?.copyWith(color: color);
-    return Text(_statusMessage,
-        style: textStyle, maxLines: 2, overflow: TextOverflow.ellipsis);
   }
 }
