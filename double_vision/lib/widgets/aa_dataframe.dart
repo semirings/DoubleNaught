@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/aa_payload.dart';
+import 'nodes/base/base_node.dart' show kAaColumnHeaderColor, kAaRowHeaderColor, kAaValueColor;
 
 /// Maximum rows/columns rendered in the table.  Beyond these limits a
 /// truncation banner is shown and the rest is omitted so the widget tree stays
@@ -49,6 +50,27 @@ class _AaDataFrameState extends State<AaDataFrame> {
     return value.contains('\n') || value.length > 120;
   }
 
+  /// The `(row, col)` caption, with the row key in [kAaRowHeaderColor] and
+  /// the column key in [kAaColumnHeaderColor] — the same two constants the
+  /// grid view colors its row/column headers with, so a cell's row and
+  /// column identity read the same way regardless of which view is showing
+  /// it. The grid has no equivalent combined "row · col" caption to share
+  /// this with (its headers are separate cells, not one string), so this
+  /// stays local to the single-cell view; only the color source is shared.
+  Widget _rowColCaption(TextStyle? baseStyle, String rowKey, String colKey, String detail) {
+    return Text.rich(
+      TextSpan(
+        style: baseStyle,
+        children: [
+          TextSpan(text: rowKey, style: const TextStyle(color: kAaRowHeaderColor)),
+          const TextSpan(text: ' · '),
+          TextSpan(text: colKey, style: const TextStyle(color: kAaColumnHeaderColor)),
+          TextSpan(text: ' — $detail'),
+        ],
+      ),
+    );
+  }
+
   /// The one-cell view: a caption naming the `(row, col)` it came from, then the
   /// whole value, scrollable and selectable.
   Widget _singleCellText(
@@ -63,10 +85,12 @@ class _AaDataFrameState extends State<AaDataFrame> {
       children: [
         Padding(
           padding: const EdgeInsets.only(bottom: 6),
-          child: Text(
-            '$rowKey · $colKey — ${value.length} chars, $lines lines',
-            style: theme.textTheme.labelSmall
+          child: _rowColCaption(
+            theme.textTheme.labelSmall
                 ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+            rowKey,
+            colKey,
+            '${value.length} chars, $lines lines',
           ),
         ),
         Expanded(
@@ -76,7 +100,8 @@ class _AaDataFrameState extends State<AaDataFrame> {
               controller: _vController,
               child: SelectableText(
                 value,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                style: const TextStyle(
+                    fontFamily: 'monospace', fontSize: 12, color: kAaValueColor),
               ),
             ),
           ),
@@ -163,13 +188,20 @@ class _AaDataFrameState extends State<AaDataFrame> {
                   dataRowMinHeight: 28,
                   dataRowMaxHeight: 120,
                   columnSpacing: 16.0,
-                  headingTextStyle: theme.textTheme.labelMedium
-                      ?.copyWith(fontWeight: FontWeight.w700),
+                  headingTextStyle: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                    color: kAaColumnHeaderColor,
+                  ),
                   columns: [
+                    // Blank, notched top-left corner — standard spreadsheet
+                    // convention (Excel/pandas leave this cell empty). Not
+                    // labeled "row": that text would sit in the column-header
+                    // row while naming the row axis, which is exactly the
+                    // mismatch a blank corner avoids.
                     DataColumn(
                       label: ConstrainedBox(
-                        constraints: BoxConstraints(minWidth: 80),
-                        child: Text('row'),
+                        constraints: const BoxConstraints(minWidth: 80),
+                        child: const SizedBox.shrink(),
                       ),
                     ),
                     for (final c in colKeys)
@@ -186,7 +218,8 @@ class _AaDataFrameState extends State<AaDataFrame> {
                         cells: [
                           DataCell(Text(r,
                               style: const TextStyle(
-                                  fontWeight: FontWeight.w600))),
+                                  fontWeight: FontWeight.w600,
+                                  color: kAaRowHeaderColor))),
                           for (final c in colKeys)
                             DataCell(
                               ConstrainedBox(
@@ -196,7 +229,8 @@ class _AaDataFrameState extends State<AaDataFrame> {
                                   cellOf['$r$sep$c'] ?? '',
                                   maxLines: 6,
                                   overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.bodySmall,
+                                  style: theme.textTheme.bodySmall
+                                      ?.copyWith(color: kAaValueColor),
                                 ),
                               ),
                             ),

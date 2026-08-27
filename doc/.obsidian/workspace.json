@@ -97,12 +97,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Burn Notice.md",
+                "file": "Series/0 Intro (Burn Notice).md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Burn Notice"
+              "title": "0 Intro (Burn Notice)"
             }
           },
           {
@@ -111,16 +111,58 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Clippings/Leases.md",
+                "file": "Series/1 Episode.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "Leases"
+              "title": "1 Episode"
+            }
+          },
+          {
+            "id": "600346a41e9eaea3",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Series/0 Intro (Burn Notice).md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "0 Intro (Burn Notice)"
+            }
+          },
+          {
+            "id": "dc1b1715e9b1431f",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Series/0 Intro (Burn Notice).md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "0 Intro (Burn Notice)"
+            }
+          },
+          {
+            "id": "9499409147913c06",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "Series/1 Episode.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "1 Episode"
             }
           }
         ],
-        "currentTab": 7
+        "currentTab": 10
       }
     ],
     "direction": "vertical"
@@ -284,19 +326,28 @@
       "bases:Create new base": false
     }
   },
-  "active": "81e52416bbd39dfe",
+  "active": "9499409147913c06",
   "lastOpenFiles": [
-    "Clippings/NGA LLC.md",
+    "Series/0 Intro (Burn Notice).md",
+    "Untitled.base",
+    "2026-08-26.md",
+    "Series/1 Episode.md",
+    "Untitled.md",
+    "Clippings/Typewriter Text.md",
+    "Series/2 Episode.md",
+    "0 Intro.md",
+    "Series",
+    "Treatment 2.md",
+    "michael-calamay.png",
     "Clippings/Leases.md",
+    "Clippings/NGA LLC.md",
     "Clippings/NGA Strategy.md",
     "Getting set up.md",
-    "Burn Notice.md",
     "UX_UI prompt template.md",
     "Node Renaming.md",
     "Clippings/Gemini models.md",
     "Clippings/Fine Tuning a VLM.md",
     "Blender nodes.md",
-    "Treatment 2.md",
     "Log Line.md",
     "AgentNode.dart.md",
     "d4m.ipynb",
@@ -306,17 +357,9 @@
     "Clippings/Distilling Claude.md",
     "Clippings/Eviction and Unemployment.md",
     "Treatment.md",
-    "d4m.acc.access findings.md",
-    "URLs.md",
-    "Project Context 19.Jul.2026.md",
-    "OutputPort.dart.md",
-    "InputPort.dart.md",
-    "GCC corpus impl.md",
-    "D4M.jl Performance & Optimization Report.md",
     "Pasted image 20260618111442.png",
     "Clippings",
     "Untitled.canvas",
-    "Untitled.base",
     "Untitled 1.base"
   ]
 }

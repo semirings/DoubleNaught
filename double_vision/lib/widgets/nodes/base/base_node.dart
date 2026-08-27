@@ -61,3 +61,12 @@ const Color kStatusRunningColor = Color.fromRGBO(204, 148, 255, 1);
 const Color kStatusSuccessColor = Color.fromRGBO(89, 217, 122, 1);
 const Color kStatusErrorColor = Color.fromRGBO(235, 71, 71, 1);
 
+/// Fixed colors for the three roles in an AA rendered as a grid — row header
+/// (leftmost column), column header (top row), and value cell — used by
+/// `AaDataFrame`. Not node-card tokens like the ones above, but kept here
+/// too since this is the app's one place for shared, non-theme-derived
+/// color constants rather than hardcoding them inline.
+const Color kAaRowHeaderColor = Color.fromRGBO(255, 141, 187, 1);
+const Color kAaColumnHeaderColor = Color.fromRGBO(94, 224, 232, 1);
+const Color kAaValueColor = Color.fromRGBO(232, 213, 105, 1);
+
