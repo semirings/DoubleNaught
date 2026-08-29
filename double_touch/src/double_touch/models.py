@@ -766,9 +766,55 @@ class LlmBetterDocRequest(CamelModel):
     max_tokens: int = 256
     # Sampling temperature.
     temperature: float = 0.7
+    # Optional additive style/instruction hint from a connected Prompt node —
+    # never a replacement for the function's own code in the prompt.
+    prompt_hint: str = ""
 
 
 class LlmBetterDocResponse(CamelModel):
+    # The input AA with an enriched better_docstring column.
+    enriched_index: AssocArray
+    # Count of rows processed.
+    rows_processed: int
+
+
+# --- LLM Documenter remote-provider dispatch ---------------------------------
+# The backend never sees a remote provider's API key: the Dart frontend
+# redeems it from the local vault and calls the provider directly. These two
+# endpoints let it reuse this backend's prompt template and D4M merge without
+# duplicating either in Dart — see llm_better_doc.build_prompts /
+# merge_better_docstrings.
+
+
+class LlmPromptEntry(CamelModel):
+    row_key: str
+    symbol: str
+    prompt: str
+
+
+class LlmBuildPromptsRequest(CamelModel):
+    # The 7-column AST index from AstExtractNode.
+    ast_index: AssocArray
+    # Optional additive style/instruction hint from a connected Prompt node —
+    # never a replacement for the function's own code in the prompt.
+    prompt_hint: str = ""
+
+
+class LlmBuildPromptsResponse(CamelModel):
+    # One prompt per definition that has code; rows with no code are omitted.
+    prompts: list[LlmPromptEntry]
+
+
+class LlmMergeDocstringsRequest(CamelModel):
+    # The same AST index build-prompts was called with.
+    ast_index: AssocArray
+    # row key -> generated docstring text, e.g. from remote-provider calls
+    # dispatched client-side. A row present in ast_index but absent here gets
+    # an empty string.
+    docstrings: dict[str, str]
+
+
+class LlmMergeDocstringsResponse(CamelModel):
     # The input AA with an enriched better_docstring column.
     enriched_index: AssocArray
     # Count of rows processed.

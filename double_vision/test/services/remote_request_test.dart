@@ -48,6 +48,8 @@ void main() {
       AuthProvider provider, {
       String model = 'm-1',
       String responseBody = '{}',
+      int? maxTokens,
+      double? temperature,
     }) async {
       final recorder = _Recorder(body: responseBody);
       await RemoteRequest(client: recorder).send(
@@ -55,6 +57,8 @@ void main() {
         model: model,
         prompt: 'hello there',
         apiKey: 'the-key',
+        maxTokens: maxTokens,
+        temperature: temperature,
       );
       return recorder;
     }
@@ -100,6 +104,69 @@ void main() {
           'http://localhost:11434/api/generate');
       expect(r.requests.single.headers.containsKey('Authorization'), isFalse);
       expect(jsonDecode(r.bodies.single)['prompt'], 'hello there');
+    });
+
+    group('maxTokens/temperature overrides', () {
+      test('unset: the three non-Anthropic providers carry no token-limit '
+          'field at all, exactly as before', () async {
+        for (final provider in [
+          AuthProvider.openAiCompatible,
+          AuthProvider.googleGemini,
+          AuthProvider.ollamaLocal,
+        ]) {
+          final r = await dispatch(provider);
+          final body = jsonDecode(r.bodies.single) as Map<String, Object?>;
+          expect(body.containsKey('max_tokens'), isFalse, reason: '$provider');
+          expect(body.containsKey('generationConfig'), isFalse, reason: '$provider');
+          expect(body.containsKey('options'), isFalse, reason: '$provider');
+        }
+      });
+
+      test('unset: Anthropic still defaults to the class constant', () async {
+        final r = await dispatch(AuthProvider.anthropic);
+        expect(jsonDecode(r.bodies.single)['max_tokens'], RemoteRequest.maxTokens);
+      });
+
+      test('set: each provider carries the override in its own shape',
+          () async {
+        final anthropic = await dispatch(
+          AuthProvider.anthropic,
+          maxTokens: 512,
+          temperature: 0.3,
+        );
+        final aBody = jsonDecode(anthropic.bodies.single) as Map<String, Object?>;
+        expect(aBody['max_tokens'], 512);
+        expect(aBody['temperature'], 0.3);
+
+        final openAi = await dispatch(
+          AuthProvider.openAiCompatible,
+          maxTokens: 512,
+          temperature: 0.3,
+        );
+        final oBody = jsonDecode(openAi.bodies.single) as Map<String, Object?>;
+        expect(oBody['max_tokens'], 512);
+        expect(oBody['temperature'], 0.3);
+
+        final gemini = await dispatch(
+          AuthProvider.googleGemini,
+          maxTokens: 512,
+          temperature: 0.3,
+        );
+        final gConfig = (jsonDecode(gemini.bodies.single)
+            as Map<String, Object?>)['generationConfig'] as Map;
+        expect(gConfig['maxOutputTokens'], 512);
+        expect(gConfig['temperature'], 0.3);
+
+        final ollama = await dispatch(
+          AuthProvider.ollamaLocal,
+          maxTokens: 512,
+          temperature: 0.3,
+        );
+        final oOptions = (jsonDecode(ollama.bodies.single)
+            as Map<String, Object?>)['options'] as Map;
+        expect(oOptions['num_predict'], 512);
+        expect(oOptions['temperature'], 0.3);
+      });
     });
   });
 

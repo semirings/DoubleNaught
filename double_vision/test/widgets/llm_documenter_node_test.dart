@@ -3,15 +3,44 @@ import 'dart:convert';
 
 import 'package:double_vision/config/node_registry.dart';
 import 'package:double_vision/models/aa_payload.dart';
+import 'package:double_vision/models/auth_profile.dart';
 import 'package:double_vision/models/workflow.dart';
 import 'package:double_vision/pages/workflow_page.dart';
 import 'package:double_vision/services/infobus/input_port.dart';
 import 'package:double_vision/services/infobus/output_port.dart';
+import 'package:double_vision/services/remote/model_catalog.dart';
+import 'package:double_vision/services/vault/key_vault.dart';
+import 'package:double_vision/services/vault/vault_store.dart';
 import 'package:double_vision/widgets/nodes/nodes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
+
+class _FakeStore implements VaultStore {
+  final Map<String, String> values = {};
+  @override
+  Future<String?> read(String key) async => values[key];
+  @override
+  Future<void> write(String key, String value) async => values[key] = value;
+  @override
+  Future<void> delete(String key) async => values.remove(key);
+}
+
+const _profile = AuthProfile(
+  id: 'p1',
+  displayName: 'Work Gemini',
+  provider: AuthProvider.googleGemini,
+  baseUrl: 'https://generativelanguage.googleapis.com',
+  credentialRef: 'credential:p1',
+  maxContextTokens: 1048576,
+);
+
+Future<KeyVault> _vaultWithProfile() async {
+  final vault = KeyVault(persistent: _FakeStore());
+  await vault.saveProfile(_profile, apiKey: 'sk-stored');
+  return vault;
+}
 
 // This node was originally "Remote Service": a vault-backed node dispatching
 // to a user-picked provider (Anthropic/OpenAI/Gemini/Ollama) via
@@ -67,6 +96,8 @@ const _index = AaPayload(
 Future<
     ({
       InputPort input,
+      InputPort auth,
+      InputPort prompt,
       List<AaPayload> emitted,
       List<Map<String, dynamic>> requests,
     })> _pump(
@@ -74,8 +105,12 @@ Future<
   http.Client Function()? clientFactory,
   Map<String, String>? initialParams,
   bool inputConnected = false,
+  KeyVault? vault,
+  ModelCatalog? modelCatalog,
 }) async {
   InputPort? port;
+  InputPort? authPort;
+  InputPort? promptPort;
   final emitted = <AaPayload>[];
   final requests = <Map<String, dynamic>>[];
 
@@ -94,6 +129,10 @@ Future<
             initialParams: initialParams,
             clientFactory: factory,
             inputConnected: inputConnected,
+            onAuthInputPort: (p) => authPort = p,
+            onPromptInputPort: (p) => promptPort = p,
+            vault: vault,
+            modelCatalog: modelCatalog,
             onInputPort: (p) => port = p,
             onOutputPort: (p) => p.connect(emitted.add, emitCurrentState: false),
           ),
@@ -102,7 +141,13 @@ Future<
     ),
   );
   await tester.pumpAndSettle();
-  return (input: port!, emitted: emitted, requests: requests);
+  return (
+    input: port!,
+    auth: authPort!,
+    prompt: promptPort!,
+    emitted: emitted,
+    requests: requests,
+  );
 }
 
 Future<void> _send(WidgetTester tester, InputPort port, AaPayload aa) async {
@@ -271,7 +316,7 @@ void main() {
       await _send(tester, h.input, _index);
 
       expect(find.textContaining('done'), findsOneWidget);
-      expect(find.textContaining('3 rows'), findsOneWidget);
+      expect(find.textContaining('3 documented'), findsOneWidget);
       expect(h.emitted, hasLength(1));
       expect(h.emitted.single.cols, contains('better_docstring'));
     });
@@ -415,6 +460,334 @@ void main() {
 
       expect(find.textContaining('error'), findsNothing);
       expect(find.textContaining('idle'), findsOneWidget);
+    });
+  });
+
+  group('remote-provider dispatch (authInput connected)', () {
+    /// A two-row index so per-row success/failure can differ across rows.
+    const twoRowIndex = AaPayload(
+      rows: ['a.jl:0:0', 'a.jl:0:0', 'a.jl:1:1', 'a.jl:1:1'],
+      cols: ['symbol_name', 'raw_code', 'symbol_name', 'raw_code'],
+      vals: ['add_one', 'add_one(x) = x + 1', 'sub_one', 'sub_one(x) = x - 1'],
+    );
+
+    Map<String, dynamic> mergedBody(Map<String, dynamic> astIndex, Map docstrings) {
+      final rows = List<String>.from(astIndex['rows'] as List);
+      final cols = List<String>.from(astIndex['cols'] as List);
+      final vals = List.from(astIndex['vals'] as List);
+      docstrings.forEach((row, text) {
+        rows.add(row as String);
+        cols.add('better_docstring');
+        vals.add(text);
+      });
+      return {
+        'enrichedIndex': {'rows': rows, 'cols': cols, 'vals': vals},
+        'rowsProcessed': docstrings.length,
+      };
+    }
+
+    /// A backend+remote fake: routes `/llm/build-prompts` and
+    /// `/llm/merge-docstrings` to this backend's shape, and everything else
+    /// (Gemini's own dispatch path) to [remoteHandler].
+    http.Client Function() remoteFactory({
+      required List<Map<String, dynamic>> buildPromptRequests,
+      required List<Map<String, dynamic>> remoteRequests,
+      required List<Map<String, dynamic>> mergeRequests,
+      required http.Response Function(Map<String, dynamic> body) remoteHandler,
+    }) {
+      return () => MockClient((request) async {
+            final path = request.url.path;
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+
+            if (path == '/llm/build-prompts') {
+              buildPromptRequests.add(body);
+              final astIndex = body['astIndex'] as Map<String, dynamic>;
+              final rows = List<String>.from(astIndex['rows'] as List);
+              final seen = <String>{};
+              final prompts = [
+                for (final r in rows)
+                  if (seen.add(r)) {'rowKey': r, 'symbol': 'sym', 'prompt': 'Document $r'},
+              ];
+              return _jsonResponse({'prompts': prompts});
+            }
+            if (path == '/llm/merge-docstrings') {
+              mergeRequests.add(body);
+              return _jsonResponse(mergedBody(
+                body['astIndex'] as Map<String, dynamic>,
+                body['docstrings'] as Map,
+              ));
+            }
+            remoteRequests.add(body);
+            return remoteHandler(body);
+          });
+    }
+
+    http.Response geminiOk(String text) => _jsonResponse({
+          'candidates': [
+            {
+              'content': {
+                'parts': [
+                  {'text': text},
+                ],
+              },
+            },
+          ],
+        });
+
+    testWidgets('connecting authInput switches from the local Model field '
+        'to a provider-specific one; disconnecting reverts', (tester) async {
+      final h = await _pump(tester);
+      expect(find.text('mlx-community/Phi-4-mini-instruct-4bit'), findsOneWidget);
+
+      await _send(tester, h.auth, _profile.toAa());
+      expect(find.text('Model (Google Gemini)'), findsOneWidget);
+      expect(find.text('mlx-community/Phi-4-mini-instruct-4bit'), findsNothing);
+
+      h.auth.disconnect();
+      await tester.pumpAndSettle();
+      expect(find.text('mlx-community/Phi-4-mini-instruct-4bit'), findsOneWidget);
+    });
+
+    testWidgets('firing with a connected profile dispatches build-prompts, '
+        'one remote call per definition, then merge-docstrings', (tester) async {
+      final buildPromptRequests = <Map<String, dynamic>>[];
+      final remoteRequests = <Map<String, dynamic>>[];
+      final mergeRequests = <Map<String, dynamic>>[];
+      final h = await _pump(
+        tester,
+        inputConnected: true,
+        vault: await _vaultWithProfile(),
+        clientFactory: remoteFactory(
+          buildPromptRequests: buildPromptRequests,
+          remoteRequests: remoteRequests,
+          mergeRequests: mergeRequests,
+          remoteHandler: (_) => geminiOk('Generated doc.'),
+        ),
+      );
+      await _send(tester, h.auth, _profile.toAa());
+      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await _send(tester, h.input, twoRowIndex);
+
+      expect(buildPromptRequests, hasLength(1));
+      expect(remoteRequests, hasLength(2), reason: 'one per definition');
+      expect(mergeRequests, hasLength(1));
+      expect(mergeRequests.single['docstrings'], {
+        'a.jl:0:0': 'Generated doc.',
+        'a.jl:1:1': 'Generated doc.',
+      });
+
+      expect(h.emitted, hasLength(1));
+      expect(h.emitted.single.cols, contains('better_docstring'));
+      expect(find.textContaining('2 documented'), findsOneWidget);
+    });
+
+    testWidgets('the vault-redeemed key reaches the provider, never the backend',
+        (tester) async {
+      String? seenKeyHeader;
+      final h = await _pump(
+        tester,
+        inputConnected: true,
+        vault: await _vaultWithProfile(),
+        clientFactory: () => MockClient((request) async {
+              if (request.url.path == '/llm/build-prompts') {
+                return _jsonResponse({
+                  'prompts': [
+                    {'rowKey': 'a.jl:0:0', 'symbol': 'add_one', 'prompt': 'Document it'},
+                  ],
+                });
+              }
+              if (request.url.path == '/llm/merge-docstrings') {
+                final body = jsonDecode(request.body) as Map<String, dynamic>;
+                return _jsonResponse(mergedBody(
+                  body['astIndex'] as Map<String, dynamic>,
+                  body['docstrings'] as Map,
+                ));
+              }
+              seenKeyHeader = request.headers['x-goog-api-key'];
+              return geminiOk('Doc.');
+            }),
+      );
+      await _send(tester, h.auth, _profile.toAa());
+      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await _send(tester, h.input, _index);
+
+      expect(seenKeyHeader, 'sk-stored');
+    });
+
+    testWidgets('a connected Prompt node adds its text to build-prompts as a hint',
+        (tester) async {
+      final buildPromptRequests = <Map<String, dynamic>>[];
+      final h = await _pump(
+        tester,
+        inputConnected: true,
+        vault: await _vaultWithProfile(),
+        clientFactory: remoteFactory(
+          buildPromptRequests: buildPromptRequests,
+          remoteRequests: [],
+          mergeRequests: [],
+          remoteHandler: (_) => geminiOk('Doc.'),
+        ),
+      );
+      await _send(tester, h.auth, _profile.toAa());
+      await _send(
+        tester,
+        h.prompt,
+        const AaPayload(rows: ['prompt:9'], cols: ['prompt'], vals: ['Explain for a junior dev.']),
+      );
+      await _send(tester, h.input, _index);
+
+      expect(buildPromptRequests.single['promptHint'], 'Explain for a junior dev.');
+    });
+
+    testWidgets('a per-row failure is skipped, not fatal — the rest still merge',
+        (tester) async {
+      var call = 0;
+      final mergeRequests = <Map<String, dynamic>>[];
+      final h = await _pump(
+        tester,
+        inputConnected: true,
+        vault: await _vaultWithProfile(),
+        clientFactory: () => MockClient((request) async {
+              if (request.url.path == '/llm/build-prompts') {
+                final astIndex =
+                    (jsonDecode(request.body) as Map<String, dynamic>)['astIndex']
+                        as Map<String, dynamic>;
+                final rows = List<String>.from(astIndex['rows'] as List).toSet();
+                return _jsonResponse({
+                  'prompts': [
+                    for (final r in rows) {'rowKey': r, 'symbol': 'sym', 'prompt': 'Doc $r'},
+                  ],
+                });
+              }
+              if (request.url.path == '/llm/merge-docstrings') {
+                final body = jsonDecode(request.body) as Map<String, dynamic>;
+                mergeRequests.add(body);
+                return _jsonResponse(mergedBody(
+                  body['astIndex'] as Map<String, dynamic>,
+                  body['docstrings'] as Map,
+                ));
+              }
+              call++;
+              // The first remote call fails, the second succeeds.
+              return call == 1
+                  ? http.Response('{}', 500)
+                  : geminiOk('Doc for the survivor.');
+            }),
+      );
+      await _send(tester, h.auth, _profile.toAa());
+      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await _send(tester, h.input, twoRowIndex);
+
+      expect(mergeRequests.single['docstrings'], hasLength(1));
+      expect(find.textContaining('1 documented'), findsOneWidget);
+      expect(find.textContaining('1 failed'), findsOneWidget);
+      expect(h.emitted, hasLength(1));
+    });
+
+    testWidgets('every row failing is an error, and merge-docstrings is never called',
+        (tester) async {
+      final mergeRequests = <Map<String, dynamic>>[];
+      final remoteRequests = <Map<String, dynamic>>[];
+      final h = await _pump(
+        tester,
+        inputConnected: true,
+        vault: await _vaultWithProfile(),
+        clientFactory: remoteFactory(
+          buildPromptRequests: [],
+          remoteRequests: remoteRequests,
+          mergeRequests: mergeRequests,
+          remoteHandler: (_) => http.Response('{}', 500),
+        ),
+      );
+      await _send(tester, h.auth, _profile.toAa());
+      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await _send(tester, h.input, _index);
+
+      expect(remoteRequests, hasLength(1), reason: 'the provider really was called');
+      expect(mergeRequests, isEmpty);
+      expect(h.emitted, isEmpty);
+      expect(find.textContaining('error'), findsOneWidget);
+    });
+
+    testWidgets('Cancel mid-loop stops dispatching further rows and never merges',
+        (tester) async {
+      final secondCallStarted = Completer<void>();
+      final releaseSecondCall = Completer<http.Response>();
+      final mergeRequests = <Map<String, dynamic>>[];
+      var remoteCallCount = 0;
+      final h = await _pump(
+        tester,
+        inputConnected: true,
+        vault: await _vaultWithProfile(),
+        clientFactory: () => MockClient((request) async {
+              if (request.url.path == '/llm/build-prompts') {
+                return _jsonResponse({
+                  'prompts': [
+                    {'rowKey': 'a.jl:0:0', 'symbol': 's1', 'prompt': 'Doc 1'},
+                    {'rowKey': 'a.jl:1:1', 'symbol': 's2', 'prompt': 'Doc 2'},
+                  ],
+                });
+              }
+              if (request.url.path == '/llm/merge-docstrings') {
+                mergeRequests.add(jsonDecode(request.body) as Map<String, dynamic>);
+                return _jsonResponse({
+                  'enrichedIndex': {'rows': [], 'cols': [], 'vals': []},
+                  'rowsProcessed': 0,
+                });
+              }
+              remoteCallCount++;
+              if (remoteCallCount == 1) return geminiOk('First doc.');
+              secondCallStarted.complete();
+              return releaseSecondCall.future;
+            }),
+      );
+      await _send(tester, h.auth, _profile.toAa());
+      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await _send(tester, h.input, twoRowIndex); // auto-fires, blocks on row 2
+
+      await secondCallStarted.future;
+      await tester.tap(find.byType(ExecuteButton)); // Cancel
+      await tester.pump();
+
+      expect(find.textContaining('idle'), findsOneWidget);
+
+      releaseSecondCall.complete(geminiOk('Too late.'));
+      await tester.pumpAndSettle();
+
+      expect(mergeRequests, isEmpty, reason: 'cancelled before a 3rd row could even start');
+      expect(h.emitted, isEmpty);
+      expect(find.textContaining('idle'), findsOneWidget);
+    });
+
+    testWidgets('the "Available models" fetch fills the model field on pick',
+        (tester) async {
+      final h = await _pump(
+        tester,
+        vault: await _vaultWithProfile(),
+        modelCatalog: ModelCatalog(
+          clientFactory: () => MockClient((request) async => _jsonResponse({
+                'models': [
+                  {
+                    'name': 'models/gemini-fast',
+                    'supportedGenerationMethods': ['generateContent'],
+                  },
+                ],
+              })),
+        ),
+      );
+      await _send(tester, h.auth, _profile.toAa());
+
+      await tester.tap(find.byTooltip('Available models'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('gemini-fast'), findsOneWidget);
+      await tester.tap(find.text('gemini-fast'));
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        'gemini-fast',
+      );
     });
   });
 

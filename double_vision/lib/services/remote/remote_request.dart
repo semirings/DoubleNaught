@@ -112,41 +112,65 @@ class RemoteRequest {
         AuthProvider.ollamaLocal => {'content-type': 'application/json'},
       };
 
+  /// [maxTokens]/[temperature] are purely additive overrides: when neither is
+  /// given, every provider's body is byte-for-byte what it was before these
+  /// existed. Anthropic is the one exception in shape only, not behavior —
+  /// it already sent `max_tokens` unconditionally (Anthropic requires the
+  /// field), so an unset [maxTokens] there still resolves to the class-wide
+  /// [maxTokens] constant, exactly as before. The other three providers
+  /// previously sent no token-limit field at all, so they only gain one when
+  /// [maxTokens] is actually passed.
   static Map<String, Object?> bodyFor(
     AuthProvider provider,
     String model,
-    String prompt,
-  ) =>
-      switch (provider) {
-        AuthProvider.anthropic => {
-            'model': model,
-            'max_tokens': maxTokens,
-            'messages': [
-              {'role': 'user', 'content': prompt},
-            ],
-          },
-        AuthProvider.openAiCompatible => {
-            'model': model,
-            'messages': [
-              {'role': 'user', 'content': prompt},
-            ],
-            'stream': false,
-          },
-        AuthProvider.googleGemini => {
-            'contents': [
-              {
-                'parts': [
-                  {'text': prompt},
-                ],
-              },
-            ],
-          },
-        AuthProvider.ollamaLocal => {
-            'model': model,
-            'prompt': prompt,
-            'stream': false,
-          },
-      };
+    String prompt, {
+    int? maxTokens,
+    double? temperature,
+  }) {
+    return switch (provider) {
+      AuthProvider.anthropic => {
+          'model': model,
+          'max_tokens': maxTokens ?? RemoteRequest.maxTokens,
+          if (temperature != null) 'temperature': temperature,
+          'messages': [
+            {'role': 'user', 'content': prompt},
+          ],
+        },
+      AuthProvider.openAiCompatible => {
+          'model': model,
+          'messages': [
+            {'role': 'user', 'content': prompt},
+          ],
+          'stream': false,
+          if (maxTokens != null) 'max_tokens': maxTokens,
+          if (temperature != null) 'temperature': temperature,
+        },
+      AuthProvider.googleGemini => {
+          'contents': [
+            {
+              'parts': [
+                {'text': prompt},
+              ],
+            },
+          ],
+          if (maxTokens != null || temperature != null)
+            'generationConfig': {
+              if (maxTokens != null) 'maxOutputTokens': maxTokens,
+              if (temperature != null) 'temperature': temperature,
+            },
+        },
+      AuthProvider.ollamaLocal => {
+          'model': model,
+          'prompt': prompt,
+          'stream': false,
+          if (maxTokens != null || temperature != null)
+            'options': {
+              if (maxTokens != null) 'num_predict': maxTokens,
+              if (temperature != null) 'temperature': temperature,
+            },
+        },
+    };
+  }
 
   /// Pull the reply text out of a decoded success body.
   ///
@@ -229,6 +253,8 @@ class RemoteRequest {
     required String model,
     required String prompt,
     String? apiKey,
+    int? maxTokens,
+    double? temperature,
   }) async {
     final started = DateTime.now();
     int elapsed() => DateTime.now().difference(started).inMilliseconds;
@@ -266,7 +292,13 @@ class RemoteRequest {
     try {
       final request = http.Request('POST', uri)
         ..headers.addAll(headersFor(profile.provider, apiKey))
-        ..body = jsonEncode(bodyFor(profile.provider, model, prompt));
+        ..body = jsonEncode(bodyFor(
+          profile.provider,
+          model,
+          prompt,
+          maxTokens: maxTokens,
+          temperature: temperature,
+        ));
 
       final response = await client.send(request).timeout(timeout);
 

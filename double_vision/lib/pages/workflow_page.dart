@@ -389,8 +389,10 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'remoteServiceNode': // backward compat: old registry type
       case 'remote_service': // tolerate a snake_case spelling in saved workflows
       case 'llm_documenter': // tolerate a snake_case spelling in saved workflows
-        // Two inputs: `dataInput` (AA, idx 0), `authInput` (AA, idx 1).
-        return const [0, 1];
+        // Three inputs: `astIndex` (AA, idx 0, required), `authInput` (AA,
+        // idx 1, optional — a Secure Settings credential), `promptInput`
+        // (AA, idx 2, optional — an additive style hint).
+        return const [0, 1, 2];
       case 'polyglotExecNode':
       case 'polyglot_exec': // tolerate a snake_case spelling in saved workflows
         // One input: `executionPayload` (AA, idx 0).
@@ -2378,11 +2380,21 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // `dataInput` (AA, idx 0) — the payload to dispatch.
+          // `astIndex` (AA, idx 0, required) — the 7-column index to enrich.
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          // `enrichedIndex` (AA, idx 0) — the 8-column result with better_docstring.
+          // `authInput` (AA, idx 1, optional) — a Secure Settings credential;
+          // connecting it switches generation to that remote provider.
+          authConnected: _hasIncomingEdgeAt(node.id, 1),
+          onAuthConnect: (source) => _connectAt(source, node.id, 1),
+          onAuthInputPort: (port) => _registerAaInput(node.id, 1, port),
+          // `promptInput` (AA, idx 2, optional) — an additive style hint
+          // from a Prompt node.
+          promptConnected: _hasIncomingEdgeAt(node.id, 2),
+          onPromptConnect: (source) => _connectAt(source, node.id, 2),
+          onPromptInputPort: (port) => _registerAaInput(node.id, 2, port),
+          // `documented` (AA, idx 0) — the 8-column result with better_docstring.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );

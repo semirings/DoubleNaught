@@ -126,6 +126,26 @@ class AuthProfile {
         'sessionOnly': sessionOnly,
       };
 
+  /// Reconstructs a profile from an `authOutput`-shaped [aa] (see [toAa]).
+  ///
+  /// Returns null when [aa] doesn't look like a profile at all (no rows —
+  /// nothing connected yet, or the wire went cold). A malformed-but-present
+  /// payload still parses as best it can, mirroring [fromJson]'s tolerance,
+  /// since the only real producer of this shape is [SecureSettingsNode]
+  /// itself and a partial parse is more useful than a hard failure here.
+  static AuthProfile? fromAa(AaPayload aa) {
+    if (aa.rows.isEmpty) return null;
+    final id = aa.rows.first;
+    return AuthProfile(
+      id: id,
+      displayName: aa.value('displayName') ?? '',
+      provider: AuthProvider.byName(aa.value('provider')),
+      baseUrl: aa.value('baseUrl') ?? '',
+      credentialRef: aa.value('credentialRef') ?? refFor(id),
+      maxContextTokens: aa.intValue('maxContextTokens') ?? 0,
+    );
+  }
+
   /// This profile as the `authOutput` payload: one row (the profile id) by five
   /// metadata columns. `credentialRef` travels as a *handle* — a downstream node
   /// redeems it against the vault, so the key itself never enters the graph.

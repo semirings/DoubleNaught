@@ -1,0 +1,17 @@
+{
+  "rows": [
+    "workflow",
+    "workflow",
+    "workflow"
+  ],
+  "cols": [
+    "id",
+    "name",
+    "version"
+  ],
+  "vals": [
+    "1-epi",
+    "1 Epi",
+    "0.1.0"
+  ]
+}

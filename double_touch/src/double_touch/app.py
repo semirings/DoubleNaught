@@ -94,6 +94,11 @@ from .models import (
     AstExtractRequest,
     LlmBetterDocRequest,
     LlmBetterDocResponse,
+    LlmBuildPromptsRequest,
+    LlmBuildPromptsResponse,
+    LlmMergeDocstringsRequest,
+    LlmMergeDocstringsResponse,
+    LlmPromptEntry,
     JsonlFormatRequest,
     JsonlFormatResponse,
     PolyglotExecRequest,
@@ -150,7 +155,12 @@ from .jsonl_formatter_node import (
     aa_from_table,
 )
 from .polyglot_exec_node import ExecInput, PolyglotExecNode, merge_result_aa
-from .llm_better_doc import LlmBetterDocNode, LlmBetterDocError
+from .llm_better_doc import (
+    LlmBetterDocError,
+    LlmBetterDocNode,
+    build_prompts,
+    merge_better_docstrings,
+)
 from .workflows_router import router as workflows_router
 
 DEFAULT_WIDTH = 1024
@@ -1443,6 +1453,10 @@ async def llm_enrich_ast(request: LlmBetterDocRequest) -> LlmBetterDocResponse:
     Takes the 7-column documented index and generates improved docstrings
     for each function/macro using the specified LLM model. Uses D4M to add
     the new column to the output AA.
+
+    Generation and merge are two separate calls, not one `node.enrich(...)`
+    call, so only the (potentially slow) generation half runs in a worker
+    thread — see the note below.
     """
     try:
         node = LlmBetterDocNode(
@@ -1450,13 +1464,80 @@ async def llm_enrich_ast(request: LlmBetterDocRequest) -> LlmBetterDocResponse:
             max_tokens=request.max_tokens,
             temperature=request.temperature,
         )
-        enriched = await run_in_threadpool(node.enrich, request.ast_index)
+        docstrings = await run_in_threadpool(
+            node.generate_docstrings, request.ast_index, request.prompt_hint
+        )
+        # NOT run_in_threadpool: juliacall's embedded Julia is only safe to
+        # call from the thread it was first initialized on. Every other
+        # D4M-touching route in this app (/jsonl/format/aa, /ast/extract/aa)
+        # already calls into D4M directly from the coroutine body for
+        # exactly this reason — a worker thread deadlocks inside Julia's
+        # `seval`, confirmed via py-spy on a hung test that hit this via
+        # /llm/merge-docstrings (the merge step, factored out below, has the
+        # identical exposure).
+        enriched = merge_better_docstrings(request.ast_index, docstrings)
     except LlmBetterDocError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
     return LlmBetterDocResponse(
+        enriched_index=enriched,
+        rows_processed=len(set(request.ast_index.rows)),
+    )
+
+
+# --- LLM Documenter remote-provider dispatch ---------------------------------
+# The frontend calls these two instead of /llm/enrich-ast when a Secure
+# Settings credential is connected: the API key is redeemed from the local
+# vault and used to call the remote provider directly from Dart, so it never
+# reaches this backend. These endpoints exist so the prompt template and the
+# D4M merge stay in one place regardless of which path generated the text.
+
+
+@app.post("/llm/build-prompts", response_model=LlmBuildPromptsResponse)
+async def llm_build_prompts(request: LlmBuildPromptsRequest) -> LlmBuildPromptsResponse:
+    """One documentation-generation prompt per definition in the AST index.
+
+    Pure Python string templating — no D4M/Julia involved — so, unlike
+    `/llm/merge-docstrings`, there is no thread-affinity reason to avoid
+    `run_in_threadpool` here. It stays off the threadpool anyway, matching
+    every other route in this file that touches `ast_extract`/
+    `llm_better_doc`: one convention, not "safe here, unsafe there."
+    """
+    try:
+        prompts = build_prompts(request.ast_index, request.prompt_hint)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return LlmBuildPromptsResponse(
+        prompts=[
+            LlmPromptEntry(row_key=p["rowKey"], symbol=p["symbol"], prompt=p["prompt"])
+            for p in prompts
+        ],
+    )
+
+
+@app.post("/llm/merge-docstrings", response_model=LlmMergeDocstringsResponse)
+async def llm_merge_docstrings(
+    request: LlmMergeDocstringsRequest,
+) -> LlmMergeDocstringsResponse:
+    """Add externally-generated better_docstring text to the AST index via D4M.
+
+    Deliberately NOT `run_in_threadpool` — see `/llm/enrich-ast`'s note.
+    juliacall's embedded Julia deadlocks when called from a worker thread
+    other than the one it was initialized on; this call is fast (in-memory
+    D4M.jl work, no network/LLM latency) so there is no throughput reason to
+    threadpool it even if it were safe to.
+    """
+    try:
+        enriched = merge_better_docstrings(request.ast_index, request.docstrings)
+    except LlmBetterDocError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    return LlmMergeDocstringsResponse(
         enriched_index=enriched,
         rows_processed=len(set(request.ast_index.rows)),
     )
