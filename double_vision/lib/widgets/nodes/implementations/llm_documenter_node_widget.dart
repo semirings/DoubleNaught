@@ -17,27 +17,45 @@ import '../base/input_connector.dart';
 import '../base/wait_checkbox.dart';
 import '../base/wait_gated_execution.dart';
 
+/// Which model generates each docstring. [local] needs no credential;
+/// [gemini] is remote and needs a matching Secure Settings credential on
+/// `authInput` before Execute enables — see [_LLMDocumenterNodeWidgetState.isReady].
+///
+/// Gemini, not a generic "remote" choice: `RemoteRequest.defaultModels`
+/// deliberately ships no default model id for Gemini (unlike Anthropic's
+/// `claude-opus-5`) — "the others vary per account and deployment, so they
+/// stay blank rather than shipping a guess that 404s." That established
+/// convention is why this entry's own model-id field starts blank rather
+/// than pre-filled: there is no real Gemini id in this codebase to reuse,
+/// and inventing one would be exactly the guessed-id risk that convention
+/// avoids. The user fetches (via Available Models) or types one instead.
+enum _ModelChoice { local, gemini }
+
 /// Enriches an AST index with LLM-generated better_docstring column.
 ///
 /// Takes the 7-column documented index from Function Extraction and
 /// generates an improved docstring for every definition, either:
-/// - **locally** (default, no `authInput`) — the backend's own fixed small
-///   model, via `/llm/enrich-ast`; or
-/// - **remotely** — whichever provider `authInput` names, via a Secure
-///   Settings credential. The prompt and the D4M merge are still the
-///   backend's (`/llm/build-prompts`, `/llm/merge-docstrings`), so both
-///   paths generate from the identical template and merge identically; only
-///   the LLM call itself moves client-side, since the vault-redeemed API
-///   key must never reach this backend.
+/// - **remotely** (default: [_ModelChoice.gemini]) — via a Secure Settings
+///   credential connected on `authInput`, matching the selected Model's
+///   provider. The prompt and the D4M merge are still the backend's
+///   (`/llm/build-prompts`, `/llm/merge-docstrings`); only the LLM call
+///   itself moves client-side, since the vault-redeemed API key must never
+///   reach this backend.
+/// - **locally** ([_ModelChoice.local], no credential ever needed) — the
+///   backend's own fixed small model, via `/llm/enrich-ast`.
 ///
 /// Ports: `astIndex` (in) the 7-column input; `authInput` (in, optional) a
-/// Secure Settings credential — connecting it switches generation to that
-/// provider; `promptInput` (in, optional) an additive style/instruction hint
+/// Secure Settings credential — required for the Gemini choice, ignored for
+/// local; `promptInput` (in, optional) an additive style/instruction hint
 /// from a Prompt node — it never replaces the code-aware template, only
 /// adds to it; `documented` (out) the 8-column enriched index.
 ///
-/// Execute's readiness depends only on `astIndex` having data — `authInput`
-/// and `promptInput` are each independently optional.
+/// Execute's readiness needs `astIndex` to have data AND, for the Gemini
+/// choice specifically, a matching credential connected — selecting Gemini
+/// with no (or the wrong) credential connected disables Execute rather than
+/// silently falling back to the local model (`EXECUTION_MODEL.md` §5: no
+/// silent substitution). `promptInput` stays independently optional either
+/// way.
 class LLMDocumenterNodeWidget extends BaseNodeWidget {
   final String? baseUrl;
   final http.Client Function() clientFactory;
@@ -121,6 +139,11 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
   AuthProfile? _authProfile;
   String? _promptHint;
 
+  /// Defaults to [_ModelChoice.gemini] — this node's primary purpose is now
+  /// remote-provider documentation generation; the local SLM remains a
+  /// selectable, no-credential fallback, not the default.
+  _ModelChoice _modelChoice = _ModelChoice.gemini;
+
   bool _fetchingModels = false;
   String? _modelFetchError;
 
@@ -141,16 +164,33 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
   /// keep dispatching further rows.
   int _execGen = 0;
 
-  bool get _isRemote => _authProfile != null;
+  bool get _isRemoteChoice => _modelChoice == _ModelChoice.gemini;
+
+  /// Whether the connected credential (if any) actually matches the
+  /// selected model choice — connecting an Anthropic profile while Gemini
+  /// is selected must not silently dispatch to Anthropic (no silent
+  /// substitution, `EXECUTION_MODEL.md` §5), so it counts the same as no
+  /// credential at all for [isReady]'s purposes.
+  bool get _matchingCredential =>
+      _authProfile != null && _authProfile!.provider == AuthProvider.googleGemini;
+
+  /// True for the local choice (no credential ever needed) or the remote
+  /// choice with a matching credential connected.
+  bool get _hasCredentialForChoice => !_isRemoteChoice || _matchingCredential;
 
   @override
-  bool get isReady => _incoming != null;
+  bool get isReady => _incoming != null && _hasCredentialForChoice;
 
   @override
   void initState() {
     super.initState();
     _vault = widget.vault ?? KeyVault();
     _modelCatalog = widget.modelCatalog ?? const ModelCatalog();
+    _modelChoice = switch (widget.initialParams?['modelChoice']) {
+      'local' => _ModelChoice.local,
+      'gemini' => _ModelChoice.gemini,
+      _ => _ModelChoice.gemini,
+    };
 
     // Only the canonical port goes through initInputPort — it always calls
     // the single widget.onInputPort callback, so the other two register via
@@ -200,6 +240,7 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
         'maxTokens': _maxTokens.text.trim(),
         'temperature': _temperature.text.trim(),
         'remoteModel': _remoteModel.text.trim(),
+        'modelChoice': _modelChoice.name,
       });
 
   /// Drop the retained payload when the `astIndex` wire is cut or re-pointed,
@@ -244,6 +285,20 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
     maybeAutoFire();
   }
 
+  /// Switching model choice changes [isReady] itself (a remote choice with
+  /// no matching credential is not ready) — applies live, per the approved
+  /// spec, whether or not the node is mid-idle with data already queued.
+  void _onModelChoiceChanged(_ModelChoice choice) {
+    setState(() {
+      _modelChoice = choice;
+      _modelFetchError = null;
+      _result = null;
+    });
+    _persist();
+    setIdle();
+    maybeAutoFire();
+  }
+
   void _dropPrompt() {
     if (!mounted || _promptHint == null) return;
     setState(() {
@@ -270,7 +325,7 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
 
   Future<void> _enrich() async {
     final payload = _incoming;
-    if (payload == null || status == NodeStatus.working) return;
+    if (payload == null || !isReady || status == NodeStatus.working) return;
     final gen = ++_execGen;
     setWorking();
 
@@ -278,9 +333,12 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
     _execClient = client;
 
     try {
-      final profile = _authProfile;
-      if (profile != null) {
-        await _enrichRemote(payload, profile, client, gen);
+      if (_isRemoteChoice) {
+        // isReady already required a matching credential, so this is
+        // non-null — the explicit dropdown choice decides the dispatch
+        // path, not merely "is some credential connected" (a mismatched
+        // provider must not silently dispatch elsewhere).
+        await _enrichRemote(payload, _authProfile!, client, gen);
       } else {
         await _enrichLocal(payload, client, gen);
       }
@@ -462,7 +520,7 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
 
   Future<void> _fetchModels() async {
     final profile = _authProfile;
-    if (profile == null || _fetchingModels) return;
+    if (profile == null || !_matchingCredential || _fetchingModels) return;
     setState(() {
       _fetchingModels = true;
       _modelFetchError = null;
@@ -539,7 +597,19 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SizedBox(height: BaseNodeState.portLaneClearance(3)),
-        if (_isRemote) _remoteModelField(theme, scheme, busy) else _localModelField(busy),
+        _modelChoiceField(busy),
+        if (_isRemoteChoice) ...[
+          const SizedBox(height: 8),
+          _remoteModelField(busy),
+        ],
+        if (_isRemoteChoice && !_matchingCredential) ...[
+          const SizedBox(height: 4),
+          Text(
+            'Connect a Secure Settings credential for '
+            '${AuthProvider.googleGemini.label} to enable Execute',
+            style: theme.textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
         const SizedBox(height: 8),
         Row(
           children: [
@@ -591,18 +661,24 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
     );
   }
 
-  Widget _localModelField(bool busy) => DropdownMenu<String>(
+  /// The "Model" dropdown itself: a choice between the local SLM (no
+  /// credential ever needed) and Gemini (remote, the default — see
+  /// [_ModelChoice]). Not the actual Gemini model id — that's
+  /// [_remoteModelField], shown only for the Gemini choice.
+  Widget _modelChoiceField(bool busy) => DropdownMenu<_ModelChoice>(
         enableSearch: false,
         expandedInsets: EdgeInsets.zero,
         enabled: !busy,
         label: const Text('Model'),
-        initialSelection: _localModelId,
+        initialSelection: _modelChoice,
+        onSelected: (choice) => choice == null ? null : _onModelChoiceChanged(choice),
         dropdownMenuEntries: const [
-          DropdownMenuEntry(value: _localModelId, label: _localModelId),
+          DropdownMenuEntry(value: _ModelChoice.local, label: _localModelId),
+          DropdownMenuEntry(value: _ModelChoice.gemini, label: 'Gemini'),
         ],
       );
 
-  Widget _remoteModelField(ThemeData theme, ColorScheme scheme, bool busy) => Row(
+  Widget _remoteModelField(bool busy) => Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
@@ -611,7 +687,7 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
               enabled: !busy,
               onChanged: (_) => _persist(),
               decoration: InputDecoration(
-                labelText: 'Model (${_authProfile!.provider.label})',
+                labelText: 'Model (${_authProfile?.provider.label ?? AuthProvider.googleGemini.label})',
                 isDense: true,
                 border: const OutlineInputBorder(),
               ),
@@ -619,7 +695,7 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
           ),
           const SizedBox(width: 4),
           IconButton(
-            onPressed: busy || _fetchingModels ? null : _fetchModels,
+            onPressed: busy || _fetchingModels || !_matchingCredential ? null : _fetchModels,
             icon: _fetchingModels
                 ? const SizedBox(
                     width: 14,

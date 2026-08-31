@@ -1085,11 +1085,19 @@ async def d4m_eval(request: D4mRequest) -> D4mResponse:
     evaluated by Python :func:`eval` in a namespace containing the named
     D4M :class:`Assoc` objects.  Returns HTTP 422 when the expression is
     invalid or the result is not an Assoc.
+
+    Deliberately NOT `run_in_threadpool` — see `/llm/enrich-ast`'s note.
+    juliacall's Julia is only safe to call from the thread that first
+    initialised it, and that constraint extends to *rendering* a Julia
+    exception's message, not just the call that raised it: `str(exc)` on a
+    `juliacall.JuliaError` calls back into Julia. Catching the exception here
+    (same thread as the `eval_expression` call, never handed to a worker
+    thread) keeps that render on the safe thread too — offloading only the
+    call and catching/stringifying the exception afterward reintroduces the
+    same deadlock even though the "main" work looks contained.
     """
     try:
-        result_aa = await run_in_threadpool(
-            eval_expression, request.inputs, request.expression
-        )
+        result_aa = eval_expression(request.inputs, request.expression)
         return D4mResponse(aa=result_aa)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -1119,6 +1127,10 @@ async def d4m_exec(request: D4mExecRequest) -> D4mExecResponse:
     prior ``/d4m/ingest`` calls.  The script is evaluated as Julia source;
     ``output_symbol`` names the variable whose value is stored and returned.
     Returns HTTP 404 when any handle id is unknown, 422 on script errors.
+
+    Deliberately NOT `run_in_threadpool` — see `/d4m/eval`'s note: rendering
+    a Julia-raised exception's message (`str(exc)`) is itself a Julia call,
+    so the call and its error handling must stay on the same thread.
     """
     # Resolve handles → wire AAs.
     resolved: dict[str, AssocArray] = {}
@@ -1132,9 +1144,7 @@ async def d4m_exec(request: D4mExecRequest) -> D4mExecResponse:
         resolved[var_name] = aa
 
     try:
-        result_aa = await run_in_threadpool(
-            eval_script, resolved, request.script, request.output_symbol
-        )
+        result_aa = eval_script(resolved, request.script, request.output_symbol)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 

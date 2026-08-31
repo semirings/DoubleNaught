@@ -155,6 +155,27 @@ Future<void> _send(WidgetTester tester, InputPort port, AaPayload aa) async {
   await tester.pumpAndSettle();
 }
 
+/// The remote Model-id text field specifically — scoped by its "Model ("
+/// label, since the Model *choice* dropdown (Local/Gemini) is itself
+/// backed by a `TextField` and would otherwise collide with
+/// `find.byType(TextField).first`.
+Finder _remoteModelField() => find.ancestor(
+      of: find.textContaining('Model ('),
+      matching: find.byType(TextField),
+    );
+
+/// Opens the Model choice dropdown and picks [label] ('Gemini' or the local
+/// SLM id).
+Future<void> _pickModelChoice(WidgetTester tester, String label) async {
+  await tester.tap(find.ancestor(
+    of: find.text('Model'),
+    matching: find.byType(TextField),
+  ));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text(label).last);
+  await tester.pumpAndSettle();
+}
+
 void main() {
   group('catalog registration', () {
     test('LLM Documenter is registered', () {
@@ -176,8 +197,25 @@ void main() {
       );
     });
 
-    testWidgets('a connected payload enables Execute', (tester) async {
-      final h = await _pump(tester, inputConnected: true);
+    testWidgets('the Model choice defaults to Gemini, with the local SLM '
+        'still selectable', (tester) async {
+      await _pump(tester);
+
+      expect(find.text('Gemini'), findsOneWidget);
+      expect(find.text('mlx-community/Phi-4-mini-instruct-4bit'), findsNothing,
+          reason: 'not shown until the Local choice is picked');
+
+      await _pickModelChoice(tester, 'mlx-community/Phi-4-mini-instruct-4bit');
+      expect(find.text('mlx-community/Phi-4-mini-instruct-4bit'), findsOneWidget);
+    });
+
+    testWidgets('with the Local choice, a connected payload alone enables '
+        'Execute — no credential needed', (tester) async {
+      final h = await _pump(
+        tester,
+        inputConnected: true,
+        initialParams: const {'modelChoice': 'local'},
+      );
       await _send(tester, h.input, _index);
 
       expect(
@@ -186,10 +224,71 @@ void main() {
       );
     });
 
-    testWidgets('the Model field shows the only model this backend loads',
+    testWidgets('with the default Gemini choice, a connected payload alone '
+        'is NOT enough — Execute stays disabled without a matching '
+        'credential (no silent fallback to local)', (tester) async {
+      final h = await _pump(tester, inputConnected: true);
+      await _send(tester, h.input, _index);
+
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+      );
+      expect(find.textContaining('Connect a Secure Settings credential'),
+          findsOneWidget);
+    });
+
+    testWidgets('connecting a credential for a DIFFERENT provider than the '
+        'one selected does not enable Execute either', (tester) async {
+      const anthropicProfile = AuthProfile(
+        id: 'p2',
+        displayName: 'Work Anthropic',
+        provider: AuthProvider.anthropic,
+        baseUrl: 'https://api.anthropic.com',
+        credentialRef: 'credential:p2',
+        maxContextTokens: 1000000,
+      );
+      final h = await _pump(tester, inputConnected: true);
+      await _send(tester, h.input, _index);
+      await _send(tester, h.auth, anthropicProfile.toAa());
+
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+        reason: 'Gemini is selected but the connected credential is Anthropic',
+      );
+    });
+
+    testWidgets('Execute updates live: connecting a matching credential, or '
+        'switching to Local, enables it without reconnecting astIndex',
         (tester) async {
-      await _pump(tester);
-      expect(find.text('mlx-community/Phi-4-mini-instruct-4bit'), findsOneWidget);
+      final h = await _pump(tester, inputConnected: true, vault: await _vaultWithProfile());
+      await _send(tester, h.input, _index);
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+      );
+
+      await _send(tester, h.auth, _profile.toAa());
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isTrue,
+        reason: 'a matching credential just connected, live',
+      );
+
+      h.auth.disconnect();
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+      );
+
+      await _pickModelChoice(tester, 'mlx-community/Phi-4-mini-instruct-4bit');
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isTrue,
+        reason: 'switching to Local needs no credential at all',
+      );
     });
   });
 
@@ -198,7 +297,8 @@ void main() {
         'reactive (Wait unchecked, the default): fires as soon as a '
         'payload arrives',
         (tester) async {
-      final h = await _pump(tester, inputConnected: true);
+      final h = await _pump(tester, inputConnected: true,
+        initialParams: const {'modelChoice': 'local'});
 
       expect(
         tester.widget<WaitCheckbox>(find.byType(WaitCheckbox)).checked,
@@ -213,7 +313,8 @@ void main() {
 
     testWidgets('gated (Wait checked): a ready payload does not auto-fire',
         (tester) async {
-      final h = await _pump(tester, inputConnected: true);
+      final h = await _pump(tester, inputConnected: true,
+        initialParams: const {'modelChoice': 'local'});
 
       await tester.tap(find.byType(WaitCheckbox));
       await tester.pumpAndSettle();
@@ -229,7 +330,8 @@ void main() {
 
     testWidgets('clicking Execute fires immediately and unchecks Wait',
         (tester) async {
-      final h = await _pump(tester, inputConnected: true);
+      final h = await _pump(tester, inputConnected: true,
+        initialParams: const {'modelChoice': 'local'});
 
       await tester.tap(find.byType(WaitCheckbox)); // gate it
       await tester.pumpAndSettle();
@@ -248,7 +350,8 @@ void main() {
     testWidgets(
         'manually unchecking Wait fires immediately when already ready',
         (tester) async {
-      final h = await _pump(tester, inputConnected: true);
+      final h = await _pump(tester, inputConnected: true,
+        initialParams: const {'modelChoice': 'local'});
 
       await tester.tap(find.byType(WaitCheckbox)); // check: gated
       await tester.pumpAndSettle();
@@ -264,7 +367,8 @@ void main() {
         'unchecking Wait while NOT ready just becomes reactive — fires '
         'later once ready, not immediately',
         (tester) async {
-      final h = await _pump(tester, inputConnected: true);
+      final h = await _pump(tester, inputConnected: true,
+        initialParams: const {'modelChoice': 'local'});
 
       await tester.tap(find.byType(WaitCheckbox)); // check: gated
       await tester.pumpAndSettle();
@@ -281,6 +385,7 @@ void main() {
       final h = await _pump(
         tester,
         inputConnected: true,
+        initialParams: const {'modelChoice': 'local'},
         clientFactory: () =>
             MockClient((_) => response.future),
       );
@@ -309,6 +414,7 @@ void main() {
       final h = await _pump(
         tester,
         inputConnected: true,
+        initialParams: const {'modelChoice': 'local'},
         clientFactory: () => MockClient(
           (request) async => _jsonResponse(_enrichBody(rowsProcessed: 3)),
         ),
@@ -323,7 +429,8 @@ void main() {
 
     testWidgets('sends the fixed model id and the numeric fields',
         (tester) async {
-      final h = await _pump(tester, inputConnected: true);
+      final h = await _pump(tester, inputConnected: true,
+        initialParams: const {'modelChoice': 'local'});
       await _send(tester, h.input, _index);
 
       final sent = h.requests.single;
@@ -334,7 +441,8 @@ void main() {
 
     testWidgets('unparseable Max Tokens / Temperature fall back to defaults '
         'rather than blocking Execute', (tester) async {
-      final h = await _pump(tester, inputConnected: true);
+      final h = await _pump(tester, inputConnected: true,
+        initialParams: const {'modelChoice': 'local'});
       await _send(tester, h.input, _index);
 
       await tester.enterText(
@@ -372,6 +480,7 @@ void main() {
       final h = await _pump(
         tester,
         inputConnected: true,
+        initialParams: const {'modelChoice': 'local'},
         clientFactory: () => MockClient(
           (request) async =>
               http.Response('{"detail":"model unavailable"}', 500),
@@ -388,7 +497,8 @@ void main() {
         'disconnecting clears the previous result and disables Execute; a '
         'new payload re-fires fresh',
         (tester) async {
-      final h = await _pump(tester, inputConnected: true);
+      final h = await _pump(tester, inputConnected: true,
+        initialParams: const {'modelChoice': 'local'});
       await _send(tester, h.input, _index);
       expect(h.emitted, hasLength(1));
 
@@ -414,6 +524,7 @@ void main() {
       final h = await _pump(
         tester,
         inputConnected: true,
+        initialParams: const {'modelChoice': 'local'},
         clientFactory: () =>
             MockClient((_) => response.future),
       );
@@ -447,6 +558,7 @@ void main() {
       final h = await _pump(
         tester,
         inputConnected: true,
+        initialParams: const {'modelChoice': 'local'},
         clientFactory: () =>
             MockClient((_) => response.future),
       );
@@ -534,17 +646,25 @@ void main() {
           ],
         });
 
-    testWidgets('connecting authInput switches from the local Model field '
-        'to a provider-specific one; disconnecting reverts', (tester) async {
+    testWidgets('the remote model field is shown for the default Gemini '
+        'choice even before a credential connects, labeled generically; '
+        'connecting one specialises the label; switching to Local hides it',
+        (tester) async {
       final h = await _pump(tester);
-      expect(find.text('mlx-community/Phi-4-mini-instruct-4bit'), findsOneWidget);
+      expect(_remoteModelField(), findsOneWidget);
+      expect(find.text('Model (Google Gemini)'), findsOneWidget,
+          reason: 'falls back to the provider default label with no profile connected yet');
 
       await _send(tester, h.auth, _profile.toAa());
-      expect(find.text('Model (Google Gemini)'), findsOneWidget);
-      expect(find.text('mlx-community/Phi-4-mini-instruct-4bit'), findsNothing);
+      expect(find.text('Model (Google Gemini)'), findsOneWidget,
+          reason: 'now reflecting the actually-connected profile');
 
       h.auth.disconnect();
       await tester.pumpAndSettle();
+      expect(_remoteModelField(), findsOneWidget, reason: 'Gemini is still the choice');
+
+      await _pickModelChoice(tester, 'mlx-community/Phi-4-mini-instruct-4bit');
+      expect(_remoteModelField(), findsNothing);
       expect(find.text('mlx-community/Phi-4-mini-instruct-4bit'), findsOneWidget);
     });
 
@@ -565,7 +685,7 @@ void main() {
         ),
       );
       await _send(tester, h.auth, _profile.toAa());
-      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await tester.enterText(_remoteModelField(), 'gemini-pro');
       await _send(tester, h.input, twoRowIndex);
 
       expect(buildPromptRequests, hasLength(1));
@@ -608,7 +728,7 @@ void main() {
             }),
       );
       await _send(tester, h.auth, _profile.toAa());
-      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await tester.enterText(_remoteModelField(), 'gemini-pro');
       await _send(tester, h.input, _index);
 
       expect(seenKeyHeader, 'sk-stored');
@@ -675,7 +795,7 @@ void main() {
             }),
       );
       await _send(tester, h.auth, _profile.toAa());
-      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await tester.enterText(_remoteModelField(), 'gemini-pro');
       await _send(tester, h.input, twoRowIndex);
 
       expect(mergeRequests.single['docstrings'], hasLength(1));
@@ -700,7 +820,7 @@ void main() {
         ),
       );
       await _send(tester, h.auth, _profile.toAa());
-      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await tester.enterText(_remoteModelField(), 'gemini-pro');
       await _send(tester, h.input, _index);
 
       expect(remoteRequests, hasLength(1), reason: 'the provider really was called');
@@ -742,7 +862,7 @@ void main() {
             }),
       );
       await _send(tester, h.auth, _profile.toAa());
-      await tester.enterText(find.byType(TextField).first, 'gemini-pro');
+      await tester.enterText(_remoteModelField(), 'gemini-pro');
       await _send(tester, h.input, twoRowIndex); // auto-fires, blocks on row 2
 
       await secondCallStarted.future;
@@ -785,7 +905,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(
-        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        tester.widget<TextField>(_remoteModelField()).controller!.text,
         'gemini-fast',
       );
     });

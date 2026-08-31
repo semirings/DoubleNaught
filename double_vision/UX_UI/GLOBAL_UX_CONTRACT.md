@@ -44,6 +44,18 @@ exceptions, no node-specific verbs (earlier iterations had "Load,"
   node's *required* inputs are satisfied (and valid, where a field has
   validation — e.g. Load File's URL). It is NOT gated by the Wait checkbox
   — see §3.
+- **The enabled condition can be compound, not just "required ports
+  satisfied."** A node's fields/selections can add their own additional
+  requirements. Example: LLM Documenter's Execute is disabled whenever a
+  remote model (e.g. Gemini) is selected but no credential is connected
+  via its auth port — selecting the local/offline model does not carry
+  that extra requirement. This must be evaluated LIVE — the button's
+  enabled state updates immediately as the user changes a relevant
+  field/selection or connects/disconnects a relevant port, not just once
+  at node creation. When building a new node, check whether any of its
+  own fields/dropdowns introduce a similar conditional requirement beyond
+  simple port-wiring — don't assume "ports satisfied" is always
+  sufficient.
 - **Executing = Cancel.** For the FULL DURATION of execution, the Execute
   button becomes a **Cancel** button: relabeled "Cancel," amber/orange
   fill (deliberately NOT the same red as the error state — cancelling
@@ -264,12 +276,15 @@ this mockup's exact visual language.
   - Conversational Chat (renamed from "ChatML")
   - Instruction / Task (renamed from "Prompt / Completion")
   - Passthrough (renamed from "Row Passthrough")
-- **LLM Documenter's Model** is, for now, a deliberate **single-item list**
-  containing only `mlx-community/Phi-4-mini-instruct`. This is a scope
-  decision, not a placeholder oversight — expanding this list requires a
-  separate product decision (local model registry? API-sourced? user-
-  added?) that has not yet been made. Do not invent additional model
-  options.
+- **LLM Documenter's Model** — SUPERSEDED: the earlier single-item
+  scope decision no longer applies. This node's primary purpose is
+  remote-provider documentation generation, so the default is now
+  **Gemini**, with the local SLM (`mlx-community/Phi-4-mini-instruct`)
+  kept as a selectable no-cost/no-credential fallback option (no longer
+  the default). Additional remote providers may be added later. See §2's
+  "compound enabled condition" note — selecting a remote model here
+  disables Execute until a credential is connected via LLM Documenter's
+  auth port; selecting the local model does not carry that requirement.
 - **Save File's "Format"** has a known, complete set of options (confirmed
   against the actual running implementation, not just the original
   mockup): **Parquet, CSV, JSON, JSONL, Text, PNG, JPEG.** Default

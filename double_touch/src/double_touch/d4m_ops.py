@@ -210,9 +210,11 @@ def eval_script(
     where ``output_symbol="D"`` returns the filtered AA.
 
     Raises:
-        RuntimeError:  Julia or D4M.jl could not be loaded.
+        RuntimeError:  Julia or D4M.jl could not be loaded, or the script or
+                       any assignment into Julia raised (message pre-rendered
+                       from the original juliacall.JuliaError — see the note
+                       on the `except` clause below).
         TypeError:     Named symbol does not hold an Assoc.
-        Any exception the Julia script itself raises.
     """
     jl = _julia()
     # Preprocess MATLAB-style call syntax using all input variable names.
@@ -225,6 +227,20 @@ def eval_script(
                 assigned.append(name)
             jl.seval(processed)
             result = jl.seval(output_symbol)
+        except Exception as e:
+            # Render the message now, in this same call frame, before the
+            # `finally` block below makes another Julia call. Empirically,
+            # str()-ing a juliacall.JuliaError AFTER an intervening Julia
+            # call (even an unrelated one, like the variable-cleanup below)
+            # hangs when this whole call chain is driven through an anyio
+            # blocking portal (e.g. FastAPI route -> TestClient/uvicorn) —
+            # str() on a fresh JuliaError works fine on its own, and so does
+            # a Julia call after it, but stringifying a *stale* one doesn't.
+            # Likely a world-age/backtrace-invalidation issue in
+            # juliacall/PythonCall.jl, not something to work around inside
+            # Julia. Converting to a plain str immediately, before anything
+            # else touches Julia, sidesteps it entirely.
+            raise RuntimeError(str(e)) from None
         finally:
             for name in assigned:
                 jl.seval(f"Main.eval(:(global {name} = nothing))")
@@ -251,9 +267,11 @@ def eval_expression(inputs: dict[str, AssocArray], expression: str) -> AssocArra
         The result of the expression as a wire AssocArray.
 
     Raises:
-        RuntimeError:  Julia or D4M.jl could not be loaded.
+        RuntimeError:  Julia or D4M.jl could not be loaded, or the expression
+                       or any assignment into Julia raised (message
+                       pre-rendered from the original juliacall.JuliaError —
+                       see `eval_script`'s matching `except` clause for why).
         TypeError:     Expression result was not an Assoc.
-        Any exception the Julia expression itself raises.
     """
     jl = _julia()
     expression = _preprocess(expression, set(inputs.keys()))
@@ -264,6 +282,8 @@ def eval_expression(inputs: dict[str, AssocArray], expression: str) -> AssocArra
                 setattr(jl.Main, name, _to_julia_assoc(aa))
                 assigned.append(name)
             result = jl.seval(expression)
+        except Exception as e:
+            raise RuntimeError(str(e)) from None
         finally:
             for name in assigned:
                 jl.seval(f"Main.eval(:(global {name} = nothing))")

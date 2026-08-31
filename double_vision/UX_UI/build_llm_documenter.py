@@ -23,23 +23,38 @@ Spec (per user, 2026):
     build_status_row() helper.
 
 RESOLVED (was previously open questions):
-  - Model picklist: for now, a SINGLE-ITEM list containing only
-    "mlx-community/Phi-4-mini-instruct". Not a design gap — a deliberate
-    scope decision pending a real model-source decision (local registry?
-    API? user-added?) before more items are added.
+  - Model picklist: SUPERSEDES the earlier single-item decision. Now has
+    at least two options: "Gemini" (DEFAULT — this node's primary purpose
+    is remote-provider documentation) and the local SLM
+    "mlx-community/Phi-4-mini-instruct" (kept selectable, no-cost/no-
+    credential fallback option, no longer the default). More remote
+    providers may be added later; exact model-identifier strings are
+    determined by the app's ModelCatalog/RemoteRequest implementation,
+    not fixed here.
   - Open/expanded dropdown state: DELIBERATELY not designed in Blender, for
     either this node or JSONL Formatter's Format Mode. Every node has
     exactly one card representation in these mockups; adding a second
     "open" card layout would break that rule. VSClaude implements the open
     list using the platform's standard dropdown/select widget, not a custom
     widget matching this mockup's exact visual style.
+  - Execute-enabled condition is now COMPOUND, not just "astIndex has
+    data": Execute is DISABLED whenever a remote model (e.g. Gemini) is
+    selected but no credential is connected via authInput. Selecting the
+    local SLM keeps Execute enabled without a credential, same as before.
+    This must update live as the user changes model selection or
+    connects/disconnects authInput — not just evaluated once at node
+    creation. See GLOBAL_UX_CONTRACT.md §2 for the general principle this
+    falls under (Execute's enabled condition can depend on more than port
+    satisfaction alone, node-specific).
 
 States exposed for VSClaude / implementation reference:
   Card border:      normal | executing | error        (shared convention)
   Input port:        unfilled | connected_idle | transmitting
   Output port:        unfilled | connected_idle | transmitting
-  Model picklist:    closed only (single item: mlx-community/Phi-4-mini-instruct)
+  Model picklist:    closed only (options: Gemini [default], mlx-community/Phi-4-mini-instruct)
   Execute button:    disabled | enabled | lit | executing (Cancel — see GLOBAL_UX_CONTRACT.md §2)
+                     disabled specifically when: astIndex empty, OR
+                     (remote model selected AND authInput not connected)
   Wait checkbox:     unchecked | checked | disabled (locked, mid-execution)
   Status row:        idle | running | success | error
 """
@@ -114,7 +129,7 @@ model_pts = rounded_rect_points(cx, MODEL_BOX_Y, MODEL_BOX_W, MODEL_BOX_H, 0.08,
 make_filled(N("Model_Fill"), model_pts, N("ModelFillMat"), CONTENT_NORMAL_COL, tier="fill", coll=coll)
 make_outline(N("Model_Outline"), model_pts, N("ModelOutlineMat"), OUTLINE_NORMAL_COL,
              tier="outline", thickness=0.02, strength=0.7, coll=coll)
-make_text(N("Model_Value"), "mlx-community/Phi-4-mini-instruct", (0.40, MODEL_BOX_Y), 0.17,
+make_text(N("Model_Value"), "Gemini", (0.40, MODEL_BOX_Y), 0.17,
           N("ModelValueMat"), TEXT_COL, tier="labels", align='LEFT', coll=coll)
 # dropdown chevron indicator (marks this as a pick list, not free text)
 make_text(N("Model_Chevron"), "\u25be", (CARD_W-0.35, MODEL_BOX_Y), 0.18, N("ModelChevronMat"),

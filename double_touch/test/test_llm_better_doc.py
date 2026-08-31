@@ -34,16 +34,26 @@ _SCHEMA = [
 
 
 def _index(rows: list[dict[str, str]]) -> AssocArray:
-    """A 7-column AST index from partial row dicts, keyed `def0`, `def1`, …"""
+    """A 7-column AST index from partial row dicts, keyed `def0`, `def1`, …
+
+    Omits unset columns entirely rather than storing an explicit empty-string
+    cell, matching `ast_extract.py::aa_from_table`'s convention. D4M.jl treats
+    an empty string as its "absent" sentinel — storing one crashes `find()`
+    (and anything built on it, like `combine`/`right_overwrite`) with a
+    `BoundsError`, even on a well-formed operand.
+    """
     triples_rows: list[str] = []
     triples_cols: list[str] = []
     triples_vals: list[str] = []
     for i, row in enumerate(rows):
         key = f"def{i}"
         for col in _SCHEMA:
+            val = row.get(col, "")
+            if not val:
+                continue
             triples_rows.append(key)
             triples_cols.append(col)
-            triples_vals.append(row.get(col, ""))
+            triples_vals.append(val)
     return AssocArray(rows=triples_rows, cols=triples_cols, vals=triples_vals)
 
 
@@ -122,21 +132,23 @@ def test_merge_adds_the_better_docstring_column_via_d4m():
 
 
 @d4m_jl_required
-def test_merge_fills_a_missing_row_with_an_empty_string():
+def test_merge_leaves_a_missing_row_without_a_better_docstring_cell():
     aa = _index([
         {"symbol_name": "f", "raw_code": "f(x) = x"},
         {"symbol_name": "g", "raw_code": "g(x) = x * 2"},
     ])
 
     # Only def0's docstring was generated (e.g. def1's remote call failed).
+    # def1 gets no better_docstring cell at all — not an explicit empty
+    # string, which would violate the AA no-empty-cell convention and is
+    # exactly what D4M.jl's find()/combine() crash on.
     merged = merge_better_docstrings(aa, {"def0": "Doc for f."})
 
     by_row = {
         r: v for r, c, v in zip(merged.rows, merged.cols, merged.vals)
         if c == "better_docstring"
     }
-    assert by_row["def0"] == "Doc for f."
-    assert by_row["def1"] == ""
+    assert by_row == {"def0": "Doc for f."}
 
 
 @d4m_jl_required

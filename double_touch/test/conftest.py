@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -38,3 +39,38 @@ d4m_jl_required = pytest.mark.skipif(
     reason="D4M.jl did not load via juliacall — see d4m_ops._julia(); "
     "skip rather than fail when the Julia environment isn't ready",
 )
+
+
+_exitstatus: int = 0
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """Record the exit status; the actual force-exit happens in unconfigure.
+
+    Same root cause and fix as `app.py`'s `_shutdown_force_exit`: juliacall
+    registers an `atexit` hook (`jl_atexit_hook`) that runs Julia's own
+    finalizers, and that can hang the interpreter on shutdown depending on
+    what Julia-side state is still alive — independent of whether the tests
+    themselves passed. `os._exit()` bypasses the atexit chain entirely.
+
+    Deliberately not done here, even with a `hookwrapper` that `yield`s past
+    every other `pytest_sessionfinish` implementation first: the terminal
+    reporter's own final summary line (`TerminalReporter.pytest_sessionfinish`
+    -> `summary_stats()`) writes through a `TerminalWriter` that only flushes
+    when explicitly told to — a bare `sys.stdout.flush()` here raced it and
+    the summary line never made it out. `pytest_unconfigure` fires later,
+    after session teardown has actually finished writing and flushing
+    everything, so waiting for it (rather than trying to out-flush the
+    terminal reporter by hand) is the reliable option.
+    """
+    global _exitstatus
+    _exitstatus = int(exitstatus)
+
+
+def pytest_unconfigure(config):
+    from double_touch import d4m_ops
+
+    if d4m_ops._d4m_ready:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(_exitstatus)
