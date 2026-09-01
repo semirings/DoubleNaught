@@ -831,6 +831,7 @@ class _WorkflowPageState extends State<WorkflowPage>
         event.logicalKey == LogicalKeyboardKey.backspace;
     final meta = HardwareKeyboard.instance.isMetaPressed; // Cmd on macOS
     final isCopy = event.logicalKey == LogicalKeyboardKey.keyC && meta;
+    final isSelectAll = event.logicalKey == LogicalKeyboardKey.keyA && meta;
 
     // ⌘G group · ⌘⇧G ungroup · ⌘⌥G regroup. Checked most-modified first, since
     // ⌘⇧G also satisfies the bare ⌘G test.
@@ -839,12 +840,20 @@ class _WorkflowPageState extends State<WorkflowPage>
     final isRegroup = isG && HardwareKeyboard.instance.isAltPressed;
     final isGroup = isG && !isUngroup && !isRegroup;
 
-    if (!isDelete && !isCopy && !isG) return KeyEventResult.ignored;
+    if (!isDelete && !isCopy && !isG && !isSelectAll) return KeyEventResult.ignored;
 
     // If a text field (not the canvas) is focused, let it handle the key.
     final focus = FocusManager.instance.primaryFocus;
     if (focus != null && focus != _canvasFocus) {
       return KeyEventResult.ignored;
+    }
+
+    if (isSelectAll) {
+      setState(() {
+        _selectedNodeIds.addAll(_nodes.map((n) => n.id));
+        _selectedEdge = null;
+      });
+      return KeyEventResult.handled;
     }
 
     if (isCopy) {
