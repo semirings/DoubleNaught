@@ -136,8 +136,8 @@ class _AaDataFrameState extends State<AaDataFrame> {
 
     debugPrint("AaDataFrame Received colKeys (${colKeys.length}): $colKeys");
 
-    final rowsClipped = false;
-    final colsClipped = false;
+    const rowsClipped = false;
+    const colsClipped = false;
 
     // (row, col) -> value lookup — only index cells that will be displayed.
     final rowSet = rowKeys.toSet();

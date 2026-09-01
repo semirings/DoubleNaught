@@ -38,7 +38,7 @@ class SaveFileApi {
         Uri.parse('$baseUrl/save'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'aa': aa?.toJson(),
+          'dataToSave': aa?.toJson(),
           'text': text,
           'imageBase64': imageBase64,
           'url': url,

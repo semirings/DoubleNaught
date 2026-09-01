@@ -58,7 +58,7 @@ class WaitCheckbox extends StatelessWidget {
                 border: Border.all(
                   color: enabled
                       ? _outlineNormal
-                      : _outlineNormal.withOpacity(0.4),
+                      : _outlineNormal.withValues(alpha: 0.4),
                   width: 1.2,
                 ),
               ),

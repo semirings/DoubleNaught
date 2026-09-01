@@ -30,7 +30,6 @@ class _Harness extends StatefulWidget {
   const _Harness({
     required this.api,
     required this.emitted,
-    this.initialParams,
     this.onPorts,
     this.onAddLeft,
     this.onAddRight,
@@ -135,7 +134,7 @@ void main() {
       final ports = <int, InputPort>{};
       await tester.pumpWidget(_Harness(
         api: _successApi(),
-        emitted: [],
+        emitted: const [],
         onPorts: ports.addAll,
       ));
 
@@ -154,7 +153,7 @@ void main() {
       final ports = <int, InputPort>{};
       await tester.pumpWidget(_Harness(
         api: _successApi(),
-        emitted: [],
+        emitted: const [],
         onPorts: ports.addAll,
       ));
 
@@ -180,7 +179,7 @@ void main() {
     });
 
     testWidgets('a port can be renamed inline', (tester) async {
-      await tester.pumpWidget(_Harness(api: _successApi(), emitted: []));
+      await tester.pumpWidget(_Harness(api: _successApi(), emitted: const []));
 
       final nameField = find.widgetWithText(TextField, 'A');
       await tester.enterText(nameField, 'left');
@@ -238,7 +237,7 @@ void main() {
     });
 
     testWidgets('the lone remaining port has no remove icon', (tester) async {
-      await tester.pumpWidget(_Harness(api: _successApi(), emitted: []));
+      await tester.pumpWidget(_Harness(api: _successApi(), emitted: const []));
       expect(find.byIcon(Icons.close), findsNothing);
     });
   });
@@ -251,7 +250,7 @@ void main() {
       final ports = <int, InputPort>{};
       await tester.pumpWidget(_Harness(
         api: _successApi(),
-        emitted: [],
+        emitted: const [],
         onPorts: ports.addAll,
         onAddLeft: () => left++,
         onAddRight: () => right++,
@@ -274,7 +273,7 @@ void main() {
   group('output port', () {
     testWidgets('is labeled "Out", not the legacy "evaluatedResult"',
         (tester) async {
-      await tester.pumpWidget(_Harness(api: _successApi(), emitted: []));
+      await tester.pumpWidget(_Harness(api: _successApi(), emitted: const []));
       expect(
         tester.widget<OutputConnector>(find.byType(OutputConnector)).label,
         'Out',
@@ -284,7 +283,7 @@ void main() {
 
   group('Wait/Execute readiness', () {
     testWidgets('empty script and no port data: Execute disabled', (tester) async {
-      await tester.pumpWidget(_Harness(api: _successApi(), emitted: []));
+      await tester.pumpWidget(_Harness(api: _successApi(), emitted: const []));
       expect(
         tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
         isFalse,
@@ -440,7 +439,7 @@ void main() {
 
       await tester.pumpWidget(_Harness(
         api: api,
-        emitted: [],
+        emitted: const [],
         onPorts: ports.addAll,
       ));
 
@@ -601,7 +600,7 @@ void main() {
 
       await tester.pumpWidget(_Harness(
         api: gated.api,
-        emitted: [],
+        emitted: const [],
         onPorts: ports.addAll,
       ));
 
@@ -626,7 +625,7 @@ void main() {
   group('bidirectional script sync (Focus Panel)', () {
     testWidgets('typing alone never conjures the panel', (tester) async {
       await tester.pumpWidget(
-        _Harness(api: _successApi(), emitted: []),
+        _Harness(api: _successApi(), emitted: const []),
       );
 
       await tester.enterText(
@@ -641,7 +640,7 @@ void main() {
         'in either surface appear in the other',
         (tester) async {
       await tester.pumpWidget(
-        _Harness(api: _successApi(), emitted: []),
+        _Harness(api: _successApi(), emitted: const []),
       );
 
       final scriptField =
@@ -673,7 +672,7 @@ void main() {
 
     testWidgets('the corner expand icon also opens the editor', (tester) async {
       await tester.pumpWidget(
-        _Harness(api: _successApi(), emitted: []),
+        _Harness(api: _successApi(), emitted: const []),
       );
 
       await tester.tap(find.byTooltip('Expand Editor'));

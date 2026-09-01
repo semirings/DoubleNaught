@@ -59,9 +59,10 @@ def _build_prompt(symbol: str, code: str, existing_doc: str, hint: str = "") -> 
     prompt = (
         f"Generate a concise, technical docstring for the following "
         f"Julia function:\n\n"
-        f"Symbol: {symbol}\n"
-        f"Code:\n{code}\n"
     )
+    if symbol.strip():
+        prompt += f"Symbol: {symbol}\n"
+    prompt += f"Code:\n{code}\n"
     if existing_doc.strip():
         prompt += f"\nExisting docstring:\n{existing_doc}\n"
     if hint.strip():

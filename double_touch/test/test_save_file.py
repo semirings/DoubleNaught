@@ -222,3 +222,51 @@ def test_save_cancel_route_reports_false_rather_than_erroring_when_nothing_was_w
     )
     assert response.status_code == 200
     assert response.json()["removed"] is False
+
+
+# --- End-to-end: AA → Parquet → validate round-trip -------------------------
+
+
+def test_execute_save_parquet_with_sparse_triples_roundtrips(tmp_path, monkeypatch):
+    """Reconstruct the Save File node's real workflow: AA sparse triples
+    flow from frontend → backend, get saved as Parquet, and can be read back.
+    Verifies the fix for the dataToSave key mismatch.
+    """
+    import pyarrow.parquet as pq
+    monkeypatch.setattr("double_touch.save_file.storage_out_dir", lambda: tmp_path)
+
+    # Create an AA in sparse triple form (as frontend sends it after toJson()).
+    aa = AssocArray(
+        rows=["doc:1", "doc:1", "doc:2", "doc:2"],
+        cols=["text", "metadata", "text", "metadata"],
+        vals=["hello world", "source:web", "goodbye world", "source:file"],
+    )
+
+    # Call execute_save directly (bypassing the route for unit test clarity).
+    out_path, bytes_written = execute_save(
+        aa=aa,
+        filename="test_data",
+        format="parquet",
+    )
+
+    # Verify file was written.
+    assert out_path.exists()
+    assert out_path.suffix == ".parquet"
+    assert bytes_written > 0
+
+    # Read the Parquet file back and validate its structure.
+    table = pq.read_table(str(out_path))
+    assert set(table.column_names) == {"rowKey", "colKey", "val"}
+
+    # Verify triplet data is intact.
+    rows_read = table.column("rowKey").to_pylist()
+    cols_read = table.column("colKey").to_pylist()
+    vals_read = table.column("val").to_pylist()
+
+    assert rows_read == aa.rows
+    assert cols_read == aa.cols
+    assert vals_read == [str(v) for v in aa.vals]
+
+    # Verify metadata tag exists (for auto-detection on load).
+    metadata = table.schema.metadata or {}
+    assert metadata.get(b"dn_type") == b"associative_array"
