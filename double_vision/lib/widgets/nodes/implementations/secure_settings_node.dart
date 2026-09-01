@@ -81,15 +81,17 @@ class _SecureSettingsNodeState extends BaseNodeState<SecureSettingsNode> {
   Future<void> _load({String? select}) async {
     final profiles = await _vault.profiles();
     if (!mounted) return;
-    final chosen = profiles.firstWhere(
-      (p) => p.id == (select ?? _selected?.id),
-      orElse: () => profiles.isEmpty
-          ? _missing
-          : profiles.first,
-    );
+    AuthProfile? chosen;
+    final targetId = select ?? _selected?.id;
+    if (targetId != null) {
+      chosen = profiles.firstWhere(
+        (p) => p.id == targetId,
+        orElse: () => _missing,
+      );
+    }
     setState(() {
       _profiles = profiles;
-      _selected = identical(chosen, _missing) ? null : chosen;
+      _selected = chosen == null || identical(chosen, _missing) ? null : chosen;
       _loading = false;
     });
     if (_selected != null) await _refreshHealth();
@@ -260,7 +262,7 @@ class _SecureSettingsNodeState extends BaseNodeState<SecureSettingsNode> {
           DropdownMenu<AuthProfile>(
             enableSearch: false,
             expandedInsets: EdgeInsets.zero,
-            label: const Text('Profile'),
+            label: const Text('Select Credential'),
             initialSelection: _selected,
             onSelected: (p) {
               if (p != null) _select(p);
