@@ -174,15 +174,16 @@ app = FastAPI(
 
 
 @app.on_event("startup")
-async def _startup_warm_julia() -> None:
-    """Pre-warm the Julia runtime in a background thread at server start.
+def _startup_warm_julia() -> None:
+    """Pre-warm the Julia runtime synchronously at server start.
 
     Julia's first load (cold start) takes ~2 minutes to precompile D4M.jl.
-    Running this eagerly means the first /d4m/exec request hits a warm runtime
-    instead of hanging for minutes waiting for JIT compilation.
+    Running this eagerly (synchronously, blocking server start) ensures the
+    first /d4m/exec request hits a warm runtime instead of hanging for
+    minutes waiting for JIT compilation. The warmup blocks the server startup,
+    which is acceptable—better to delay startup than to hang mid-request.
     """
-    import threading as _t
-    _t.Thread(target=_warm_julia, daemon=True, name="julia-warmup").start()
+    _warm_julia()
 
 
 @app.on_event("shutdown")

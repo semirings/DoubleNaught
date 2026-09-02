@@ -525,23 +525,63 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _onCanvasTapUp(TapUpDetails d) {
+    debugPrint('[CANVAS-TAP] d.localPosition: ${d.localPosition}');
+    debugPrint('[CANVAS-TAP] d.globalPosition: ${d.globalPosition}');
+
+    // Compare: what does globalToLocal give us?
+    final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box != null) {
+      final fromGlobalToLocal = box.globalToLocal(d.globalPosition);
+      debugPrint('[CANVAS-TAP] globalToLocal(d.globalPosition): $fromGlobalToLocal');
+      debugPrint('[CANVAS-TAP] difference: dx=${fromGlobalToLocal.dx - d.localPosition.dx}, dy=${fromGlobalToLocal.dy - d.localPosition.dy}');
+    }
+
     _canvasFocus.requestFocus(); // so Delete/Backspace target this canvas
+
+    // Convert tap position from visual (transformed) space to scene space
+    final scene = _toSceneCoordinates(d.localPosition);
+    debugPrint('[CANVAS-TAP] converted to scene: $scene');
+
     // Clicking empty canvas selects the edge there (if any) and clears node
     // selection.
     setState(() {
-      _selectedEdge = _edgeAt(d.localPosition);
+      final hitEdge = _edgeAt(scene);
+      _selectedEdge = hitEdge;
       _selectedNodeIds.clear();
+      debugPrint('[CANVAS-TAP] result: edge=$hitEdge, cleared nodes');
     });
   }
 
+  /// Convert a position from transformed visual space to untransformed scene space.
+  Offset _toSceneCoordinates(Offset visualPos) {
+    final inv = Matrix4.copy(_view)..invert();
+    // Apply 2D affine transformation: (x', y') = M * (x, y, 1)
+    // Matrix4 storage is column-major: [0-3]=col0, [4-7]=col1, [8-11]=col2, [12-15]=col3
+    final m = inv.storage;
+    final x = visualPos.dx;
+    final y = visualPos.dy;
+    final scenePos = Offset(
+      m[0] * x + m[4] * y + m[12],
+      m[1] * x + m[5] * y + m[13],
+    );
+
+    // Detailed logging to diagnose coordinate issues
+    debugPrint('[COORD-TRANSFORM] visual: $visualPos → scene: $scenePos');
+    debugPrint('[COORD-TRANSFORM] _view zoom: $_zoom, _view translation: ${Offset(_view.storage[12], _view.storage[13])}');
+    debugPrint('[COORD-TRANSFORM] inverse matrix diag: [${m[0]}, ${m[5]}], translation: [${m[12]}, ${m[13]}]');
+
+    return scenePos;
+  }
+
   void _onCanvasSecondaryTapUp(TapUpDetails d) {
-    final edge = _edgeAt(d.localPosition);
+    final scene = _toSceneCoordinates(d.localPosition);
+    final edge = _edgeAt(scene);
     if (edge != null) {
       setState(() => _selectedEdge = edge);
       _showEdgeMenu(d.globalPosition, edge);
     } else {
       // Empty canvas → offer to add a node at the click point.
-      _showAddNodeMenu(d.globalPosition, d.localPosition);
+      _showAddNodeMenu(d.globalPosition, scene);
     }
   }
 
@@ -549,6 +589,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// Delete. When [extend] is true (Shift-click) the node is toggled into/out of
   /// the selection; otherwise the set is replaced with just this node.
   void _selectNode(int id, {bool extend = false}) {
+    debugPrint('[SELECT-DEBUG] _selectNode(id=$id, extend=$extend)');
     // Do NOT call _canvasFocus.requestFocus() here.  Stealing keyboard focus on
     // every node click would freeze any TextField the user is editing inside a
     // node.  Canvas focus is established by autofocus:true at startup and by
@@ -556,24 +597,31 @@ class _WorkflowPageState extends State<WorkflowPage>
     // ignores Delete/Backspace when focus is on anything other than _canvasFocus,
     // so node-deletion shortcuts still work correctly when the canvas is focused.
     setState(() {
+      debugPrint('[SELECT-DEBUG] setState executing for node $id');
       // Bring to front (inlined to avoid a second setState / canvas rebuild).
       final i = _nodes.indexWhere((n) => n.id == id);
+      debugPrint('[SELECT-DEBUG] node index: $i (total nodes: ${_nodes.length})');
       if (i >= 0 && i != _nodes.length - 1) {
         final n = _nodes.removeAt(i);
         _nodes.add(n);
+        debugPrint('[SELECT-DEBUG] brought node $id to front');
       }
       if (extend) {
         if (_selectedNodeIds.contains(id)) {
           _selectedNodeIds.remove(id);
+          debugPrint('[SELECT-DEBUG] deselected node $id (was in multi-selection)');
         } else {
           _selectedNodeIds.add(id);
+          debugPrint('[SELECT-DEBUG] added node $id to multi-selection');
         }
       } else {
         _selectedNodeIds
           ..clear()
           ..add(id);
+        debugPrint('[SELECT-DEBUG] cleared selection and selected only node $id');
       }
       _selectedEdge = null;
+      debugPrint('[SELECT-DEBUG] after selection: _selectedNodeIds = $_selectedNodeIds');
     });
   }
 
@@ -1019,35 +1067,45 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _addNode(NodeType type) {
+    debugPrint('[NODE-DEBUG] _addNode(${type.type})');
     setState(() {
       // Grid placement: 3 columns × 280px rows. Column width (360px) exceeds
       // the widest node (320px); row height (280px) clears tall nodes. Nodes
       // never overlap on either axis regardless of how many are added.
       final col = _nodes.length % 3;
       final row = _nodes.length ~/ 3;
+      final newId = _nextId++;
+      debugPrint('[NODE-DEBUG] adding node: type=${type.type}, id=$newId, x=${32.0 + col * 360.0}, y=${48.0 + row * 280.0}');
       _nodes.add(
         WorkflowNode(
-          id: _nextId++,
+          id: newId,
           type: type.type,
           x: 32.0 + col * 360.0,
           y: 48.0 + row * 280.0,
         ),
       );
+      debugPrint('[NODE-DEBUG] node added, total nodes now: ${_nodes.length}');
     });
   }
 
   /// Add a node with its top-left at a specific canvas position (from the
   /// right-click "Add" menu).
   void _addNodeAt(NodeType type, Offset canvasPos) {
+    debugPrint('[NODE-DEBUG] _addNodeAt(${type.type}) at $canvasPos');
     setState(() {
+      final newId = _nextId++;
+      final x = canvasPos.dx.clamp(-50000.0, 50000.0);
+      final y = canvasPos.dy.clamp(-50000.0, 50000.0);
+      debugPrint('[NODE-DEBUG] adding node at canvas position: type=${type.type}, id=$newId, x=$x, y=$y');
       _nodes.add(
         WorkflowNode(
-          id: _nextId++,
+          id: newId,
           type: type.type,
-          x: canvasPos.dx.clamp(-50000.0, 50000.0),
-          y: canvasPos.dy.clamp(-50000.0, 50000.0),
+          x: x,
+          y: y,
         ),
       );
+      debugPrint('[NODE-DEBUG] node added at position, total nodes now: ${_nodes.length}');
     });
   }
 
@@ -1108,9 +1166,16 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// The topmost node under a scene point, or null over empty canvas. Later
   /// entries in [_nodes] paint on top, so the search runs backwards.
   WorkflowNode? _nodeAt(Offset scene) {
+    debugPrint('[HIT-TEST] _nodeAt checking scene point: $scene');
     for (final n in _nodes.reversed) {
-      if (_nodeRect(n).contains(scene)) return n;
+      final rect = _nodeRect(n);
+      if (rect.contains(scene)) {
+        debugPrint('[HIT-TEST] ✓ Hit node ${n.id} at rect: $rect');
+        return n;
+      }
+      debugPrint('[HIT-TEST] node ${n.id} rect $rect — contains=${ rect.contains(scene)}');
     }
+    debugPrint('[HIT-TEST] ✗ No node hit at $scene');
     return null;
   }
 
@@ -1123,14 +1188,21 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// Begin a box-select — unless the drag started on a node, which belongs to
   /// that node rather than to the canvas.
   void _onCanvasPanStart(DragStartDetails d) {
-    if (_nodeAt(d.localPosition) != null) return;
+    debugPrint('[MARQUEE-START] visual: ${d.localPosition}');
+    final scene = _toSceneCoordinates(d.localPosition);
+    debugPrint('[MARQUEE-START] scene: $scene');
+    final hitNode = _nodeAt(scene);
+    debugPrint('[MARQUEE-START] hit node: ${hitNode?.id}, returning early: ${hitNode != null}');
+    if (hitNode != null) return;
+
     _canvasFocus.requestFocus(); // so Delete / Cmd-G land here afterwards
     final extend = HardwareKeyboard.instance.isShiftPressed;
     setState(() {
-      _marqueeStart = d.localPosition;
-      _marqueeEnd = d.localPosition;
+      _marqueeStart = scene;
+      _marqueeEnd = scene;
       _marqueeBase = extend ? {..._selectedNodeIds} : const {};
       _selectedEdge = null;
+      debugPrint('[MARQUEE-START] marquee initialized at $scene, extend=$extend');
       // The old selection is left standing until the first move event replaces
       // it. Clearing here instead would drop the selection bar out of the page
       // column and then put it back, jolting the canvas twice mid-drag.
@@ -1139,18 +1211,25 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   void _onCanvasPanUpdate(DragUpdateDetails d) {
     if (_marqueeStart == null) return;
+    final scene = _toSceneCoordinates(d.localPosition);
     setState(() {
-      _marqueeEnd = d.localPosition;
+      _marqueeEnd = scene;
       final rect = _marqueeRect!;
+      debugPrint('[MARQUEE-UPDATE] marquee rect: $rect');
+
+      final overlapping = [
+        for (final n in _nodes)
+          if (_nodeRect(n).overlaps(rect)) n.id,
+      ];
+      debugPrint('[MARQUEE-UPDATE] overlapping nodes: $overlapping (base: $_marqueeBase)');
+
       _selectedNodeIds
         ..clear()
         ..addAll(_marqueeBase)
         // Touching is enough, as on every other canvas: a node need not be
         // wholly enclosed to be caught.
-        ..addAll([
-          for (final n in _nodes)
-            if (_nodeRect(n).overlaps(rect)) n.id,
-        ]);
+        ..addAll(overlapping);
+      debugPrint('[MARQUEE-UPDATE] final selection: $_selectedNodeIds');
     });
   }
 
@@ -2060,6 +2139,7 @@ class _WorkflowPageState extends State<WorkflowPage>
       // compete with or delay the TextFields' TapGestureRecognizers inside the
       // node body (unlike the former GestureDetector wrapper).
       onPointerDown: (event) {
+        debugPrint('[POINTER-DEBUG] onPointerDown on node ${node.id} at ${event.position}');
         final secondary = event.buttons & kSecondaryMouseButton != 0;
         _pressedNodeId = node.id;
         _draggedSincePress = false;
@@ -2070,17 +2150,22 @@ class _WorkflowPageState extends State<WorkflowPage>
         // selection. Anything else selects immediately, as before.
         final inMultiSelection =
             _selectedNodeIds.length > 1 && _selectedNodeIds.contains(node.id);
+        debugPrint('[POINTER-DEBUG] inMultiSelection=$inMultiSelection, secondary=$secondary, current selection=$_selectedNodeIds');
         // A right-press never narrows, so nothing is deferred for it.
         _pressDeferredSelect = inMultiSelection && !secondary;
         if (!inMultiSelection) {
+          debugPrint('[POINTER-DEBUG] calling _selectNode from onPointerDown');
           _selectNode(node.id,
               extend: HardwareKeyboard.instance.isShiftPressed);
+        } else {
+          debugPrint('[POINTER-DEBUG] deferring selection (already in multi-selection)');
         }
         if (secondary) {
           _showNodeMenu(event.position, node.id);
         }
       },
       onPointerUp: (event) {
+        debugPrint('[POINTER-DEBUG] onPointerUp on node ${node.id}');
         final wasPress = _pressedNodeId == node.id;
         _pressedNodeId = null;
         // A left *click* (no movement) on a member of a multi-selection narrows
@@ -2088,7 +2173,9 @@ class _WorkflowPageState extends State<WorkflowPage>
         // selection alone, and a press that already selected is not redone.
         final deferred = _pressDeferredSelect;
         _pressDeferredSelect = false;
+        debugPrint('[POINTER-DEBUG] wasPress=$wasPress, deferred=$deferred, draggedSincePress=$_draggedSincePress');
         if (wasPress && deferred && !_draggedSincePress) {
+          debugPrint('[POINTER-DEBUG] calling _selectNode from onPointerUp (click on multi-selected node)');
           _selectNode(node.id,
               extend: HardwareKeyboard.instance.isShiftPressed);
         }
