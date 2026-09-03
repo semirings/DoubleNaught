@@ -105,7 +105,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
   late List<_D4mPort> _ports;
   final Map<int, AaPayload> _portData = {};
 
-  final OutputPort _out = OutputPort('Out');
+  final OutputPort _out = OutputPort('out');
 
   late final TextEditingController _scriptCtrl;
   late final TextEditingController _outSymCtrl;
@@ -148,15 +148,15 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
     super.initState();
     final p = widget.initialParams ?? {};
 
-    // Restore port names from params (comma-separated); default = 1 port "A".
-    final names = (p['portNames'] ?? 'A')
+    // Restore port names from params (comma-separated); default = 1 port "in".
+    final names = (p['portNames'] ?? 'in')
         .split(',')
         .where((s) => s.isNotEmpty)
         .toList();
     _ports = names.map((n) => _D4mPort(n)).toList();
 
     _scriptCtrl = TextEditingController(text: p['script'] ?? '');
-    _outSymCtrl = TextEditingController(text: p['outputSymbol'] ?? 'Out');
+    _outSymCtrl = TextEditingController(text: p['outputSymbol'] ?? 'out');
 
     WidgetsBinding.instance.addObserver(this);
 
@@ -322,6 +322,41 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
   // Execute / Cancel
   // ---------------------------------------------------------------------------
 
+  /// Map display port names to safe Julia identifiers, handling reserved keywords.
+  /// "in" → "_in" (since "in" is a reserved word in Julia).
+  String _julliaVarNameFor(String displayName) {
+    const reserved = {'in'};
+    return reserved.contains(displayName) ? '_$displayName' : displayName;
+  }
+
+  /// Transform script text to use safe Julia variable names.
+  /// Replaces reserved keywords with their safe counterparts using word boundaries.
+  /// Example: "in.col" → "_in.col", but "print" stays "print".
+  String _transformScriptForReservedWords(String script) {
+    // Map of reserved names to their safe replacements
+    final replacements = <String, String>{};
+    for (final port in _ports) {
+      final safe = _julliaVarNameFor(port.name);
+      if (safe != port.name) {
+        replacements[port.name] = safe;
+      }
+    }
+
+    if (replacements.isEmpty) return script;
+
+    // Replace each reserved name with word boundaries to avoid substring matches
+    var result = script;
+    for (final entry in replacements.entries) {
+      // Match word boundaries: \b doesn't work in Dart regex, so use lookahead/lookbehind
+      final pattern = RegExp(
+        r'(?<![a-zA-Z0-9_])' + RegExp.escape(entry.key) + r'(?![a-zA-Z0-9_])',
+        multiLine: true,
+      );
+      result = result.replaceAll(pattern, entry.value);
+    }
+    return result;
+  }
+
   @override
   void fire() => _execute();
 
@@ -345,14 +380,16 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
         final ingest = await api.ingest(data);
         if (gen != _execGen) return; // cancelled — state is already idle
         _ports[i].handleId = ingest.handleId;
-        inputHandles[_ports[i].name] = ingest.handleId;
+        // Use safe Julia variable name (e.g. "in" → "_in" for reserved keywords)
+        inputHandles[_julliaVarNameFor(_ports[i].name)] = ingest.handleId;
       }
 
       final execResult = await api.exec(
         inputs: inputHandles,
-        script: _scriptCtrl.text.trim(),
+        // Transform script to use safe Julia variable names (e.g., "in" → "_in")
+        script: _transformScriptForReservedWords(_scriptCtrl.text.trim()),
         outputSymbol: _outSymCtrl.text.trim().isEmpty
-            ? 'Out'
+            ? 'out'
             : _outSymCtrl.text.trim(),
       );
       if (gen != _execGen || !mounted) return;
@@ -444,7 +481,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
   @override
   List<Widget> buildOutputConnectors(BuildContext context) => [
         OutputConnector(
-          label: 'Out',
+          label: 'out',
           idx: 0,
           active: _outputHandleId != null || widget.connectedOutputs.contains(0),
           dragData: PortRef(nodeId: widget.node.id, idx: 0),
@@ -483,12 +520,14 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
                 maxLines: 16,
                 scrollPhysics: const ClampingScrollPhysics(),
                 style: theme.textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'Julia D4M Script',
-                  hintText: 'Out = A + B\nOut = Out[sw"chunk:", :]',
+                  hintText: _ports.isNotEmpty
+                      ? 'out = ${_julliaVarNameFor(_ports[0].name)} + B\nout = out[sw"chunk:", :]'
+                      : 'out = _in + B',
                   isDense: true,
-                  border: OutlineInputBorder(),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                  border: const OutlineInputBorder(),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                 ),
                 onChanged: (v) {
                   setState(() {});
@@ -517,7 +556,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
         // --- Output symbol ---
         Row(
           children: [
-            Text('Out: ',
+            Text('out: ',
                 style: theme.textTheme.bodySmall
                     ?.copyWith(fontFamily: 'monospace')),
             Expanded(
@@ -530,7 +569,7 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
                   border: OutlineInputBorder(),
                   contentPadding:
                       EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  hintText: 'Out',
+                  hintText: 'out',
                 ),
                 onChanged: (_) => _saveParams(),
               ),

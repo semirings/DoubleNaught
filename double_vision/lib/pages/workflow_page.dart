@@ -4,6 +4,8 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../widgets/nodes/node_widths.dart';
+
 import '../config/node_registry.dart';
 import '../models/content_payload.dart';
 import '../services/infobus/input_port.dart';
@@ -17,40 +19,8 @@ import '../widgets/focus_panel.dart';
 import '../widgets/node_catalog_widget.dart';
 import '../widgets/nodes/nodes.dart';
 
-/// Default node width — used both for layout and to anchor edge endpoints.
-const double _kNodeWidth = 240;
-
 /// The box-select rectangle, so tests can assert it is drawn while dragging.
 const Key marqueeKey = ValueKey('canvas-marquee');
-
-/// Wider nodes. Must match the node widgets' own `_width` (InventoryNode /
-/// ReviewNode = 320). Output ports anchor at `node.x + width`, so a wrong value
-/// leaves the source end of a noodle floating inside the node.
-const double _kWideNodeWidth = 320;
-
-// D4M is wider than the standard wide group (340 vs 320).
-const double _kD4mNodeWidth = 340;
-
-/// Rendered width of a node by type, for anchoring its right-edge output ports.
-double _nodeWidthFor(String type) {
-  if (type == 'd4m') { return _kD4mNodeWidth; }
-  if (type == NodeGroup.type) { return 260; }
-  if (type == 'polyglotExecNode') { return 320; }
-  if (type == 'jsonlFormatterNode') { return 320; }
-  if (type == 'functionExtractionNode') { return 320; }
-  if (type == 'astExtractNode') { return 320; } // backward compat: old registry type
-  if (type == 'llmDocumenterNode') { return 320; }
-  if (type == 'remoteServiceNode') { return 320; } // backward compat: old registry type
-  if (type == 'save_file') { return 320; }
-  if (type == 'inventory' ||
-      type == 'review' ||
-      type == 'load_model' ||
-      type == 'model_classifier' ||
-      type == 'text_model_loader' ||
-      type == 'text_prompt' ||
-      type == 'text_inference') { return _kWideNodeWidth; }
-  return _kNodeWidth;
-}
 
 /// Re-point Load File edges saved against the removed `contents` port.
 ///
@@ -351,7 +321,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   // --- Port geometry (shared with the painters via the same constants) ---
 
   Offset _outputPortPos(WorkflowNode n, int idx) => Offset(
-    n.x + _nodeWidthFor(n.type),
+    n.x + getNodeWidth(n.type),
     n.y + kPortLaneTop + idx * kPortSpacing,
   );
   Offset _inputPortPos(WorkflowNode n, int idx) =>
@@ -525,11 +495,12 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _onCanvasTapUp(TapUpDetails d) {
-    debugPrint('[CANVAS-TAP] d.localPosition: ${d.localPosition}');
+    final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+    final stackSize = box?.size ?? Size.zero;
+    debugPrint('[CANVAS-TAP] Stack size: $stackSize, d.localPosition: ${d.localPosition}');
     debugPrint('[CANVAS-TAP] d.globalPosition: ${d.globalPosition}');
 
     // Compare: what does globalToLocal give us?
-    final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
     if (box != null) {
       final fromGlobalToLocal = box.globalToLocal(d.globalPosition);
       debugPrint('[CANVAS-TAP] globalToLocal(d.globalPosition): $fromGlobalToLocal');
@@ -1159,7 +1130,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   Rect _nodeRect(WorkflowNode n) => Rect.fromLTWH(
         n.x,
         n.y,
-        _nodeWidthFor(n.type),
+        getNodeWidth(n.type),
         _nodeSize(n.id)?.height ?? 140,
       );
 
@@ -1926,12 +1897,12 @@ class _WorkflowPageState extends State<WorkflowPage>
             onOpenWorkflow: _openWorkflow,
             onDeleteWorkflow: _deleteWorkflow,
           ),
-          if (_selectedNodeIds.isNotEmpty)
-            _SelectionBar(
-              count: _selectedNodeIds.length,
-              onDelete: _deleteSelectedNodes,
-              onCopy: _copySelectedNodes,
-            ),
+          _SelectionBar(
+            count: _selectedNodeIds.length,
+            enabled: _selectedNodeIds.isNotEmpty,
+            onDelete: _deleteSelectedNodes,
+            onCopy: _copySelectedNodes,
+          ),
           Expanded(
             child: Row(
               children: [
@@ -2059,16 +2030,7 @@ class _WorkflowPageState extends State<WorkflowPage>
                         onPanStart: _onCanvasPanStart,
                         onPanUpdate: _onCanvasPanUpdate,
                         onPanEnd: _onCanvasPanEnd,
-                        child: CustomPaint(
-                          painter: _EdgePainter(
-                            edges: _edges,
-                            byId: byId,
-                            color: scheme.primary,
-                            selectColor: scheme.tertiary,
-                            selected: _selectedEdge,
-                            hovered: _hoveredEdge,
-                          ),
-                        ),
+                        child: const SizedBox.expand(),
                       ),
                     ),
                   ),
@@ -2085,6 +2047,23 @@ class _WorkflowPageState extends State<WorkflowPage>
                       top: node.y,
                       child: _nodeShell(node, scheme),
                     ),
+
+                  // Edges layer (above nodes): renders edges on top so they're
+                  // always visible, even when routing through node areas.
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(
+                        painter: _EdgePainter(
+                          edges: _edges,
+                          byId: byId,
+                          color: scheme.primary,
+                          selectColor: scheme.tertiary,
+                          selected: _selectedEdge,
+                          hovered: _hoveredEdge,
+                        ),
+                      ),
+                    ),
+                  ),
 
                   // Live in-progress connection curve, above everything.
                   Positioned.fill(
@@ -2702,7 +2681,7 @@ class _EdgePainter extends CustomPainter {
       // the wrapper uses to position the ports (lane top + idx * spacing), with
       // the source's true width so wide nodes (Inventory/Review) anchor right.
       final start = Offset(
-        from.x + _nodeWidthFor(from.type),
+        from.x + getNodeWidth(from.type),
         from.y + kPortLaneTop + e.from.idx * kPortSpacing,
       );
       final end = Offset(to.x, to.y + kPortLaneTop + e.to.idx * kPortSpacing);
@@ -2777,7 +2756,7 @@ class _PendingEdgePainter extends CustomPainter {
     if (from == null) return;
 
     final start = Offset(
-      from.x + _nodeWidthFor(from.type),
+      from.x + getNodeWidth(from.type),
       from.y + kPortLaneTop + src.idx * kPortSpacing,
     );
     final path = _edgePath(start, end);
@@ -2841,11 +2820,13 @@ String _humanSize(int bytes) {
 /// competing for space with the always-visible header buttons.
 class _SelectionBar extends StatelessWidget {
   final int count;
+  final bool enabled;
   final VoidCallback onDelete;
   final VoidCallback onCopy;
 
   const _SelectionBar({
     required this.count,
+    required this.enabled,
     required this.onDelete,
     required this.onCopy,
   });
@@ -2857,10 +2838,13 @@ class _SelectionBar extends StatelessWidget {
     const deleteColor = Color(0xFFE5534B);
     const copyColor = Color(0xFF5B8DEF);
 
-    ButtonStyle compact(Color c) => OutlinedButton.styleFrom(
-          foregroundColor: c,
-          iconColor: c,
-          side: BorderSide(color: c, width: 1.5),
+    ButtonStyle compact(Color c, {bool disabled = false}) => OutlinedButton.styleFrom(
+          foregroundColor: disabled ? scheme.outlineVariant : c,
+          iconColor: disabled ? scheme.outlineVariant : c,
+          side: BorderSide(
+            color: disabled ? scheme.outlineVariant : c,
+            width: 1.5,
+          ),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -2877,24 +2861,28 @@ class _SelectionBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(Icons.check_box_outlined, size: 16, color: scheme.primary),
+          Icon(Icons.check_box_outlined,
+              size: 16,
+              color: enabled ? scheme.primary : scheme.outlineVariant),
           const SizedBox(width: 6),
           Text(
             '$count node${count == 1 ? '' : 's'} selected',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: scheme.onSurface, fontWeight: FontWeight.w500),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: enabled ? scheme.onSurface : scheme.outlineVariant,
+              fontWeight: FontWeight.w500,
+            ),
           ),
           const SizedBox(width: 12),
           OutlinedButton.icon(
-            onPressed: onCopy,
-            style: compact(copyColor),
+            onPressed: enabled ? onCopy : null,
+            style: compact(copyColor, disabled: !enabled),
             icon: const Icon(Icons.copy_outlined, size: 16),
             label: const Text('Copy'),
           ),
           const SizedBox(width: 6),
           OutlinedButton.icon(
-            onPressed: onDelete,
-            style: compact(deleteColor),
+            onPressed: enabled ? onDelete : null,
+            style: compact(deleteColor, disabled: !enabled),
             icon: const Icon(Icons.delete_outline, size: 16),
             label: const Text('Delete'),
           ),
