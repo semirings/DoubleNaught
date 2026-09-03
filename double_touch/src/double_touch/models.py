@@ -642,6 +642,8 @@ class SaveFileRequest(CamelModel):
     # Output format: "parquet" (AA only), "csv", "json", "txt", "png", "jpg".
     # Ignored if auto-detected from incoming data. Default: "parquet".
     format: str = "parquet"
+    # True = append to existing file (AA only); False = overwrite. Ignored for images.
+    append: bool = False
 
 
 class SaveFileResponse(CamelModel):

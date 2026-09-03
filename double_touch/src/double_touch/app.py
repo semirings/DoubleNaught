@@ -1685,6 +1685,7 @@ async def save_file(request: SaveFileRequest) -> SaveFileResponse:
             request.filename,
             request.format,
             request.url,
+            request.append,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

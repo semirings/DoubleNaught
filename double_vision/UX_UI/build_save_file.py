@@ -21,11 +21,33 @@ Spec (per user, 2026):
     URL-labeled field going forward, not a Load-File-specific exception.
   - Small save/browse icon button beside the URL field: kept (not
     instructed to remove), drawn as a simple floppy-disk-style glyph.
+  - ADDED: "Save Mode" radio button pair (Append / Overwrite), between the
+    Format dropdown and the Wait checkbox. Append is the default selection.
+    Radio semantics are mutually exclusive — exactly one selected at a
+    time (an earlier draft had a bug showing both as selected
+    simultaneously; corrected).
+    RESOLVED: when Format is PNG or JPEG (single-image formats with no
+    "append" semantics), the Append option is DISABLED (dim ring, dim
+    label — see Radio_Append_Disabled state) and Overwrite is
+    force-selected. For all other Format values (Parquet, CSV, JSON,
+    JSONL, Text), both options remain normally selectable, Append
+    defaulting to selected. This must update live as Format selection
+    changes — not just evaluated once. This is a similar pattern to LLM
+    Documenter's compound Execute-enabled condition (GLOBAL_UX_CONTRACT.md
+    §2) in spirit — one field's state depending on another field's
+    selected value — though here it's a radio OPTION's enabled state
+    depending on the Format dropdown, not Execute's enabled condition.
+  - Card height grown (3.9 -> 5.1) to fit the new radio row — an earlier
+    draft left CARD_H unchanged after adding this section, causing Wait/
+    Execute/status to render below the card's bottom edge entirely
+    (computed Y values came out negative). Fixed by growing the card;
+    verify this stays true if further widgets are ever added below Format.
 
 States exposed for VSClaude / implementation reference:
   Card border:     normal | executing | error         (shared convention)
   Input port:        unfilled | connected_idle | transmitting
-  Format picklist:  closed only (value: Parquet)
+  Format picklist:  closed only (values: Parquet, CSV, JSON, JSONL, Text, PNG, JPEG)
+  Save Mode:        Append (default) | Overwrite — mutually exclusive
   Execute button:   disabled | enabled | lit | executing (Cancel — see GLOBAL_UX_CONTRACT.md §2)
   Wait checkbox:    unchecked | checked | disabled (locked, mid-execution)
   Status row:       idle | running | success | error (standard, shared)
@@ -41,7 +63,7 @@ NODE_KEY = "SaveFile"
 def N(suffix):
     return f"{NODE_KEY}_{suffix}"
 
-CARD_W, CARD_H = 4.4, 3.9
+CARD_W, CARD_H = 4.4, 5.1  # grown to fit the Save Mode radio row (Wait/Execute/status were rendering below the card's bottom edge before this fix)
 cx = CARD_W / 2
 
 coll = new_node_collection("Save_File")
@@ -119,10 +141,45 @@ make_text(N("Format_Value"), "Parquet", (0.40, FMT_BOX_Y), 0.19, N("FormatValueM
 make_text(N("Format_Chevron"), "\u25be", (CARD_W-0.35, FMT_BOX_Y), 0.18, N("FormatChevronMat"),
           TEXT_DIM_COL, tier="controls", align='LEFT', strength=1.0, coll=coll)
 
-# ---- Wait / Execute vertical positions — COMPUTED from the Format box's
+# ---- Radio buttons: Append / Overwrite ----
+RADIO_LABEL_Y = CARD_H - 2.75
+RADIO_ROW_Y = CARD_H - 3.15
+RADIO_R = 0.11
+RADIO_APPEND_X = 0.50
+RADIO_OVERWRITE_X = 2.30
+
+make_text(N("Radio_Label"), "Save Mode", (0.20, RADIO_LABEL_Y), 0.15, N("RadioLabelMat"), TEXT_DIM_COL,
+          tier="labels", align='LEFT', coll=coll)
+
+# Append option (left)
+make_outline(N("Radio_Append_Unselected"), circle_points(RADIO_APPEND_X, RADIO_ROW_Y, RADIO_R, 20),
+             N("RadioUnselectedMat"), OUTLINE_NORMAL_COL, tier="outline", thickness=0.015, strength=0.7, coll=coll)
+make_filled(N("Radio_Append_Selected"), circle_points(RADIO_APPEND_X, RADIO_ROW_Y, RADIO_R*0.55, 20),
+            N("RadioSelectedMat"), CONTENT_LIT_COL, tier="controls_fx", strength=3.0, coll=coll)
+make_text(N("Radio_Append_Label"), "Append", (RADIO_APPEND_X, RADIO_ROW_Y - 0.30), 0.16, N("RadioAppendLabelMat"),
+          TEXT_COL, tier="labels", align='CENTER', coll=coll)
+
+# Overwrite option (right)
+make_outline(N("Radio_Overwrite_Unselected"), circle_points(RADIO_OVERWRITE_X, RADIO_ROW_Y, RADIO_R, 20),
+             N("RadioUnselectedMat"), OUTLINE_NORMAL_COL, tier="outline", thickness=0.015, strength=0.7, coll=coll)
+make_filled(N("Radio_Overwrite_Selected"), circle_points(RADIO_OVERWRITE_X, RADIO_ROW_Y, RADIO_R*0.55, 20),
+            N("RadioSelectedMat"), CONTENT_LIT_COL, tier="controls_fx", strength=3.0, coll=coll)
+make_text(N("Radio_Overwrite_Label"), "Overwrite", (RADIO_OVERWRITE_X, RADIO_ROW_Y - 0.30), 0.16, N("RadioOverwriteLabelMat"),
+          TEXT_COL, tier="labels", align='CENTER', coll=coll)
+
+# Append DISABLED variant — shown instead of the normal Append ring/label
+# when Format is an image type (PNG/JPEG), per the resolved Format-
+# interaction question: Append has no meaning for single-image formats,
+# so it's disabled and Overwrite is force-selected in that state.
+make_outline(N("Radio_Append_Disabled"), circle_points(RADIO_APPEND_X, RADIO_ROW_Y, RADIO_R, 20),
+             N("RadioDisabledMat"), (0.32,0.32,0.35,1), tier="outline", thickness=0.015, strength=0.4, coll=coll)
+make_text(N("Radio_Append_Label_Disabled"), "Append", (RADIO_APPEND_X, RADIO_ROW_Y - 0.30), 0.16, N("RadioAppendLabelDisabledMat"),
+          TEXT_DIM_COL, tier="labels", align='CENTER', strength=0.5, coll=coll)
+
+# ---- Wait / Execute vertical positions — COMPUTED from radio button row
 # actual bottom edge. Never hand-picked. ----
-_format_box_bottom = FMT_BOX_Y - FMT_BOX_H/2
-CHK_Y = wait_checkbox_y(_format_box_bottom)
+_radio_box_bottom = RADIO_ROW_Y - RADIO_R - 0.30
+CHK_Y = wait_checkbox_y(_radio_box_bottom)
 BTN_Y = execute_button_y(CHK_Y)
 
 # ---------------- Wait checkbox (above Execute, per standard order) ----------------
@@ -171,6 +228,8 @@ DEFAULT_VISIBLE = {
     N("URL_Label"), N("URL_Fill"), N("URL_Outline"), N("URL_Value"),
     N("URL_IconBtn_Body"), N("URL_IconBtn_Outline"), N("URL_IconBtn_Glyph"),
     N("Format_Label"), N("Format_Fill"), N("Format_Outline"), N("Format_Value"), N("Format_Chevron"),
+    N("Radio_Label"), N("Radio_Append_Unselected"), N("Radio_Append_Selected"), N("Radio_Append_Label"),
+    N("Radio_Overwrite_Unselected"), N("Radio_Overwrite_Label"),
     N("Checkbox_Unchecked_Fill"), N("Checkbox_Unchecked_Outline"), N("Checkbox_Label"),
     *btn_states["disabled"],
     status_objs["idle"][0], status_objs["idle"][1],

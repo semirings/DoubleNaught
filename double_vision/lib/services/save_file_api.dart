@@ -23,6 +23,8 @@ class SaveFileApi {
   /// legacy [filename].
   ///
   /// Exactly one of [aa], [text], or [imageBase64] must be provided.
+  /// [append] controls whether to append to an existing file (true) or
+  /// overwrite it (false). Ignored for image formats (PNG, JPEG).
   Future<SaveFileResponse> save({
     AaPayload? aa,
     String? text,
@@ -30,6 +32,7 @@ class SaveFileApi {
     String? url,
     String filename = 'export',
     String format = 'parquet',
+    bool append = false,
   }) async {
     final own = client == null ? http.Client() : null;
     final transport = client ?? own!;
@@ -44,6 +47,7 @@ class SaveFileApi {
           'url': url,
           'filename': filename,
           'format': format,
+          'append': append,
         }),
       );
 

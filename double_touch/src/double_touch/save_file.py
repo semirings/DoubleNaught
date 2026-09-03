@@ -24,6 +24,68 @@ def storage_out_dir() -> Path:
     return base
 
 
+def _output_path_for_format(base: str, format: str) -> Path:
+    """Resolve the output file path for a given base name and format."""
+    format_lower = format.lower()
+    if format_lower in ("png", "jpg", "jpeg"):
+        ext = "jpg" if format_lower == "jpeg" else format_lower
+        return Path(f"{base}.{ext}")
+    elif format_lower == "jsonl":
+        return Path(f"{base}.jsonl")
+    elif format_lower == "json":
+        return Path(f"{base}.json")
+    elif format_lower == "csv":
+        return Path(f"{base}.csv")
+    elif format_lower == "txt":
+        return Path(f"{base}.txt")
+    else:  # parquet
+        return Path(f"{base}.parquet")
+
+
+def _merge_aa_append(incoming: AssocArray, base: str, format: str) -> AssocArray:
+    """Load existing AA from file, merge with incoming via AA addition (⊕).
+
+    Returns the merged AA (existing ⊕ incoming).
+    """
+    import sys
+    from juliacall import Main as jl
+
+    out_path = _output_path_for_format(base, format)
+
+    # Load existing AA from file based on format
+    format_lower = format.lower()
+
+    if format_lower == "parquet":
+        existing = jl.loadParquet(str(out_path))
+    elif format_lower == "csv":
+        existing = jl.ReadCSV(str(out_path))
+    elif format_lower == "jsonl":
+        existing = jl.loadParquet(str(out_path))  # JSONL stored as parquet
+    elif format_lower == "json":
+        existing = jl.loadParquet(str(out_path))
+    else:
+        raise ValueError(f"Append not supported for format: {format}")
+
+    # Convert incoming AssocArray to D4M/Julia Assoc type
+    # incoming is {rows, cols, vals} triplet form
+    incoming_jl = jl.Assoc(
+        incoming.rows,
+        incoming.cols,
+        incoming.vals
+    )
+
+    # Perform AA addition (⊕): merged = existing ⊕ incoming
+    merged_jl = existing + incoming_jl
+
+    # Convert back to AssocArray (triplet form)
+    rows, cols, vals = jl.find(merged_jl)
+    return AssocArray(
+        rows=list(rows),
+        cols=list(cols),
+        vals=[str(v) for v in vals]
+    )
+
+
 def save_aa_parquet(aa: AssocArray, filename: str) -> Path:
     """Save an AssocArray to Parquet format under storage/out/.
 
@@ -417,6 +479,7 @@ def execute_save(
     filename: str = "export",
     format: str = "parquet",
     url: Optional[str] = None,
+    append: bool = False,
 ) -> tuple[Path, int]:
     """Execute the Save File node logic.
 
@@ -435,6 +498,8 @@ def execute_save(
             precedence over *filename* when given. ``http``/``https`` are
             valid URL schemes generally but not yet implemented as a save
             destination — see :func:`_resolve_base`.
+        append: True = append to existing file (AA only); False = overwrite.
+            Ignored for text/image (always overwrite).
 
     Returns:
         Tuple of (output Path, bytes written).
@@ -448,6 +513,10 @@ def execute_save(
     raw = url if url is not None else filename
 
     if aa is not None:
+        # Handle append mode: load existing file, merge with AA addition (⊕)
+        if append and _output_path_for_format(base, format).exists():
+            aa = _merge_aa_append(aa, base, format)
+
         if format == "jsonl" or (aa_has_jsonl(aa) and raw.endswith(".jsonl")):
             # Pre-formatted training lines: write them as-is rather than as a
             # matrix. Triggered by an explicit format or by a .jsonl name on an
@@ -460,8 +529,10 @@ def execute_save(
         else:  # Default to parquet for AA.
             out_path = save_aa_parquet(aa, base)
     elif text is not None:
+        # Text/image: always overwrite (append not supported)
         out_path = save_text(text, base)
     elif image_base64 is not None:
+        # Text/image: always overwrite (append not supported)
         out_path = save_image(image_base64, base, format)
     else:
         raise ValueError("No data provided (aa, text, or image_base64)")

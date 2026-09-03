@@ -20,6 +20,9 @@ import '../base/wait_gated_execution.dart';
 /// Save format for the output file, auto-detected or manually selected.
 enum _SaveFormat { parquet, csv, json, jsonl, txt, png, jpg }
 
+/// Save mode: overwrite existing file or append to it.
+enum _SaveMode { append, overwrite }
+
 /// Extensions any `_SaveFormat` (or a save dialog's own pick) might carry —
 /// stripped from a suggested/typed name before appending the real one, so
 /// e.g. a `.csv` pick with Format still on Parquet doesn't double up as
@@ -111,6 +114,7 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode>
 
   late final TextEditingController _urlController;
   _SaveFormat _selectedFormat = _SaveFormat.parquet;
+  _SaveMode _selectedMode = _SaveMode.overwrite;
   SaveFileResponse? _result;
 
   /// The transport used by the run currently in flight, held so Cancel can
@@ -149,6 +153,7 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode>
     );
     _urlController.addListener(_onUrlEdited);
     _loadFormatFromParams();
+    _loadModeFromParams();
   }
 
   @override
@@ -191,6 +196,19 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode>
       }
     } else {
       _selectedFormat = _autoDetectFormat();
+    }
+  }
+
+  void _loadModeFromParams() {
+    if (widget.initialParams?['saveMode'] != null) {
+      try {
+        _selectedMode =
+            _SaveMode.values.byName(widget.initialParams!['saveMode']!);
+      } catch (_) {
+        _selectedMode = _SaveMode.overwrite;
+      }
+    } else {
+      _selectedMode = _SaveMode.overwrite;
     }
   }
 
@@ -282,10 +300,25 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode>
       _selectedFormat = format;
       _result = null;
     });
-    saveParams({'url': _urlController.text.trim(), 'format': format.name});
+    saveParams({'url': _urlController.text.trim(), 'format': format.name, 'saveMode': _selectedMode.name});
     setIdle();
     maybeAutoFire();
   }
+
+  /// Switching the save mode. Disabled when format is PNG/JPEG (image-only formats).
+  void _onModeChanged(_SaveMode mode) {
+    if (_isImageOnlyFormat(_selectedFormat)) return;
+    setState(() {
+      _selectedMode = mode;
+      _result = null;
+    });
+    saveParams({'url': _urlController.text.trim(), 'format': _selectedFormat.name, 'saveMode': mode.name});
+    setIdle();
+    maybeAutoFire();
+  }
+
+  bool _isImageOnlyFormat(_SaveFormat format) =>
+      format == _SaveFormat.png || format == _SaveFormat.jpg;
 
   String get _payloadKind => _incomingImage != null
       ? 'image'
@@ -319,6 +352,7 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode>
         imageBase64: imageBase64,
         url: url,
         format: _selectedFormat.name,
+        append: _selectedMode == _SaveMode.append,
       );
       if (gen != _execGen || !mounted) return;
 
@@ -430,6 +464,101 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode>
         _SaveFormat.jpg     => 'JPEG',
       };
 
+  /// Build radio buttons for Append/Overwrite save mode.
+  /// Append is disabled for image-only formats (PNG, JPEG).
+  Widget _buildSaveModeRadios(ThemeData theme, bool busy) {
+    final isImageOnly = _isImageOnlyFormat(_selectedFormat);
+    final scheme = theme.colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Save Mode',
+          style: theme.textTheme.labelSmall
+              ?.copyWith(color: scheme.onSurfaceVariant),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          children: [
+            // Append option
+            Expanded(
+              child: _buildRadioOption(
+                label: 'Append',
+                value: _SaveMode.append,
+                enabled: !isImageOnly && !busy,
+                onChanged: _onModeChanged,
+              ),
+            ),
+            const SizedBox(width: 16),
+            // Overwrite option
+            Expanded(
+              child: _buildRadioOption(
+                label: 'Overwrite',
+                value: _SaveMode.overwrite,
+                enabled: !busy,
+                onChanged: _onModeChanged,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// Build a single radio button option.
+  Widget _buildRadioOption({
+    required String label,
+    required _SaveMode value,
+    required bool enabled,
+    required Function(_SaveMode) onChanged,
+  }) {
+    final isSelected = _selectedMode == value;
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final disabledColor = scheme.onSurfaceVariant.withValues(alpha: 0.38);
+    final activeColor = isSelected ? scheme.primary : scheme.onSurfaceVariant;
+
+    return GestureDetector(
+      onTap: enabled ? () => onChanged(value) : null,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 16,
+            height: 16,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: enabled ? activeColor : disabledColor,
+                width: 2,
+              ),
+            ),
+            child: isSelected
+                ? Center(
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: enabled ? scheme.primary : disabledColor,
+                      ),
+                    ),
+                  )
+                : null,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: enabled ? activeColor : disabledColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   // ── Ports ────────────────────────────────────────────────────────────────
 
   @override
@@ -480,6 +609,8 @@ class _SaveFileNodeState extends BaseNodeState<SaveFileNode>
               DropdownMenuEntry(value: f, label: _formatLabel(f)),
           ],
         ),
+        const SizedBox(height: 12),
+        _buildSaveModeRadios(theme, busy),
         const SizedBox(height: 10),
         WaitCheckbox(checked: wait, onChanged: onWaitChanged, locked: busy),
         const SizedBox(height: 6),
