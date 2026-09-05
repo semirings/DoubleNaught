@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Result from [D4mApi.ingest]: server-side handle id + entry count.
 class D4mIngestResult {
@@ -74,7 +75,7 @@ class D4mApi {
   /// Injected in tests. When null, each call uses (and closes) its own client.
   final http.Client? client;
 
-  const D4mApi({this.baseUrl = 'http://localhost:8000', this.client});
+  const D4mApi({this.baseUrl = BackendConfig.baseUrl, this.client});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 

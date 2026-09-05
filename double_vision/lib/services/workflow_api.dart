@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import '../backend_config.dart';
 
 /// Why a workflow delete did not happen.
 ///
@@ -57,7 +58,7 @@ class WorkflowApi {
   final http.Client? client;
 
   const WorkflowApi({
-    this.baseUrl = 'http://127.0.0.1:8000',
+    this.baseUrl = BackendConfig.baseUrl,
     this.client,
   });
 

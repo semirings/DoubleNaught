@@ -1,11 +1,12 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import '../backend_config.dart';
 
 class ModelBuilderApi {
   final String baseUrl;
 
-  const ModelBuilderApi({this.baseUrl = 'http://localhost:8000'});
+  const ModelBuilderApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
   static const _timeout = Duration(minutes: 2);

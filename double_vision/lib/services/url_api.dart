@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Thin client for the URLNode routes on the DoubleTouch backend
 /// (`double_touch/`), targeting the camelCase contract:
@@ -18,7 +19,7 @@ class UrlApi {
   /// DoubleTouch service hosts both the SAM3 and URL routes).
   final String baseUrl;
 
-  const UrlApi({this.baseUrl = 'http://localhost:8000'});
+  const UrlApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 

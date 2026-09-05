@@ -8,10 +8,14 @@
 # Examples:
 #   ./run.sh DV                         # runs on macOS (no device prompt)
 #   ./run.sh DV --dart-define=SANITY_PROJECT_ID=xxxx --dart-define=SANITY_TOKEN=skxxxx
-#   ./run.sh DT                         # SAM3 backend on http://127.0.0.1:8000
+#   ./run.sh DT                         # SAM3 backend on http://127.0.0.1:8400
 #
 # Note: DV always passes `-d macos`. To run on another device, invoke
 # `flutter run -d <device>` directly from the double_vision/ directory.
+#
+# Ports: DoubleNaught uses 8400, SegForge uses 8401, so both can run at once.
+# Override the backend with DOUBLE_TOUCH_PORT, and the frontend's view of it
+# with `./run.sh DV --dart-define=DN_BACKEND_URL=http://127.0.0.1:<port>`.
 
 set -e
 # Correct configuration for run.sh

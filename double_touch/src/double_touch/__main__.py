@@ -21,10 +21,13 @@ def main() -> None:
 
     import uvicorn
 
+    # 8400 keeps DoubleNaught clear of SegForge, which serves its own FastAPI
+    # backend on 8401 so the two can run side by side. The frontend default
+    # lives in double_vision/lib/backend_config.dart; keep the two in step.
     uvicorn.run(
         "double_touch.app:app",
         host=os.environ.get("DOUBLE_TOUCH_HOST", "127.0.0.1"),
-        port=int(os.environ.get("DOUBLE_TOUCH_PORT", "8000")),
+        port=int(os.environ.get("DOUBLE_TOUCH_PORT", "8400")),
         reload=bool(os.environ.get("DOUBLE_TOUCH_RELOAD")),
     )
 

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Chunking strategy passed to `POST /chunk`.
 enum ChunkStrategy {
@@ -102,7 +103,7 @@ class ChunkConfig {
 class ChunkApi {
   final String baseUrl;
 
-  const ChunkApi({this.baseUrl = 'http://localhost:8000'});
+  const ChunkApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 

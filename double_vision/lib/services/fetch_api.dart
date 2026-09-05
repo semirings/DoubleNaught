@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Thin client for the FetchNode route on the DoubleTouch backend
 /// (`double_touch/`), targeting the camelCase contract:
@@ -17,7 +18,7 @@ class FetchApi {
   /// service hosts the SAM3, URL, and fetch routes).
   final String baseUrl;
 
-  const FetchApi({this.baseUrl = 'http://localhost:8000'});
+  const FetchApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 

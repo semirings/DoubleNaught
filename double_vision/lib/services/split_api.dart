@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Thin client for `POST /split` on the DoubleTouch backend.
 ///
@@ -11,7 +12,7 @@ import '../models/aa_payload.dart';
 class SplitApi {
   final String baseUrl;
 
-  const SplitApi({this.baseUrl = 'http://localhost:8000'});
+  const SplitApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
   static const _timeout = Duration(minutes: 2);

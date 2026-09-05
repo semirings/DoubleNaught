@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Thin client for `POST /tokenize` on the DoubleTouch backend.
 ///
@@ -11,7 +12,7 @@ import '../models/aa_payload.dart';
 class TokenizerApi {
   final String baseUrl;
 
-  const TokenizerApi({this.baseUrl = 'http://localhost:8000'});
+  const TokenizerApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
   static const _timeout = Duration(minutes: 5);

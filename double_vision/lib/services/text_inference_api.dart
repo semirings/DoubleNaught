@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Thin HTTP client for the text-inference routes on the DoubleTouch backend.
 ///
@@ -17,7 +18,7 @@ import '../models/aa_payload.dart';
 class TextInferenceApi {
   final String baseUrl;
 
-  const TextInferenceApi({this.baseUrl = 'http://localhost:8000'});
+  const TextInferenceApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 

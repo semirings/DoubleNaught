@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Thin client for the AA2JSONLNode route on the DoubleTouch backend
 /// (`double_touch/`), targeting the camelCase contract:
@@ -16,7 +17,7 @@ class Aa2JsonlApi {
   /// Base URL of the backend (the same DoubleTouch service hosts every route).
   final String baseUrl;
 
-  const Aa2JsonlApi({this.baseUrl = 'http://localhost:8000'});
+  const Aa2JsonlApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 

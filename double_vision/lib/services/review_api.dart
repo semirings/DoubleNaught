@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Thin client for the ReviewNode routes on the DoubleTouch backend
 /// (`double_touch/`), targeting the camelCase contract:
@@ -18,7 +19,7 @@ import '../models/aa_payload.dart';
 class ReviewApi {
   final String baseUrl;
 
-  const ReviewApi({this.baseUrl = 'http://localhost:8000'});
+  const ReviewApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 

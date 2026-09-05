@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// Thin client for the zero-shot **classification runner** on the DoubleTouch
 /// backend (`double_touch/`), targeting the camelCase, AA-native contract:
@@ -22,7 +23,7 @@ import '../models/aa_payload.dart';
 class ClassifyApi {
   final String baseUrl;
 
-  const ClassifyApi({this.baseUrl = 'http://localhost:8000'});
+  const ClassifyApi({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 

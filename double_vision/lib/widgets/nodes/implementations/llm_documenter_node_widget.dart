@@ -16,6 +16,7 @@ import '../base/execute_button.dart';
 import '../base/input_connector.dart';
 import '../base/wait_checkbox.dart';
 import '../base/wait_gated_execution.dart';
+import '../../../backend_config.dart';
 
 /// Which model generates each docstring. [local] needs no credential;
 /// [gemini] is remote and needs a matching Secure Settings credential on
@@ -318,7 +319,7 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
   }
 
   Uri _endpoint(String path) =>
-      Uri.parse('${widget.baseUrl ?? "http://localhost:8000"}$path');
+      Uri.parse('${widget.baseUrl ?? BackendConfig.baseUrl}$path');
 
   @override
   void fire() => _enrich();

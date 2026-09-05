@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
+import '../backend_config.dart';
 
 /// Thin client for the DoubleTouch SAM3 backend (`double_touch/`).
 ///
@@ -19,7 +20,7 @@ class Sam3Api {
   /// override for non-local deployments.
   final String baseUrl;
 
-  const Sam3Api({this.baseUrl = 'http://localhost:8000'});
+  const Sam3Api({this.baseUrl = BackendConfig.baseUrl});
 
   static const _jsonHeaders = {'Content-Type': 'application/json'};
 

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// API client for the JSONL Formatter node endpoint.
 ///
@@ -20,7 +21,7 @@ class JsonlFormatterApi {
   final http.Client? client;
 
   const JsonlFormatterApi({
-    this.baseUrl = 'http://127.0.0.1:8000',
+    this.baseUrl = BackendConfig.baseUrl,
     this.client,
   });
 

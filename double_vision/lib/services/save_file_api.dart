@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../models/aa_payload.dart';
+import '../backend_config.dart';
 
 /// API client for the backend Save File node endpoints.
 class SaveFileApi {
@@ -14,7 +15,7 @@ class SaveFileApi {
   final http.Client? client;
 
   const SaveFileApi({
-    this.baseUrl = 'http://127.0.0.1:8000',
+    this.baseUrl = BackendConfig.baseUrl,
     this.client,
   });
 

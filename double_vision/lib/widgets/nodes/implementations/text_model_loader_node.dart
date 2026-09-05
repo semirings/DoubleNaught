@@ -6,6 +6,7 @@ import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/text_inference_api.dart';
 import '../base/base_node_widget.dart';
+import '../../../backend_config.dart';
 
 /// A **source node** that loads a generative text model via mlx-lm and emits
 /// a model-handle [AaPayload] on its `modelHandle` output port.
@@ -71,7 +72,8 @@ class _TextModelLoaderNodeState extends BaseNodeState<TextModelLoaderNode> {
     if (msg.contains('Connection refused') ||
         msg.contains('SocketException') ||
         msg.contains('ClientException')) {
-      return 'Backend not reachable — is double_touch running on :8000?';
+      return 'Backend not reachable — is double_touch running at '
+          '${BackendConfig.baseUrl}?';
     }
     return super.cleanError(e);
   }

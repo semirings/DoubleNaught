@@ -7,6 +7,7 @@ import '../../../services/infobus/output_port.dart';
 import '../../../services/text_inference_api.dart';
 import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
+import '../../../backend_config.dart';
 
 /// A **processing node** (AA-in × 2 → AA-out) that takes a model-handle AA
 /// and a ChatML prompt AA, runs generative inference via the backend
@@ -84,7 +85,8 @@ class _TextInferenceNodeState extends BaseNodeState<TextInferenceNode> {
     if (msg.contains('Connection refused') ||
         msg.contains('SocketException') ||
         msg.contains('ClientException')) {
-      return 'Backend not reachable — is double_touch running on :8000?';
+      return 'Backend not reachable — is double_touch running at '
+          '${BackendConfig.baseUrl}?';
     }
     return super.cleanError(e);
   }
