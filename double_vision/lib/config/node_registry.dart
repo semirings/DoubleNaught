@@ -223,6 +223,26 @@ const List<NodeType> nodeTypes = [
     description: 'Drive SAM3 segmentation with text or box prompts.',
     tags: ['segment', 'vision', 'mask', 'image', 'sam'],
   ),
+  NodeType(
+    name: 'Seg Forge',
+    type: 'segForgeNode',
+    category: NodeCategory.ai,
+    description: 'Segment an image in the SegForge app, then emit its '
+        'segments and prompt linkage.',
+    tags: [
+      'segforge',
+      'segment',
+      'vision',
+      'mask',
+      'crop',
+      'bbox',
+      'image',
+      'sam',
+      'prompt',
+      'linkage',
+      'external',
+    ],
+  ),
 
   // ── Execution & Compute ────────────────────────────────────────────────────
   NodeType(

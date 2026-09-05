@@ -1,0 +1,600 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'dart:ui' as ui;
+
+import 'package:double_vision/config/node_registry.dart';
+import 'package:double_vision/models/aa_payload.dart';
+import 'package:double_vision/models/workflow.dart';
+import 'package:double_vision/services/infobus/input_port.dart';
+import 'package:double_vision/services/infobus/output_port.dart';
+import 'package:double_vision/services/seg_forge_api.dart';
+import 'package:double_vision/services/seg_forge_mapping.dart';
+import 'package:double_vision/widgets/nodes/node_widths.dart';
+import 'package:double_vision/widgets/nodes/nodes.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
+
+// ── Fixtures ─────────────────────────────────────────────────────────────────
+
+const _sessionId = 'sess_01';
+
+/// A session with one segment produced by one text prompt.
+Map<String, dynamic> _sessionBody({
+  List<Object> prompts = const ['hair'],
+  List<List<double>> boxes = const [
+    [10, 20, 40, 60],
+  ],
+  List<double> scores = const [0.75],
+  String? createdAt = '2026-01-01T00:00:00.000000',
+}) => {
+      'session_id': _sessionId,
+      'width': 100,
+      'height': 100,
+      'created_at': createdAt,
+      'prompts': prompts,
+      'results': {
+        'original_width': 100,
+        'original_height': 100,
+        'masks': [
+          for (var i = 0; i < boxes.length; i++)
+            {'counts': [0, 4], 'size': [100, 100]},
+        ],
+        'boxes': boxes,
+        'scores': scores,
+      },
+    };
+
+/// An empty session — the app was closed before any inference ran.
+Map<String, dynamic> _emptySessionBody() => {
+      'session_id': _sessionId,
+      'width': 100,
+      'height': 100,
+      'created_at': null,
+      'prompts': <Object>[],
+      'results': {'original_width': 100, 'original_height': 100},
+    };
+
+Future<Uint8List> _png(int w, int h) async {
+  final recorder = ui.PictureRecorder();
+  ui.Canvas(recorder).drawRect(
+    ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
+    ui.Paint()..color = const ui.Color(0xFF3366AA),
+  );
+  final image = await recorder.endRecording().toImage(w, h);
+  final data = await image.toByteData(format: ui.ImageByteFormat.png);
+  return data!.buffer.asUint8List();
+}
+
+/// A stand-in SegForge backend. Records every path it was asked for.
+({SegForgeApi api, List<String> calls}) _api({
+  Map<String, dynamic>? session,
+  Uint8List? imageBytes,
+  int segmentCount = 1,
+  bool maskAvailable = true,
+}) {
+  final calls = <String>[];
+  final api = SegForgeApi(
+    baseUrl: 'http://sf.test',
+    client: MockClient((request) async {
+      final path = request.url.path;
+      calls.add('${request.method} $path');
+
+      if (path == '/upload') {
+        return http.Response(
+          jsonEncode({'session_id': _sessionId, 'width': 100, 'height': 100}),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      if (path.startsWith('/loadSession/')) {
+        return http.Response(
+          jsonEncode(session ?? _sessionBody()),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      if (path == '/saveMasks') {
+        return http.Response(jsonEncode({'mask_count': segmentCount}), 200,
+            headers: {'content-type': 'application/json'});
+      }
+      if (path == '/createSegments') {
+        return http.Response(jsonEncode({'count': segmentCount}), 200,
+            headers: {'content-type': 'application/json'});
+      }
+      if (path.startsWith('/showSegments/')) {
+        return http.Response(
+          jsonEncode([
+            for (var i = 0; i < segmentCount; i++)
+              '/storage/sessions/$_sessionId/segments_raw/cat/'
+                  'segment_${i.toString().padLeft(3, '0')}.png',
+          ]),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      if (path.contains('/masks/')) {
+        if (!maskAvailable) return http.Response('not found', 404);
+        return http.Response.bytes(imageBytes ?? Uint8List(0), 200);
+      }
+      if (path.startsWith('/storage/')) {
+        return http.Response.bytes(imageBytes ?? Uint8List(0), 200);
+      }
+      return http.Response('{"detail":"unexpected $path"}', 500);
+    }),
+  );
+  return (api: api, calls: calls);
+}
+
+/// A launcher that never spawns anything; the test decides when it "exits".
+class _FakeProcess implements SegForgeProcess {
+  final Completer<int> _completer = Completer<int>();
+  bool killed = false;
+
+  @override
+  Future<int> get exitCode => _completer.future;
+
+  @override
+  void kill() {
+    killed = true;
+    if (!_completer.isCompleted) _completer.complete(-1);
+  }
+
+  void finish([int code = 0]) {
+    if (!_completer.isCompleted) _completer.complete(code);
+  }
+}
+
+({SegForgeLauncher launcher, List<Map<String, String>> envs, List<String> exes, List<_FakeProcess> procs})
+    _launcher({bool autoExit = true}) {
+  final envs = <Map<String, String>>[];
+  final exes = <String>[];
+  final procs = <_FakeProcess>[];
+  Future<SegForgeProcess> launch({
+    required String executable,
+    required Map<String, String> environment,
+  }) async {
+    exes.add(executable);
+    envs.add(environment);
+    final p = _FakeProcess();
+    procs.add(p);
+    if (autoExit) p.finish(0);
+    return p;
+  }
+  return (launcher: launch, envs: envs, exes: exes, procs: procs);
+}
+
+Future<({InputPort image, InputPort session, List<AaPayload> segments, List<AaPayload> linkage})>
+    _pump(
+  WidgetTester tester, {
+  required SegForgeApi api,
+  required SegForgeLauncher launcher,
+  String appPath = '/tmp/SegForge',
+}) async {
+  InputPort? imagePort;
+  InputPort? sessionPort;
+  final segments = <AaPayload>[];
+  final linkage = <AaPayload>[];
+
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(
+          child: SegForgeNodeWidget(
+            node: const WorkflowNode(id: 1, type: 'segForgeNode'),
+            initialParams: {'appPath': appPath},
+            api: api,
+            launcher: launcher,
+            onInputPort: (p) => imagePort = p,
+            onSessionInputPort: (p) => sessionPort = p,
+            onIndexedOutputPort: (idx, port) => port.connect(
+              idx == 0 ? segments.add : linkage.add,
+              emitCurrentState: false,
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+  await tester.pumpAndSettle();
+  return (
+    image: imagePort!,
+    session: sessionPort!,
+    segments: segments,
+    linkage: linkage,
+  );
+}
+
+Future<void> _send(WidgetTester tester, InputPort port, AaPayload aa) async {
+  port.connect(OutputPort('upstream')..emit(aa));
+  await tester.pumpAndSettle();
+}
+
+AaPayload _imageAa(Uint8List bytes, {String filename = 'cat.png'}) => AaPayload(
+      rows: const ['img', 'img'],
+      cols: const ['bytes', 'filename'],
+      vals: [base64Encode(bytes), filename],
+    );
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+void main() {
+  group('catalog registration', () {
+    test('Seg Forge is registered under AI & Teacher Models', () {
+      final entry = nodeTypes.singleWhere((t) => t.type == 'segForgeNode');
+      expect(entry.name, 'Seg Forge');
+      expect(entry.category, NodeCategory.ai);
+    });
+
+    test('it is findable by the words someone would type', () {
+      final entry = nodeTypes.singleWhere((t) => t.type == 'segForgeNode');
+      for (final q in ['seg forge', 'segforge', 'mask', 'bbox', 'crop']) {
+        expect(entry.matches(q), isTrue, reason: 'should match "$q"');
+      }
+    });
+
+    test('its width is registered so edges anchor on the port dots', () {
+      expect(getNodeWidth('segForgeNode'), 320);
+    });
+  });
+
+  group('SegForgeMapping', () {
+    test('image_id is the filename stem, matching SegForge own segment dir', () {
+      expect(SegForgeMapping.imageIdFor('/a/b/cat.png'), 'cat');
+      expect(SegForgeMapping.imageIdFor('cat.tar.gz'), 'cat.tar');
+      expect(SegForgeMapping.imageIdFor(null), 'image');
+      expect(SegForgeMapping.imageIdFor(''), 'image');
+    });
+
+    test('bbox converts SegForge xyxy into the spec xywh', () {
+      expect(SegForgeMapping.bboxToJson([10, 20, 40, 60]), '[10.0,20.0,30.0,40.0]');
+    });
+
+    test('content hash is stable and content-sensitive', () {
+      expect(SegForgeMapping.contentHash('hair'),
+          SegForgeMapping.contentHash('hair'));
+      expect(SegForgeMapping.contentHash('hair'),
+          isNot(SegForgeMapping.contentHash('fur')));
+      expect(SegForgeMapping.contentHash('hair').length, 8);
+    });
+
+    test('segment rows key on session:image:segment and carry all 3 columns', () {
+      final session = SegForgeSession.fromJson(_sessionId, _sessionBody());
+      final aa = SegForgeMapping.segments(
+        session,
+        imageId: 'cat',
+        crops: [Uint8List.fromList([1, 2, 3])],
+        masks: [Uint8List.fromList([4, 5])],
+      );
+
+      expect(aa.rows.toSet(), {'sess_01:cat:seg_000'});
+      expect(aa.cols, ['crop_bytes', 'mask_bytes', 'bbox']);
+      expect(aa.vals[0], base64Encode([1, 2, 3]));
+      expect(aa.vals[1], base64Encode([4, 5]));
+      expect(aa.vals[2], '[10.0,20.0,30.0,40.0]');
+    });
+
+    test('a missing artifact omits its cell rather than emitting an empty one', () {
+      final session = SegForgeSession.fromJson(_sessionId, _sessionBody());
+      final aa = SegForgeMapping.segments(
+        session,
+        imageId: 'cat',
+        crops: const [null],
+        masks: const [null],
+      );
+      expect(aa.cols, ['bbox'], reason: 'AA invariant: no fully-empty columns');
+    });
+
+    test('linkage scopes prompts to the image and confidence to the segment', () {
+      final session = SegForgeSession.fromJson(_sessionId, _sessionBody());
+      final aa = SegForgeMapping.linkage(session, imageId: 'cat');
+      final byRow = <String, Map<String, Object>>{};
+      for (var i = 0; i < aa.cols.length; i++) {
+        (byRow[aa.rows[i]] ??= {})[aa.cols[i]] = aa.vals[i];
+      }
+
+      expect(byRow['sess_01:cat']!['created_at'], '2026-01-01T00:00:00.000000');
+      expect(
+        byRow['sess_01:cat']!['prompt_${SegForgeMapping.contentHash('hair')}'],
+        'hair',
+      );
+      expect(byRow['sess_01:cat:seg_000']!['confidence'], '0.75');
+    });
+
+    test('box and point prompts keep their geometry and label', () {
+      final session = SegForgeSession.fromJson(
+        _sessionId,
+        _sessionBody(prompts: [
+          {'type': 'box', 'box': [0.1, 0.2, 0.3, 0.4], 'label': 'negative'},
+        ]),
+      );
+      final aa = SegForgeMapping.linkage(session, imageId: 'cat');
+      final encoded = aa.vals.firstWhere((v) => v.toString().contains('"box"'));
+      expect(encoded.toString(), contains('negative'));
+      expect(encoded.toString(), contains('0.1'));
+    });
+
+    test('a prompt entered twice does not become a duplicate (row, col)', () {
+      final session = SegForgeSession.fromJson(
+        _sessionId,
+        _sessionBody(prompts: const ['hair', 'hair']),
+      );
+      final aa = SegForgeMapping.linkage(session, imageId: 'cat');
+      final pairs = [
+        for (var i = 0; i < aa.cols.length; i++) '${aa.rows[i]}|${aa.cols[i]}',
+      ];
+      expect(pairs.length, pairs.toSet().length,
+          reason: 'AA invariant: unique keys');
+    });
+
+    test('a session with no inference reports itself empty', () {
+      expect(
+        SegForgeSession.fromJson(_sessionId, _emptySessionBody()).isEmpty,
+        isTrue,
+      );
+      expect(
+        SegForgeSession.fromJson(_sessionId, _sessionBody()).isEmpty,
+        isFalse,
+      );
+    });
+  });
+
+  group('SegForgeNodeWidget', () {
+    testWidgets('Execute is disabled until a forge run has produced something',
+        (tester) async {
+      final l = _launcher();
+      await _pump(tester, api: _api().api, launcher: l.launcher);
+
+      final execute = tester.widget<ExecuteButton>(find.byType(ExecuteButton));
+      expect(execute.enabled, isFalse);
+      expect(l.exes, isEmpty, reason: 'nothing launched without Open Forge');
+    });
+
+    testWidgets('Open Forge is disabled with no image, enabled once one arrives',
+        (tester) async {
+      final png = await _png(100, 100);
+      final l = _launcher(autoExit: false);
+      final ports =
+          await _pump(tester, api: _api(imageBytes: png).api, launcher: l.launcher);
+
+      final forge = find.widgetWithText(OutlinedButton, 'Open Forge');
+      expect(tester.widget<OutlinedButton>(forge).onPressed, isNull);
+
+      await _send(tester, ports.image, _imageAa(png));
+      expect(tester.widget<OutlinedButton>(forge).onPressed, isNotNull);
+    });
+
+    testWidgets('Open Forge is disabled while the app path is blank',
+        (tester) async {
+      final png = await _png(100, 100);
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: png).api,
+        launcher: l.launcher,
+        appPath: '',
+      );
+      await _send(tester, ports.image, _imageAa(png));
+
+      final forge = find.widgetWithText(OutlinedButton, 'Open Forge');
+      expect(tester.widget<OutlinedButton>(forge).onPressed, isNull);
+    });
+
+    testWidgets('a full run hands SegForge its inputs and emits both AAs',
+        (tester) async {
+      final png = await _png(100, 100);
+      final backend = _api(imageBytes: png);
+      final l = _launcher();
+      final ports =
+          await _pump(tester, api: backend.api, launcher: l.launcher);
+
+      await _send(tester, ports.image, _imageAa(png));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      // The session and a fetchable URL travel in the environment, because a
+      // prebuilt bundle cannot be given new --dart-define values.
+      expect(l.exes.single, '/tmp/SegForge');
+      expect(l.envs.single['SEGFORGE_SESSION_ID'], _sessionId);
+      expect(
+        l.envs.single['SEGFORGE_IMAGE_URL'],
+        'http://sf.test/storage/sessions/$_sessionId/original.png',
+      );
+      expect(l.envs.single['SEGFORGE_BACKEND_URL'], 'http://sf.test');
+
+      // The node drives mask + cutout creation itself.
+      expect(backend.calls, contains('POST /saveMasks'));
+      expect(backend.calls, contains('POST /createSegments'));
+
+      // Wait is unchecked by default, so results fire straight through.
+      expect(ports.segments, hasLength(1));
+      expect(ports.linkage, hasLength(1));
+      expect(ports.segments.single.rows, contains('sess_01:cat:seg_000'));
+      expect(ports.segments.single.cols, contains('crop_bytes'));
+      expect(ports.linkage.single.rows, contains('sess_01:cat:seg_000'));
+    });
+
+    testWidgets('crop_bytes is cropped to the bbox, not the full canvas',
+        (tester) async {
+      final png = await _png(100, 100);
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: png).api,
+        launcher: l.launcher,
+      );
+
+      await _send(tester, ports.image, _imageAa(png));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      final aa = ports.segments.single;
+      final crop = base64Decode(
+        aa.vals[aa.cols.indexOf('crop_bytes')].toString(),
+      );
+      final decoded =
+          (await (await ui.instantiateImageCodec(crop)).getNextFrame()).image;
+      // bbox [10,20,40,60] xyxy -> a 30x40 cutout, not the 100x100 source.
+      expect(decoded.width, 30);
+      expect(decoded.height, 40);
+    });
+
+    testWidgets('closing SegForge without segmenting emits nothing and says so',
+        (tester) async {
+      final png = await _png(100, 100);
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: png, session: _emptySessionBody()).api,
+        launcher: l.launcher,
+      );
+
+      await _send(tester, ports.image, _imageAa(png));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(ports.segments, isEmpty);
+      expect(ports.linkage, isEmpty);
+      expect(find.textContaining('without producing'), findsOneWidget);
+    });
+
+    testWidgets('a mask that cannot be fetched omits the column, not the row',
+        (tester) async {
+      final png = await _png(100, 100);
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: png, maskAvailable: false).api,
+        launcher: l.launcher,
+      );
+
+      await _send(tester, ports.image, _imageAa(png));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      final aa = ports.segments.single;
+      expect(aa.cols, isNot(contains('mask_bytes')));
+      expect(aa.cols, contains('bbox'));
+      expect(aa.rows, contains('sess_01:cat:seg_000'));
+    });
+
+    testWidgets('Wait gates the emit until Execute is pressed', (tester) async {
+      final png = await _png(100, 100);
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: png).api,
+        launcher: l.launcher,
+      );
+
+      // Check Wait first, so the run cannot auto-fire.
+      await tester.tap(find.byType(WaitCheckbox));
+      await tester.pumpAndSettle();
+
+      await _send(tester, ports.image, _imageAa(png));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(ports.segments, isEmpty, reason: 'Wait should hold the result');
+      expect(tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+          isTrue);
+
+      await tester.tap(find.byType(ExecuteButton));
+      await tester.pumpAndSettle();
+      expect(ports.segments, hasLength(1));
+      expect(ports.linkage, hasLength(1));
+    });
+
+    testWidgets('Execute re-emits held results without relaunching the app',
+        (tester) async {
+      final png = await _png(100, 100);
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: png).api,
+        launcher: l.launcher,
+      );
+
+      await _send(tester, ports.image, _imageAa(png));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+      expect(ports.segments, hasLength(1));
+
+      await tester.tap(find.byType(ExecuteButton));
+      await tester.pumpAndSettle();
+
+      expect(ports.segments, hasLength(2), reason: 'forwarded again');
+      expect(l.exes, hasLength(1), reason: 'Execute must not relaunch');
+    });
+
+    testWidgets('Cancel kills the app and leaves the outputs alone',
+        (tester) async {
+      final png = await _png(100, 100);
+      final l = _launcher(autoExit: false);
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: png).api,
+        launcher: l.launcher,
+      );
+
+      await _send(tester, ports.image, _imageAa(png));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      // Still open: the fake process has not exited.
+      expect(l.procs.single.killed, isFalse);
+
+      await tester.tap(find.byType(ExecuteButton)); // reads as Cancel while busy
+      await tester.pumpAndSettle();
+
+      expect(l.procs.single.killed, isTrue);
+      expect(ports.segments, isEmpty);
+    });
+
+    testWidgets('an upstream session id is reused instead of a fresh one',
+        (tester) async {
+      final png = await _png(100, 100);
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: png).api,
+        launcher: l.launcher,
+      );
+
+      await _send(
+        tester,
+        ports.session,
+        const AaPayload(
+          rows: ['s'],
+          cols: ['session_id'],
+          vals: ['from_upstream'],
+        ),
+      );
+      await _send(tester, ports.image, _imageAa(png));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      // The backend echoes its own id back; what matters is the node offered
+      // the upstream one on upload rather than asking for a new session.
+      expect(l.envs.single['SEGFORGE_SESSION_ID'], isNotNull);
+      expect(ports.segments, hasLength(1));
+    });
+
+    testWidgets('an image column that is not base64 is reported, not thrown',
+        (tester) async {
+      final l = _launcher();
+      final ports = await _pump(tester, api: _api().api, launcher: l.launcher);
+
+      await _send(
+        tester,
+        ports.image,
+        const AaPayload(rows: ['img'], cols: ['bytes'], vals: ['!!not base64!!']),
+      );
+
+      expect(find.textContaining('base64'), findsOneWidget);
+      expect(l.exes, isEmpty);
+    });
+  });
+}

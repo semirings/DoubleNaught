@@ -397,6 +397,9 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'image_display':
       case 'inventory':
         return const [0];
+      case 'segForgeNode':
+        // `image` (0) and the optional `session` (1).
+        return const [0, 1];
       default:
         return const [];
     }
@@ -2471,6 +2474,26 @@ class _WorkflowPageState extends State<WorkflowPage>
           onPromptInputPort: (port) => _registerAaInput(node.id, 2, port),
           // `documented` (AA, idx 0) — the 8-column result with better_docstring.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'segForgeNode':
+        return SegForgeNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `image` (AA, idx 0) — the image to segment.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `session` (AA, idx 1) — optional session id to work in.
+          sessionConnected: _hasIncomingEdgeAt(node.id, 1),
+          onSessionConnect: (source) => _connectAt(source, node.id, 1),
+          onSessionInputPort: (port) => _registerAaInput(node.id, 1, port),
+          // `segment` (idx 0) and `linkage` (idx 1). segment is also registered
+          // flat, as the headline output the Focus Panel re-emits on.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          onIndexedOutputPort: (idx, port) =>
+              (_aaMultiOutputPorts[node.id] ??= {})[idx] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
       case 'functionExtractionNode':

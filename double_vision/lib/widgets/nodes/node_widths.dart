@@ -61,6 +61,10 @@ double getNodeWidth(String type) {
     case 'save_file':
       return 320;
 
+    // External tools
+    case 'segForgeNode':
+      return 320; // SegForgeNodeWidget: @override double get nodeWidth => 320
+
     // Standard width (240px)
     default:
       return 240;
