@@ -2,20 +2,25 @@
 # DoubleNaught task runner.
 #
 # Usage:
-#   ./run.sh DV [flutter run args...]   Run the double_vision Flutter app (macOS)
-#   ./run.sh DT [uvicorn args...]       Run the double_touch SAM3 backend
+#   ./run.sh FE [flutter run args...]   Run the double_vision Flutter app (macOS)
+#   ./run.sh BE [uvicorn args...]       Run the double_touch SAM3 backend
 #
 # Examples:
-#   ./run.sh DV                         # runs on macOS (no device prompt)
-#   ./run.sh DV --dart-define=SANITY_PROJECT_ID=xxxx --dart-define=SANITY_TOKEN=skxxxx
-#   ./run.sh DT                         # SAM3 backend on http://127.0.0.1:8400
+#   ./run.sh FE                         # runs on macOS (no device prompt)
+#   ./run.sh FE --dart-define=SANITY_PROJECT_ID=xxxx --dart-define=SANITY_TOKEN=skxxxx
+#   ./run.sh BE                         # SAM3 backend on http://127.0.0.1:8400
 #
-# Note: DV always passes `-d macos`. To run on another device, invoke
-# `flutter run -d <device>` directly from the double_vision/ directory.
+# Layout mirrors SegForge: frontend/ holds the Flutter app (Dart package
+# `double_vision`), backend/ holds the FastAPI service (Python package
+# `double_touch`). The directories are named for their role, the packages keep
+# their distinctive names.
+#
+# Note: FE always passes `-d macos`. To run on another device, invoke
+# `flutter run -d <device>` directly from the frontend/ directory.
 #
 # Ports: DoubleNaught uses 8400, SegForge uses 8401, so both can run at once.
 # Override the backend with DOUBLE_TOUCH_PORT, and the frontend's view of it
-# with `./run.sh DV --dart-define=DN_BACKEND_URL=http://127.0.0.1:<port>`.
+# with `./run.sh FE --dart-define=DN_BACKEND_URL=http://127.0.0.1:<port>`.
 
 set -e
 # Correct configuration for run.sh
@@ -33,8 +38,8 @@ usage() {
   print -u2 "Usage: $PROG <command> [args...]"
   print -u2 ""
   print -u2 "Commands:"
-  print -u2 "  DV [flutter run args...]   Run the double_vision Flutter app"
-  print -u2 "  DT [uvicorn args...]       Run the double_touch SAM3 backend"
+  print -u2 "  FE [flutter run args...]   Run the double_vision Flutter app"
+  print -u2 "  BE [uvicorn args...]       Run the double_touch SAM3 backend"
   exit 1
 }
 
@@ -43,20 +48,20 @@ cmd="$1"
 shift
 
 case "$cmd" in
-  DV)
-    cd "$ROOT/double_vision"
+  FE)
+    cd "$ROOT/frontend"
     # Always target macOS so Flutter doesn't prompt for a device, and point
     # local JSON persistence (Inventory) at the repo's storage/ directory.
     exec flutter run -d macos \
       --dart-define=DN_STORAGE_DIR="$ROOT/storage" "$@"
     ;;
-  DT)
-    cd "$ROOT/double_touch"
+  BE)
+    cd "$ROOT/backend"
     # Use the dedicated, isolated venv so backend deps never touch the base env.
     if [[ ! -x ".venv/bin/python" ]]; then
-      print -u2 "double_touch/.venv not found. Create it with:"
-      print -u2 "  python3 -m venv double_touch/.venv"
-      print -u2 "  double_touch/.venv/bin/pip install -e 'double_touch[dev]'"
+      print -u2 "backend/.venv not found. Create it with:"
+      print -u2 "  python3 -m venv backend/.venv"
+      print -u2 "  backend/.venv/bin/pip install -e 'backend[dev]'"
       exit 1
     fi
     exec .venv/bin/python -m double_touch "$@"

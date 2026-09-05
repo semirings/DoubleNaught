@@ -6,11 +6,11 @@ Replaces the file/directory selection popup menu with a single unified native di
 ## Files Changed
 
 ### Dart Frontend
-- **`double_vision/lib/services/platform_file_picker.dart`** — NEW
+- **`frontend/lib/services/platform_file_picker.dart`** — NEW
   - Method channel wrapper for native file picker
   - Returns `FilePickerResult` with `type` ('file' or 'dir') and `path`
 
-- **`double_vision/lib/widgets/nodes/implementations/load_file_node.dart`**
+- **`frontend/lib/widgets/nodes/implementations/load_file_node.dart`**
   - Removed: `pickFile` parameter, `_onBrowseFilePressed()`, `_onBrowseDirectoryPressed()`
   - Replaced with: single `_onBrowsePressed()` that uses `PlatformFilePicker`
   - UI: PopupMenuButton → IconButton (no menu)
@@ -19,20 +19,20 @@ Replaces the file/directory selection popup menu with a single unified native di
 ### Native Implementations
 
 #### macOS
-- **`double_vision/macos/Runner/FilePicker.swift`** — NEW
+- **`frontend/macos/Runner/FilePicker.swift`** — NEW
   - Uses `NSOpenPanel` with `canChooseFiles = true` and `canChooseDirectories = true`
   - Returns file/directory type + path
 
-- **`double_vision/macos/Runner/MainFlutterWindow.swift`** — MODIFIED
+- **`frontend/macos/Runner/MainFlutterWindow.swift`** — MODIFIED
   - Added: `FilePicker.register(with:)` call after `RegisterGeneratedPlugins`
 
 #### Windows
-- **`double_vision/windows/runner/file_picker.cpp`** — NEW
+- **`frontend/windows/runner/file_picker.cpp`** — NEW
   - Uses Windows `IFileOpenDialog` with `FOS_PICKFOLDERS` flag
   - Automatically detects file vs directory via `FILE_ATTRIBUTE_DIRECTORY`
 
 #### Linux
-- **`double_vision/linux/file_picker.cc`** — NEW
+- **`frontend/linux/file_picker.cc`** — NEW
   - Uses GTK `GtkFileChooserNative`
   - Checks `G_FILE_TYPE_DIRECTORY` to determine selection type
 

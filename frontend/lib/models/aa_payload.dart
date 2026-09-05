@@ -1,0 +1,131 @@
+/// A D4M/AA associative array in sparse triple form — the data-contract object
+/// that flows between processing nodes (see `DESIGN.md` → "Data-contract
+/// boundary": processing nodes are AA-in → AA-out).
+///
+/// [rows], [cols] and [vals] are parallel lists: entry *k* is the triple
+/// `(rows[k], cols[k], vals[k])`. Values are strings for most columns; some
+/// columns are inherently numeric (e.g. ChunkNode's `position` / `token_count`)
+/// and carry ints — hence [vals] is `List<Object>`. This matches the
+/// `(row, col, val)` shape D4M's `aa.find()` yields on the Python side, so a
+/// payload round-trips cleanly to/from a real associative array.
+///
+/// Mirrors the backend `AssocArray` model (`backend/src/double_touch/models.py`); the
+/// envelope keys (`rows`/`cols`/`vals`) are camelCase-clean on the wire.
+library;
+
+class AaPayload {
+  final List<String> rows;
+  final List<String> cols;
+
+  /// Parallel to [cols]; each entry is a `String` or an `int` (JSON numbers
+  /// decode to `int` here since every numeric AA column is integral).
+  final List<Object> vals;
+
+  const AaPayload({
+    this.rows = const [],
+    this.cols = const [],
+    this.vals = const [],
+  });
+
+  factory AaPayload.fromJson(Map<String, dynamic> json) => AaPayload(
+    rows: [for (final r in (json['rows'] as List? ?? const [])) r as String],
+    cols: [for (final c in (json['cols'] as List? ?? const [])) c as String],
+    vals: [for (final v in (json['vals'] as List? ?? const [])) v as Object],
+  );
+
+  /// A single-triple status payload — e.g. a node reporting `thinking` / `idle`.
+  /// Read it back with `value('status')`.
+  factory AaPayload.status(String state) =>
+      AaPayload(rows: const ['status'], cols: const ['status'], vals: [state]);
+
+  Map<String, dynamic> toJson() => {'rows': rows, 'cols': cols, 'vals': vals};
+
+  /// Number of stored triples.
+  int get length => cols.length;
+
+  /// Whether this payload is in **dense** form — `vals` is a row-major
+  /// `rows × cols` matrix — rather than the canonical sparse parallel triples
+  /// (`rows`/`cols`/`vals` all the same length). A hand-authored table such as
+  /// `storage/categories/categories.json` uses the dense shape.
+  bool get isDense =>
+      vals.length != rows.length &&
+      cols.isNotEmpty &&
+      vals.length == rows.length * cols.length;
+
+  /// This payload as canonical sparse triples: a dense (`rows × cols` matrix)
+  /// payload is expanded row-major; an already-sparse payload is returned
+  /// unchanged. Lets AA consumers accept either on-disk / on-wire shape.
+  AaPayload toSparse() {
+    if (!isDense) return this;
+    final r = <String>[];
+    final c = <String>[];
+    final v = <Object>[];
+    for (var i = 0; i < rows.length; i++) {
+      for (var j = 0; j < cols.length; j++) {
+        r.add(rows[i]);
+        c.add(cols[j]);
+        v.add(vals[i * cols.length + j]);
+      }
+    }
+    return AaPayload(rows: r, cols: c, vals: v);
+  }
+
+  /// The distinct row keys, in first-appearance order. For a multi-row AA (e.g.
+  /// ChunkNode passages) this is the chunk count.
+  List<String> distinctRows() {
+    final seen = <String>{};
+    final out = <String>[];
+    for (final r in rows) {
+      if (seen.add(r)) out.add(r);
+    }
+    return out;
+  }
+
+  /// The value stored under column [col] (first match) as a string, or null if
+  /// absent. Convenience for single-row AAs (URLNode / FetchNode payloads).
+  String? value(String col) {
+    final i = cols.indexOf(col);
+    return i < 0 ? null : vals[i].toString();
+  }
+
+  /// The value stored under column [col] (first match) as an int, or null if
+  /// absent or non-numeric.
+  int? intValue(String col) {
+    final i = cols.indexOf(col);
+    if (i < 0) return null;
+    final v = vals[i];
+    return v is int ? v : int.tryParse(v.toString());
+  }
+
+  /// This payload flattened to prose — the text a consumer should treat as "the
+  /// content", when it needs one string rather than a matrix.
+  ///
+  /// Takes the cells of the first [preferred] column the payload actually has;
+  /// failing that, every string value. Numeric cells are always skipped — a
+  /// chunk's `position` or `token_count` is metadata, not content. Values are
+  /// joined by newline in payload order.
+  ///
+  /// Shared by the Prompt Node's `fileInput` ingest and the Remote Service
+  /// Node's `dataInput` extraction so both read an upstream AA the same way.
+  String flattenText({
+    List<String> preferred = const ['text', 'prompt', 'content', 'val'],
+  }) {
+    final lower = cols.map((c) => c.toLowerCase()).toList();
+    String? chosen;
+    for (final name in preferred) {
+      if (lower.contains(name)) {
+        chosen = name;
+        break;
+      }
+    }
+
+    final parts = <String>[];
+    for (var i = 0; i < cols.length && i < vals.length; i++) {
+      if (chosen != null && lower[i] != chosen) continue;
+      final v = vals[i];
+      if (v is! String || v.isEmpty) continue;
+      parts.add(v);
+    }
+    return parts.join('\n');
+  }
+}

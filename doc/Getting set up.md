@@ -24,7 +24,7 @@ This is simpler than the two-file plan and fits the "script is truth, `.blend`�
 ### Proposed folder structure
 
 ```
-DoubleNaught/double_vision/UX_UI/
+DoubleNaught/frontend/UX_UI/
 ├── _template.py              # shared builder functions, colors, layer convention
 ├── build_all.py               # regenerates NodeUX.blend from every build_*.py
 ├── build_function_extraction.py
@@ -41,7 +41,7 @@ DoubleNaught/double_vision/UX_UI/
 
 The `prompts/` folder is a small addition to your plan — worth saving each VSClaude implementation prompt as a file alongside its node's build script, so the UX-spec-to-implementation-handoff has a permanent paper trail, not just chat history.
 
-**Is `DN/DV/UX_UI` exactly `/Users/gcr/populi.Wk/DoubleNaught/double_vision/UX_UI/`?** Confirming the real path before I write anything with relative references baked in.
+**Is `DN/DV/UX_UI` exactly `/Users/gcr/populi.Wk/DoubleNaught/frontend/UX_UI/`?** Confirming the real path before I write anything with relative references baked in.
 
 ### Per-node loop, as I understand it
 

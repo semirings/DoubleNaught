@@ -995,13 +995,13 @@ Please update the Inventory node widget layout and file persistence model accord
 
 ## refactor and reorganize the node widgets 
 
-Please refactor and reorganize the node widgets in `double_vision/lib/widgets` into a dedicated `nodes` subdirectory.
+Please refactor and reorganize the node widgets in `frontend/lib/widgets` into a dedicated `nodes` subdirectory.
 
 ### Objective
-Group all current and future node-related UI widgets into `double_vision/lib/widgets/nodes/` while preserving clean imports and compiling without errors.
+Group all current and future node-related UI widgets into `frontend/lib/widgets/nodes/` while preserving clean imports and compiling without errors.
 
 ### Directory Structure Target
-Create the following layout under `double_vision/lib/widgets/nodes/`:
+Create the following layout under `frontend/lib/widgets/nodes/`:
 - `lib/widgets/nodes/base/` -> Place foundational/abstract node UI widgets here (e.g., base node container, port renderers, header widgets).
 - `lib/widgets/nodes/implementations/` -> Place all concrete canvas node widgets here (e.g., agent node, function node, source node, start node).
 - `lib/widgets/nodes/nodes.dart` -> Create an export barrel file that re-exports all public widgets from `nodes/`.
@@ -1009,7 +1009,7 @@ Create the following layout under `double_vision/lib/widgets/nodes/`:
 ### Requirements & Guardrails
 1. File Movements: Move all node-related widget files from `lib/widgets/` into their respective subdirectories inside `lib/widgets/nodes/`. Leave non-node generic UI widgets (like canvas toolbars or modal dialogs) in `lib/widgets/`.
 2. Import Updates: Update all `package:` and relative `import` statements across the entire project (`lib/` and `test/`) to reflect the new file locations.
-3. Barrel File Usage: Prefer exporting all node widgets through `lib/widgets/nodes/nodes.dart` so callers outside the `nodes/` directory can import `package:double_vision/widgets/nodes/nodes.dart` cleanly.
+3. Barrel File Usage: Prefer exporting all node widgets through `lib/widgets/nodes/nodes.dart` so callers outside the `nodes/` directory can import `package:frontend/widgets/nodes/nodes.dart` cleanly.
 4. Naming Conventions: Maintain lowerCamelCase for variables and methods, UpperCamelCase for class names, and standard lower_snake_case for filenames. User-facing labels, tooltips, and titles must use standard text formatting (not camelCase).
 5. Verification: Ensure all code compiles cleanly with no broken relative imports or missing symbol errors.
 
