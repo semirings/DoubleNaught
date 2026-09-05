@@ -103,6 +103,13 @@ class SegForgeNodeWidget extends BaseNodeWidget {
   /// Process seam; defaults to [launchSegForgeProcess].
   final SegForgeLauncher? launcher;
 
+  /// Crop seam; defaults to [cropPng].
+  ///
+  /// Injectable because rasterizing through `dart:ui` inside `testWidgets`
+  /// does not complete — the test zone never produces a frame for it — so
+  /// widget tests substitute a synchronous stand-in.
+  final Future<Uint8List?> Function(Uint8List bytes, ui.Rect rect)? cropper;
+
   /// Called when an edge is dropped on `session`.
   final void Function(PortRef source)? onSessionConnect;
 
@@ -127,6 +134,7 @@ class SegForgeNodeWidget extends BaseNodeWidget {
     super.connectedOutputs,
     this.api,
     this.launcher,
+    this.cropper,
     this.onSessionConnect,
     this.onSessionInputPort,
     this.sessionConnected = false,
@@ -150,6 +158,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
   late final SegForgeApi _api;
   late final SegForgeLauncher _launcher;
+  late final Future<Uint8List?> Function(Uint8List, ui.Rect) _cropper;
 
   late final InputPort _imageIn;
   late final InputPort _sessionIn;
@@ -178,6 +187,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     super.initState();
     _api = widget.api ?? const SegForgeApi();
     _launcher = widget.launcher ?? launchSegForgeProcess;
+    _cropper = widget.cropper ?? cropPng;
 
     _appPath.text = widget.initialParams?['appPath'] ?? '';
     // Persist the path and re-evaluate Open Forge's enablement as it is typed.
@@ -409,7 +419,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
         final full = await _api.fetchBytes(cutoutUrls[i]);
         if (gen != _execGen || !mounted) return;
         final b = session.boxes[i];
-        crop = await cropPng(full, ui.Rect.fromLTRB(b[0], b[1], b[2], b[3]));
+        crop = await _cropper(full, ui.Rect.fromLTRB(b[0], b[1], b[2], b[3]));
         if (gen != _execGen || !mounted) return;
       }
       crops.add(crop);

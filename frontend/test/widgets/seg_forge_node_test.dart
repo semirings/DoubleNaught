@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:double_vision/config/node_registry.dart';
 import 'package:double_vision/models/aa_payload.dart';
 import 'package:double_vision/models/workflow.dart';
+import 'package:double_vision/services/image_crop.dart';
 import 'package:double_vision/services/infobus/input_port.dart';
 import 'package:double_vision/services/infobus/output_port.dart';
 import 'package:double_vision/services/seg_forge_api.dart';
@@ -57,7 +58,26 @@ Map<String, dynamic> _emptySessionBody() => {
       'results': {'original_width': 100, 'original_height': 100},
     };
 
-Future<Uint8List> _png(int w, int h) async {
+/// Opaque stand-in for image bytes.
+///
+/// The widget tests stub the cropper, so nothing here is ever decoded — which
+/// is the point: rasterizing through `dart:ui` inside `testWidgets` never
+/// completes. The real [cropPng] is exercised in its own group below, outside
+/// the widget-test zone.
+final Uint8List _bytes = Uint8List.fromList(List.generate(64, (i) => i));
+
+/// Records the rects a run asked to crop, and returns a recognisable payload.
+class _FakeCropper {
+  final List<ui.Rect> rects = [];
+  Uint8List? result = Uint8List.fromList(const [9, 9, 9]);
+
+  Future<Uint8List?> call(Uint8List bytes, ui.Rect rect) async {
+    rects.add(rect);
+    return result;
+  }
+}
+
+Future<Uint8List> _realPng(int w, int h) async {
   final recorder = ui.PictureRecorder();
   ui.Canvas(recorder).drawRect(
     ui.Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble()),
@@ -171,6 +191,7 @@ Future<({InputPort image, InputPort session, List<AaPayload> segments, List<AaPa
   WidgetTester tester, {
   required SegForgeApi api,
   required SegForgeLauncher launcher,
+  _FakeCropper? cropper,
   String appPath = '/tmp/SegForge',
 }) async {
   InputPort? imagePort;
@@ -187,6 +208,7 @@ Future<({InputPort image, InputPort session, List<AaPayload> segments, List<AaPa
             initialParams: {'appPath': appPath},
             api: api,
             launcher: launcher,
+            cropper: (cropper ?? _FakeCropper()).call,
             onInputPort: (p) => imagePort = p,
             onSessionInputPort: (p) => sessionPort = p,
             onIndexedOutputPort: (idx, port) => port.connect(
@@ -354,29 +376,27 @@ void main() {
 
     testWidgets('Open Forge is disabled with no image, enabled once one arrives',
         (tester) async {
-      final png = await _png(100, 100);
       final l = _launcher(autoExit: false);
       final ports =
-          await _pump(tester, api: _api(imageBytes: png).api, launcher: l.launcher);
+          await _pump(tester, api: _api(imageBytes: _bytes).api, launcher: l.launcher);
 
       final forge = find.widgetWithText(OutlinedButton, 'Open Forge');
       expect(tester.widget<OutlinedButton>(forge).onPressed, isNull);
 
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
       expect(tester.widget<OutlinedButton>(forge).onPressed, isNotNull);
     });
 
     testWidgets('Open Forge is disabled while the app path is blank',
         (tester) async {
-      final png = await _png(100, 100);
       final l = _launcher();
       final ports = await _pump(
         tester,
-        api: _api(imageBytes: png).api,
+        api: _api(imageBytes: _bytes).api,
         launcher: l.launcher,
         appPath: '',
       );
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
 
       final forge = find.widgetWithText(OutlinedButton, 'Open Forge');
       expect(tester.widget<OutlinedButton>(forge).onPressed, isNull);
@@ -384,13 +404,12 @@ void main() {
 
     testWidgets('a full run hands SegForge its inputs and emits both AAs',
         (tester) async {
-      final png = await _png(100, 100);
-      final backend = _api(imageBytes: png);
+      final backend = _api(imageBytes: _bytes);
       final l = _launcher();
       final ports =
           await _pump(tester, api: backend.api, launcher: l.launcher);
 
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
 
@@ -416,42 +435,59 @@ void main() {
       expect(ports.linkage.single.rows, contains('sess_01:cat:seg_000'));
     });
 
-    testWidgets('crop_bytes is cropped to the bbox, not the full canvas',
-        (tester) async {
-      final png = await _png(100, 100);
+    testWidgets('the cutout is cropped to the segment own bbox', (tester) async {
+      final cropper = _FakeCropper();
       final l = _launcher();
       final ports = await _pump(
         tester,
-        api: _api(imageBytes: png).api,
+        api: _api(imageBytes: _bytes).api,
         launcher: l.launcher,
+        cropper: cropper,
       );
 
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      // SegForge's cutouts are full-canvas, so the node must crop each one to
+      // its box — passed through as xyxy, which is SegForge's own convention.
+      expect(cropper.rects, [const ui.Rect.fromLTRB(10, 20, 40, 60)]);
+      final aa = ports.segments.single;
+      expect(
+        aa.vals[aa.cols.indexOf('crop_bytes')],
+        base64Encode(const [9, 9, 9]),
+      );
+    });
+
+    testWidgets('a cutout that will not crop omits the column', (tester) async {
+      final cropper = _FakeCropper()..result = null;
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: _bytes).api,
+        launcher: l.launcher,
+        cropper: cropper,
+      );
+
+      await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
 
       final aa = ports.segments.single;
-      final crop = base64Decode(
-        aa.vals[aa.cols.indexOf('crop_bytes')].toString(),
-      );
-      final decoded =
-          (await (await ui.instantiateImageCodec(crop)).getNextFrame()).image;
-      // bbox [10,20,40,60] xyxy -> a 30x40 cutout, not the 100x100 source.
-      expect(decoded.width, 30);
-      expect(decoded.height, 40);
+      expect(aa.cols, isNot(contains('crop_bytes')));
+      expect(aa.cols, contains('bbox'));
     });
 
     testWidgets('closing SegForge without segmenting emits nothing and says so',
         (tester) async {
-      final png = await _png(100, 100);
       final l = _launcher();
       final ports = await _pump(
         tester,
-        api: _api(imageBytes: png, session: _emptySessionBody()).api,
+        api: _api(imageBytes: _bytes, session: _emptySessionBody()).api,
         launcher: l.launcher,
       );
 
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
 
@@ -462,15 +498,14 @@ void main() {
 
     testWidgets('a mask that cannot be fetched omits the column, not the row',
         (tester) async {
-      final png = await _png(100, 100);
       final l = _launcher();
       final ports = await _pump(
         tester,
-        api: _api(imageBytes: png, maskAvailable: false).api,
+        api: _api(imageBytes: _bytes, maskAvailable: false).api,
         launcher: l.launcher,
       );
 
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
 
@@ -481,11 +516,10 @@ void main() {
     });
 
     testWidgets('Wait gates the emit until Execute is pressed', (tester) async {
-      final png = await _png(100, 100);
       final l = _launcher();
       final ports = await _pump(
         tester,
-        api: _api(imageBytes: png).api,
+        api: _api(imageBytes: _bytes).api,
         launcher: l.launcher,
       );
 
@@ -493,7 +527,7 @@ void main() {
       await tester.tap(find.byType(WaitCheckbox));
       await tester.pumpAndSettle();
 
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
 
@@ -509,15 +543,14 @@ void main() {
 
     testWidgets('Execute re-emits held results without relaunching the app',
         (tester) async {
-      final png = await _png(100, 100);
       final l = _launcher();
       final ports = await _pump(
         tester,
-        api: _api(imageBytes: png).api,
+        api: _api(imageBytes: _bytes).api,
         launcher: l.launcher,
       );
 
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
       expect(ports.segments, hasLength(1));
@@ -531,15 +564,14 @@ void main() {
 
     testWidgets('Cancel kills the app and leaves the outputs alone',
         (tester) async {
-      final png = await _png(100, 100);
       final l = _launcher(autoExit: false);
       final ports = await _pump(
         tester,
-        api: _api(imageBytes: png).api,
+        api: _api(imageBytes: _bytes).api,
         launcher: l.launcher,
       );
 
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
 
@@ -555,11 +587,10 @@ void main() {
 
     testWidgets('an upstream session id is reused instead of a fresh one',
         (tester) async {
-      final png = await _png(100, 100);
       final l = _launcher();
       final ports = await _pump(
         tester,
-        api: _api(imageBytes: png).api,
+        api: _api(imageBytes: _bytes).api,
         launcher: l.launcher,
       );
 
@@ -572,7 +603,7 @@ void main() {
           vals: ['from_upstream'],
         ),
       );
-      await _send(tester, ports.image, _imageAa(png));
+      await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
 
@@ -595,6 +626,48 @@ void main() {
 
       expect(find.textContaining('base64'), findsOneWidget);
       expect(l.exes, isEmpty);
+    });
+  });
+
+  group('cropPng', () {
+    // Plain `test`, not `testWidgets`: real rasterization needs actual async,
+    // which the widget-test zone does not give it.
+    test('produces a sub-image of the requested rect', () async {
+      final png = await _realPng(100, 100);
+      final cropped = await cropPng(png, const ui.Rect.fromLTRB(10, 20, 40, 60));
+      expect(cropped, isNotNull);
+
+      final decoded =
+          (await (await ui.instantiateImageCodec(cropped!)).getNextFrame()).image;
+      expect(decoded.width, 30);
+      expect(decoded.height, 40);
+    });
+
+    test('clamps a box that runs past the image edge', () async {
+      final png = await _realPng(50, 50);
+      final cropped = await cropPng(png, const ui.Rect.fromLTRB(30, 30, 500, 500));
+      expect(cropped, isNotNull);
+
+      final decoded =
+          (await (await ui.instantiateImageCodec(cropped!)).getNextFrame()).image;
+      expect(decoded.width, 20);
+      expect(decoded.height, 20);
+    });
+
+    test('undecodable bytes give null rather than throwing', () async {
+      expect(
+        await cropPng(Uint8List.fromList(const [1, 2, 3]),
+            const ui.Rect.fromLTRB(0, 0, 10, 10)),
+        isNull,
+      );
+    });
+
+    test('a box outside the image gives null', () async {
+      final png = await _realPng(20, 20);
+      expect(
+        await cropPng(png, const ui.Rect.fromLTRB(100, 100, 110, 110)),
+        isNull,
+      );
     });
   });
 }
