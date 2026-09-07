@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show File, Process;
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -12,6 +12,7 @@ import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/seg_forge_api.dart';
 import '../../../services/seg_forge_mapping.dart';
+import '../../../services/storage_service.dart';
 import '../base/base_node_widget.dart';
 import '../base/execute_button.dart';
 import '../base/io_support.dart';
@@ -325,19 +326,52 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   // ── Sessions ──────────────────────────────────────────────────────────────
 
   /// Loads the list of saved SegForge sessions from the backend.
+  /// Loads saved sessions from disk (StorageService).
   Future<void> _loadSessions() async {
     try {
-      final sessions = await _api.listSessions();
+      final storage = StorageService();
+      final baseDir = await storage.resolveBaseDir();
+      final sessionsDir = Directory('${baseDir.path}/sf/sessions');
+
+      List<Map<String, dynamic>> sessions = [];
+      if (await sessionsDir.exists()) {
+        final files = await sessionsDir.list().toList();
+        for (final item in files) {
+          if (item is File && item.path.endsWith('.json')) {
+            try {
+              final content = await item.readAsString();
+              final data = jsonDecode(content) as Map<String, dynamic>;
+              sessions.add(data);
+            } catch (e) {
+              debugPrint('Warning: Failed to load session file ${item.path}: $e');
+            }
+          }
+        }
+      }
+
+      // Sort by created_at descending (newest first)
+      sessions.sort((a, b) {
+        final aTime = a['created_at'] as String?;
+        final bTime = b['created_at'] as String?;
+        if (aTime == null || bTime == null) return 0;
+        return bTime.compareTo(aTime);
+      });
+
       if (!mounted) return;
       setState(() {
         _sessionsList = sessions;
-        // Select the first session by default, or none if list is empty.
         _selectedSessionId = sessions.isNotEmpty ? sessions[0]['session_id'] as String : null;
       });
     } catch (e) {
-      debugPrint('Warning: Failed to load sessions: $e');
-      // Continue with empty list if load fails.
+      debugPrint('Warning: Failed to load sessions from disk: $e');
     }
+  }
+
+  /// Time-ordered session ID (matches DN's existing pattern).
+  static String _newSessionId() {
+    final now = DateTime.now();
+    return 'session-${now.microsecondsSinceEpoch.toRadixString(36)}'
+        '-${now.hashCode.toRadixString(36)}';
   }
 
   /// Prompts user for session name/description and creates a new session.
@@ -349,25 +383,29 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Create New SegForge Session'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Session Name',
-                hintText: 'e.g., "Slide Analysis"',
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Session Name',
+                  hintText: 'e.g., "Slide Analysis"',
+                ),
+                autofocus: true,
               ),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: descCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Description',
-                hintText: 'e.g., "Segmenting presentation slides"',
+              const SizedBox(height: 12),
+              TextField(
+                controller: descCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Description',
+                  hintText: 'e.g., "Segmenting presentation slides"',
+                ),
+                maxLines: null,
               ),
-            ),
-          ],
+            ],
+          ),
         ),
         actions: [
           TextButton(
@@ -376,7 +414,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Create'),
+            child: const Text('Save'),
           ),
         ],
       ),
@@ -385,17 +423,24 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     if (result != true || !mounted) return;
 
     try {
-      final sessionId = await _api.newSession();
-      if (!mounted) return;
-
-      // Add to local list and select it.
+      // Generate ID and create session locally
+      final sessionId = _newSessionId();
+      final now = DateTime.now();
       final newSession = {
         'session_id': sessionId,
-        'name': nameCtrl.text.isNotEmpty ? nameCtrl.text : 'Session $sessionId',
-        'description': descCtrl.text,
-        'created_at': DateTime.now().toIso8601String(),
+        'name': nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : 'Session ${now.toString().substring(0, 10)}',
+        'description': descCtrl.text.trim(),
+        'created_at': now.toIso8601String(),
         'image_url': '',
       };
+
+      // Persist to disk
+      final storage = StorageService();
+      await storage.write('sf/sessions/$sessionId', newSession);
+
+      if (!mounted) return;
+
+      // Add to local list and select it
       setState(() {
         _sessionsList.insert(0, newSession);
         _selectedSessionId = sessionId;
