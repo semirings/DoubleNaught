@@ -2485,10 +2485,6 @@ class _WorkflowPageState extends State<WorkflowPage>
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          // `session` (AA, idx 1) — optional session id to work in.
-          sessionConnected: _hasIncomingEdgeAt(node.id, 1),
-          onSessionConnect: (source) => _connectAt(source, node.id, 1),
-          onSessionInputPort: (port) => _registerAaInput(node.id, 1, port),
           // `segment` (idx 0) and `linkage` (idx 1). segment is also registered
           // flat, as the headline output the Focus Panel re-emits on.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
