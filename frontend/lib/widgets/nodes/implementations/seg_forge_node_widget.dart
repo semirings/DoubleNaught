@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io' show File, Process;
+import 'dart:io' show File, Process, ProcessStartMode;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -409,34 +409,43 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
   // ── Backend Management ────────────────────────────────────────────────────────
 
-  /// Ensures the SF backend is healthy and running.
+  static const String _sfBackendDir =
+      '/Users/gcr/populi.Wk/SegForge/backend';
+  static const String _sfUvicorn =
+      '/Users/gcr/populi.Wk/SegForge/.venv/bin/uvicorn';
+
+  /// Ensures the SF backend is healthy, auto-launching it if necessary.
   ///
-  /// Checks `/health` on the configured backend address. If healthy, returns.
-  /// If unhealthy, attempts health check up to 3 times with 2-second waits
-  /// (giving an external backend ~6 seconds to start if just launching).
-  ///
-  /// Future enhancement: if a backend-path field is added to the node config,
-  /// this method can auto-launch the backend process. For now, assumes the
-  /// user has started the SF backend separately on the configured port.
+  /// First does a quick health check. If unhealthy, spawns uvicorn in the
+  /// background and polls until it responds (up to ~20 s). Throws if the
+  /// backend cannot be reached after launch.
   Future<void> _ensureBackendHealthy(int gen) async {
-    // Poll for health with retries, in case backend is just starting up.
-    for (var attempt = 0; attempt < 3; attempt++) {
+    // Fast path: already up.
+    try {
+      if (await _api.healthCheck()) return;
+    } catch (_) {}
+
+    if (gen != _execGen || !mounted) return;
+
+    // Not running — launch it in the background.
+    await Process.start(
+      _sfUvicorn,
+      ['main:app', '--host', '127.0.0.1', '--port', '8401'],
+      workingDirectory: _sfBackendDir,
+      mode: ProcessStartMode.detachedWithStdio,
+    );
+
+    // Poll until healthy (10 × 2 s = 20 s max).
+    for (var attempt = 0; attempt < 10; attempt++) {
       if (gen != _execGen || !mounted) return;
+      await Future.delayed(const Duration(seconds: 2));
       try {
-        final isHealthy = await _api.healthCheck();
-        if (isHealthy) return;
-      } catch (_) {
-        // Not ready yet; wait before retry.
-        if (attempt < 2) {
-          await Future.delayed(const Duration(seconds: 2));
-        }
-      }
+        if (await _api.healthCheck()) return;
+      } catch (_) {}
     }
 
-    // Backend not healthy after retries.
     throw Exception(
-      'SegForge backend is not running or not healthy at ${_api.baseUrl}. '
-      'Please start the backend manually: cd SegForge && ./run.sh BE',
+      'SegForge backend did not become healthy at ${_api.baseUrl} after launch.',
     );
   }
 
