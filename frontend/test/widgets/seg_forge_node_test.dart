@@ -146,6 +146,44 @@ Future<Uint8List> _realPng(int w, int h) async {
       if (path.startsWith('/storage/')) {
         return http.Response.bytes(imageBytes ?? Uint8List(0), 200);
       }
+      // SF backend health + session init (called by _ensureBackendHealthy / initSession).
+      if (path == '/health') {
+        return http.Response(jsonEncode({'status': 'ok'}), 200,
+            headers: {'content-type': 'application/json'});
+      }
+      if (path == '/initSession') {
+        return http.Response(jsonEncode({'session_id': _sessionId}), 200,
+            headers: {'content-type': 'application/json'});
+      }
+      // DN backend session persistence (called by _loadSessions / saveSession).
+      if (request.method == 'GET' && path == '/segforge/sessions') {
+        return http.Response(
+          jsonEncode({
+            'sessions': [
+              {
+                'session_id': _sessionId,
+                'name': 'Test session',
+                'description': '',
+                'created_at': '2026-09-07T00:00:00Z',
+                'image_url': '',
+              }
+            ],
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
+      if (request.method == 'POST' && path == '/segforge/sessions') {
+        return http.Response(
+          jsonEncode({
+            'session_id': _sessionId,
+            'path': '/tmp/$_sessionId.parquet',
+            'message': 'saved',
+          }),
+          200,
+          headers: {'content-type': 'application/json'},
+        );
+      }
       return http.Response('{"detail":"unexpected $path"}', 500);
     }),
   );
@@ -208,9 +246,9 @@ Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
         body: SingleChildScrollView(
           child: SegForgeNodeWidget(
             node: const WorkflowNode(id: 1, type: 'segForgeNode'),
-            initialParams: {'appPath': appPath},
             api: api,
             launcher: launcher,
+            appPathOverride: appPath.isEmpty ? null : appPath,
             cropper: (cropper ?? _FakeCropper()).call,
             onInputPort: (p) => imagePort = p,
             onIndexedOutputPort: (idx, port) => port.connect(
@@ -392,21 +430,6 @@ void main() {
       expect(tester.widget<OutlinedButton>(forge).onPressed, isNotNull);
     });
 
-    testWidgets('Open Forge is disabled while the app path is blank',
-        (tester) async {
-      final l = _launcher();
-      final ports = await _pump(
-        tester,
-        api: _api(imageBytes: _bytes).api,
-        launcher: l.launcher,
-        appPath: '',
-      );
-      await _send(tester, ports.image, _imageAa(_bytes));
-
-      final forge = find.widgetWithText(OutlinedButton, 'Open Forge');
-      expect(tester.widget<OutlinedButton>(forge).onPressed, isNull);
-    });
-
     testWidgets('a full run hands SegForge its inputs and emits both AAs',
         (tester) async {
       final backend = _api(imageBytes: _bytes);
@@ -531,9 +554,10 @@ void main() {
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
 
-      // SegForge fetches URLs itself, so the node must not move the bytes.
+      // SegForge fetches URLs itself, so the node must not move the bytes;
+      // no /upload and no /newSession needed — the session is already selected.
       expect(backend.calls, isNot(contains('POST /upload')));
-      expect(backend.calls, contains('POST /newSession'));
+      expect(backend.calls, isNot(contains('POST /newSession')));
       expect(l.envs.single['SEGFORGE_IMAGE_URL'], 'http://example.test/cat.png');
       // image_id comes off the URL's last segment.
       expect(ports.segments.single.rows, contains('sess_01:cat:seg_000'));

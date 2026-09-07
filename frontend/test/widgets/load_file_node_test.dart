@@ -485,10 +485,10 @@ void main() {
       // .csv stays allowed: the backend reconstructs an AA from one.
       expect(LoadFileNode.isAllowedPath('/tmp/data.csv'), isTrue);
       for (final path in [
-        '/tmp/image.png',
         '/tmp/archive.zip',
         '/tmp/binary',
         '/tmp/.gitignore',
+        '/tmp/app.exe',
       ]) {
         expect(LoadFileNode.isAllowedPath(path), isFalse, reason: path);
       }
@@ -520,7 +520,7 @@ void main() {
         home: Scaffold(
           body: LoadFileNode(
             node: const WorkflowNode(id: 1, type: 'load_file'),
-            pickFile: () async => XFile('/Users/me/pictures/cat.png'),
+            pickFile: () async => XFile('/Users/me/software/app.exe'),
           ),
         ),
       ));
@@ -531,8 +531,8 @@ void main() {
       await tester.pumpAndSettle();
 
       // Reported, not thrown — and the previous path is untouched.
-      expect(find.text('Unsupported file type: .png'), findsOneWidget);
-      expect(find.textContaining('Allowed: .jl .md'), findsOneWidget);
+      expect(find.text('Unsupported file type: .exe'), findsOneWidget);
+      expect(find.textContaining('Allowed: .jl'), findsOneWidget);
       expect(_pathField(tester), '');
       expect(tester.takeException(), isNull);
     });
@@ -561,7 +561,7 @@ void main() {
         home: Scaffold(
           body: LoadFileNode(
             node: const WorkflowNode(id: 1, type: 'load_file'),
-            pickFile: () async => XFile('/Users/me/pictures/cat.png'),
+            pickFile: () async => XFile('/Users/me/software/app.exe'),
           ),
         ),
       ));
@@ -570,11 +570,11 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Select File'));
       await tester.pumpAndSettle();
-      expect(find.text('Unsupported file type: .png'), findsOneWidget);
+      expect(find.text('Unsupported file type: .exe'), findsOneWidget);
 
       await tester.tapAt(tester.getCenter(find.byTooltip('Dismiss')));
       await tester.pumpAndSettle();
-      expect(find.text('Unsupported file type: .png'), findsNothing);
+      expect(find.text('Unsupported file type: .exe'), findsNothing);
     });
   });
 

@@ -118,6 +118,10 @@ class SegForgeNodeWidget extends BaseNodeWidget {
   /// Process seam; defaults to [launchSegForgeProcess].
   final SegForgeLauncher? launcher;
 
+  /// App-path seam; defaults to the canonical SegForge build path.
+  /// Injectable for tests so they don't depend on a real on-disk bundle.
+  final String? appPathOverride;
+
   /// Crop seam; defaults to [cropPng].
   ///
   /// Injectable because rasterizing through `dart:ui` inside `testWidgets`
@@ -140,6 +144,7 @@ class SegForgeNodeWidget extends BaseNodeWidget {
     super.connectedOutputs,
     this.api,
     this.launcher,
+    this.appPathOverride,
     this.cropper,
     this.onIndexedOutputPort,
   });
@@ -490,9 +495,10 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
       // Now launch SF frontend. It will read initialization from backend.
       final process = await _launcher(
-        executable: _segForgeAppPath,
+        executable: widget.appPathOverride ?? _segForgeAppPath,
         environment: {
           'SEGFORGE_SESSION_ID': sessionId,
+          'SEGFORGE_IMAGE_URL': imageUrl,
           'SEGFORGE_BACKEND_URL': _api.baseUrl,
         },
       );
