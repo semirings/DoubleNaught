@@ -720,44 +720,88 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
         Row(
           children: [
             Expanded(
-              child: _sessionsList.isEmpty
-                  ? Text(
-                      'No sessions',
-                      style: theme.textTheme.bodySmall?.copyWith(
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border.all(
+                    color: scheme.outlineVariant,
+                    width: 1,
+                  ),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: DropdownButton<String>(
+                        value: _selectedSessionId,
+                        isDense: true,
+                        isExpanded: true,
+                        underline: const SizedBox(), // Remove default underline
+                        items: _sessionsList.isEmpty
+                            ? [
+                                DropdownMenuItem(
+                                  enabled: false,
+                                  child: Text(
+                                    'No sessions',
+                                    style: theme.textTheme.bodySmall?.copyWith(
+                                      color: scheme.onSurfaceVariant,
+                                    ),
+                                  ),
+                                ),
+                              ]
+                            : [
+                                ..._sessionsList.map((s) {
+                                  final id = s['session_id'] as String;
+                                  final name = (s['name'] as String?) ?? id;
+                                  return DropdownMenuItem(
+                                    value: id,
+                                    child: Text(
+                                      name.length > 30 ? '${name.substring(0, 27)}...' : name,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  );
+                                }),
+                              ],
+                        onChanged: busy || _sessionsList.isEmpty
+                            ? null
+                            : (v) {
+                                if (v != null) {
+                                  setState(() => _selectedSessionId = v);
+                                }
+                              },
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Icon(
+                        Icons.expand_more,
+                        size: 18,
                         color: scheme.onSurfaceVariant,
                       ),
-                    )
-                  : DropdownButton<String>(
-                      value: _selectedSessionId,
-                      isDense: true,
-                      isExpanded: true,
-                      items: [
-                        ..._sessionsList.map((s) {
-                          final id = s['session_id'] as String;
-                          final name = (s['name'] as String?) ?? id;
-                          return DropdownMenuItem(
-                            value: id,
-                            child: Text(
-                              name.length > 30 ? '${name.substring(0, 27)}...' : name,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          );
-                        }),
-                        const DropdownMenuItem(
-                          value: '__CREATE_NEW__',
-                          child: Text('+ Create New'),
-                        ),
-                      ],
-                      onChanged: busy
-                          ? null
-                          : (v) {
-                              if (v == '__CREATE_NEW__') {
-                                _createNewSession();
-                              } else if (v != null) {
-                                setState(() => _selectedSessionId = v);
-                              }
-                            },
                     ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 4),
+            SizedBox(
+              height: 40,
+              width: 40,
+              child: IconButton(
+                icon: const Icon(Icons.add, size: 18),
+                tooltip: 'Create new session',
+                onPressed: busy ? null : _createNewSession,
+                style: IconButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  side: BorderSide(
+                    color: scheme.outlineVariant,
+                    width: 1,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ),
             ),
           ],
         ),
