@@ -496,6 +496,29 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       return;
     }
 
+    // Persist the session to DN's Parquet store for later replay/inspection.
+    try {
+      await _api.saveSession({
+        'session_id': session.sessionId,
+        'created_at': session.createdAt,
+        'name': session.sessionId,
+        'description': filename,
+        'image_url': '',
+        'width': session.width,
+        'height': session.height,
+        'prompts': session.prompts,
+        'results': {
+          'boxes': session.boxes,
+          'scores': session.scores,
+          'masks': session.masksRle,
+        },
+      });
+    } catch (e) {
+      // Save failure is a warning, not a fatal error; continue with results.
+      debugPrint('Warning: Failed to persist session $sessionId: $e');
+    }
+    if (gen != _execGen || !mounted) return;
+
     // Ask SegForge to materialize the mask and cutout PNGs. Its UI no longer
     // drives either, so the node does — otherwise mask_bytes would exist only
     // when the user happened to press Save, and crop_bytes never.
