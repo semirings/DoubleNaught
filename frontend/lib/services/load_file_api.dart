@@ -77,8 +77,9 @@ class LoadFileResponse {
 
   factory LoadFileResponse.fromJson(Map<String, dynamic> json) {
     AaPayload? aa;
-    if (json['aa'] != null) {
-      aa = AaPayload.fromJson(json['aa'] as Map<String, dynamic>);
+    final aaJson = json['parsedPayload'] ?? json['aa'];
+    if (aaJson != null) {
+      aa = AaPayload.fromJson(aaJson as Map<String, dynamic>);
     }
 
     return LoadFileResponse(
