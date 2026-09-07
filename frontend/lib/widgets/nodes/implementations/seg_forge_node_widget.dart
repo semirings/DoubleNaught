@@ -15,7 +15,6 @@ import '../../../services/seg_forge_mapping.dart';
 import '../../../services/storage_service.dart';
 import '../base/base_node_widget.dart';
 import '../base/execute_button.dart';
-import '../base/io_support.dart';
 import '../base/wait_checkbox.dart';
 import '../base/wait_gated_execution.dart';
 
@@ -161,6 +160,10 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   @override
   String get workingLabel => 'forging';
 
+  /// Path to SegForge frontend app. Located at sibling SegForge repo.
+  static const String _segForgeAppPath =
+      '/Users/gcr/populi.Wk/SegForge/frontend/build/macos/Build/Products/Debug/frontend.app/Contents/MacOS/frontend';
+
   late final SegForgeApi _api;
   late final SegForgeLauncher _launcher;
   late final Future<Uint8List?> Function(Uint8List, ui.Rect) _cropper;
@@ -168,8 +171,6 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   late final InputPort _imageIn;
   final OutputPort _segmentOut = OutputPort('segment');
   final OutputPort _linkageOut = OutputPort('linkage');
-
-  final TextEditingController _appPath = TextEditingController();
 
   /// Set from the `image` port. When null the port is the only way to provide
   /// an image — there is no manual field anymore.
@@ -199,10 +200,6 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     _launcher = widget.launcher ?? launchSegForgeProcess;
     _cropper = widget.cropper ?? cropPng;
 
-    _appPath.text = widget.initialParams?['appPath'] ?? '';
-    // Persist the app path and re-evaluate Open Forge's enablement as it is typed.
-    _appPath.addListener(_onFieldsChanged);
-
     // Only the canonical port goes through initInputPort — it always calls the
     // single widget.onInputPort callback.
     _imageIn = InputPort('image');
@@ -217,21 +214,11 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     _loadSessions();
   }
 
-  void _onFieldsChanged() {
-    if (!mounted) return;
-    saveParams({
-      'appPath': _appPath.text.trim(),
-    });
-    setState(() {});
-  }
-
   @override
   void dispose() {
-    _appPath.removeListener(_onFieldsChanged);
     _imageIn.dispose();
     _segmentOut.dispose();
     _linkageOut.dispose();
-    _appPath.dispose();
     super.dispose();
   }
 
@@ -434,8 +421,13 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
         'image_url': '',
       };
 
-      // Persist to disk
+      // Persist to disk, creating directory if needed (mkdir -p equivalent)
       final storage = StorageService();
+      final baseDir = await storage.resolveBaseDir();
+      final sessionsDir = Directory('${baseDir.path}/sf/sessions');
+      if (!await sessionsDir.exists()) {
+        await sessionsDir.create(recursive: true);
+      }
       await storage.write('sf/sessions/$sessionId', newSession);
 
       if (!mounted) return;
@@ -490,7 +482,6 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
   bool get _canOpenForge =>
       _portImage != null &&
-      _appPath.text.trim().isNotEmpty &&
       _selectedSessionId != null &&
       status != NodeStatus.working;
 
@@ -542,7 +533,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
       // Now launch SF frontend. It will read initialization from backend.
       final process = await _launcher(
-        executable: _appPath.text.trim(),
+        executable: _segForgeAppPath,
         environment: {
           'SEGFORGE_SESSION_ID': sessionId,
           'SEGFORGE_BACKEND_URL': _api.baseUrl,
@@ -805,15 +796,6 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
             ),
           ],
         ),
-        const SizedBox(height: 8),
-        Text(
-          'SegForge app',
-          style: theme.textTheme.labelSmall?.copyWith(
-            color: scheme.onSurfaceVariant,
-          ),
-        ),
-        const SizedBox(height: 4),
-        IOSupport.field(controller: _appPath, enabled: !busy),
         const SizedBox(height: 8),
         SizedBox(
           height: 30,
