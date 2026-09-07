@@ -153,6 +153,29 @@ class SegForgeApi {
     }
   }
 
+  /// Allocates an empty session and returns its id.
+  ///
+  /// Used when the image is a URL the app can fetch for itself: the node needs
+  /// to know the session id up front in order to read results back, but has
+  /// nothing to upload. The backend creates the session directories here, and
+  /// the app's own `/upload` then lands in this same session because the node
+  /// passes the id to it.
+  Future<String> newSession() async {
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      final response = await transport.post(
+        Uri.parse('$baseUrl/newSession'),
+        headers: const {'Content-Type': 'application/json'},
+      );
+      if (response.statusCode != 200) _fail('New session', response);
+      return (jsonDecode(response.body) as Map<String, dynamic>)['session_id']
+          as String;
+    } finally {
+      own?.close();
+    }
+  }
+
   /// URL for an image already uploaded into [sessionId], via the `/storage`
   /// static mount. This is what gets handed to the app as `SEGFORGE_IMAGE_URL`.
   String originalImageUrl(String sessionId) =>

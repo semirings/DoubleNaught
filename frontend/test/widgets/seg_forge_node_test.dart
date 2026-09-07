@@ -102,6 +102,10 @@ Future<Uint8List> _realPng(int w, int h) async {
       final path = request.url.path;
       calls.add('${request.method} $path');
 
+      if (path == '/newSession') {
+        return http.Response(jsonEncode({'session_id': _sessionId}), 200,
+            headers: {'content-type': 'application/json'});
+      }
       if (path == '/upload') {
         return http.Response(
           jsonEncode({'session_id': _sessionId, 'width': 100, 'height': 100}),
@@ -193,6 +197,7 @@ Future<({InputPort image, InputPort session, List<AaPayload> segments, List<AaPa
   required SegForgeLauncher launcher,
   _FakeCropper? cropper,
   String appPath = '/tmp/SegForge',
+  String imagePath = '',
 }) async {
   InputPort? imagePort;
   InputPort? sessionPort;
@@ -205,7 +210,7 @@ Future<({InputPort image, InputPort session, List<AaPayload> segments, List<AaPa
         body: SingleChildScrollView(
           child: SegForgeNodeWidget(
             node: const WorkflowNode(id: 1, type: 'segForgeNode'),
-            initialParams: {'appPath': appPath},
+            initialParams: {'appPath': appPath, 'imagePath': imagePath},
             api: api,
             launcher: launcher,
             cropper: (cropper ?? _FakeCropper()).call,
@@ -239,6 +244,10 @@ AaPayload _imageAa(Uint8List bytes, {String filename = 'cat.png'}) => AaPayload(
       cols: const ['bytes', 'filename'],
       vals: [base64Encode(bytes), filename],
     );
+
+/// What an upstream such as Inventory emits: a fetchable location, no blob.
+AaPayload _urlAa(String url) =>
+    AaPayload(rows: const ['img'], cols: const ['url'], vals: [url]);
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -513,6 +522,86 @@ void main() {
       expect(aa.cols, isNot(contains('mask_bytes')));
       expect(aa.cols, contains('bbox'));
       expect(aa.rows, contains('sess_01:cat:seg_000'));
+    });
+
+    testWidgets('a url is passed straight to SegForge, not re-uploaded',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes);
+      final l = _launcher();
+      final ports =
+          await _pump(tester, api: backend.api, launcher: l.launcher);
+
+      await _send(tester, ports.image, _urlAa('http://example.test/cat.png'));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      // SegForge fetches URLs itself, so the node must not move the bytes.
+      expect(backend.calls, isNot(contains('POST /upload')));
+      expect(backend.calls, contains('POST /newSession'));
+      expect(l.envs.single['SEGFORGE_IMAGE_URL'], 'http://example.test/cat.png');
+      // image_id comes off the URL's last segment.
+      expect(ports.segments.single.rows, contains('sess_01:cat:seg_000'));
+    });
+
+    testWidgets('raw bytes are uploaded, since they have no address',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes);
+      final l = _launcher();
+      final ports =
+          await _pump(tester, api: backend.api, launcher: l.launcher);
+
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(backend.calls, contains('POST /upload'));
+      expect(backend.calls, isNot(contains('POST /newSession')));
+      expect(
+        l.envs.single['SEGFORGE_IMAGE_URL'],
+        'http://sf.test/storage/sessions/$_sessionId/original.png',
+      );
+    });
+
+    testWidgets('the image field drives a run with no upstream connected',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes);
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: backend.api,
+        launcher: l.launcher,
+        imagePath: 'http://example.test/from-field.png',
+      );
+
+      // Open Forge is live on the field alone — no port data was sent.
+      final forge = find.widgetWithText(OutlinedButton, 'Open Forge');
+      expect(tester.widget<OutlinedButton>(forge).onPressed, isNotNull);
+
+      await tester.tap(forge);
+      await tester.pumpAndSettle();
+
+      expect(l.envs.single['SEGFORGE_IMAGE_URL'],
+          'http://example.test/from-field.png');
+      expect(ports.segments, hasLength(1));
+    });
+
+    testWidgets('a connected upstream wins over the typed field',
+        (tester) async {
+      final l = _launcher();
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: _bytes).api,
+        launcher: l.launcher,
+        imagePath: 'http://example.test/stale-field.png',
+      );
+
+      await _send(tester, ports.image, _urlAa('http://example.test/live.png'));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(l.envs.single['SEGFORGE_IMAGE_URL'], 'http://example.test/live.png');
+      // And the field goes inert rather than pretending to be in charge.
+      expect(find.text('Image (from upstream)'), findsOneWidget);
     });
 
     testWidgets('Wait gates the emit until Execute is pressed', (tester) async {

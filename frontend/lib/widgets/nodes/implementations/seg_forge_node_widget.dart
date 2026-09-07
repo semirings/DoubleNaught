@@ -4,6 +4,7 @@ import 'dart:io' show File, Process;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../../../models/aa_payload.dart';
@@ -69,6 +70,24 @@ class _RealSegForgeProcess implements SegForgeProcess {
   void kill() => _process.kill();
 }
 
+/// An image resolved to whichever form SegForge can actually consume.
+///
+/// Exactly one of [url] and [bytes] is set. [url] means SegForge can fetch it
+/// unaided; [bytes] means the node has to upload them first to give the image
+/// an address.
+class _ImageSource {
+  final String? url;
+  final Uint8List? bytes;
+  final String filename;
+
+  const _ImageSource.url(String this.url, {required String? filename})
+      : bytes = null,
+        filename = filename ?? 'image.png';
+
+  const _ImageSource.bytes(Uint8List this.bytes, {required this.filename})
+      : url = null;
+}
+
 /// **Seg Forge** — hands an image to the SegForge segmentation app, waits for
 /// the user to finish in it, and turns what they produced into two AAs.
 ///
@@ -103,6 +122,10 @@ class SegForgeNodeWidget extends BaseNodeWidget {
   /// Process seam; defaults to [launchSegForgeProcess].
   final SegForgeLauncher? launcher;
 
+  /// File-dialog seam. Defaults to `file_selector`'s [openFile]; overridden by
+  /// tests, which cannot drive a platform dialog.
+  final Future<XFile?> Function()? pickFile;
+
   /// Crop seam; defaults to [cropPng].
   ///
   /// Injectable because rasterizing through `dart:ui` inside `testWidgets`
@@ -134,6 +157,7 @@ class SegForgeNodeWidget extends BaseNodeWidget {
     super.connectedOutputs,
     this.api,
     this.launcher,
+    this.pickFile,
     this.cropper,
     this.onSessionConnect,
     this.onSessionInputPort,
@@ -166,9 +190,12 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   final OutputPort _linkageOut = OutputPort('linkage');
 
   final TextEditingController _appPath = TextEditingController();
+  final TextEditingController _imagePath = TextEditingController();
 
-  Uint8List? _imageBytes;
-  String? _imageFilename;
+  /// Set from the `image` port. When null the [_imagePath] field is used, so a
+  /// connected upstream always wins over a typed location.
+  _ImageSource? _portImage;
+
   String? _sessionId;
 
   AaPayload? _segmentAa;
@@ -190,8 +217,10 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     _cropper = widget.cropper ?? cropPng;
 
     _appPath.text = widget.initialParams?['appPath'] ?? '';
+    _imagePath.text = widget.initialParams?['imagePath'] ?? '';
     // Persist the path and re-evaluate Open Forge's enablement as it is typed.
-    _appPath.addListener(_onAppPathChanged);
+    _appPath.addListener(_onFieldsChanged);
+    _imagePath.addListener(_onFieldsChanged);
 
     // Only the canonical port goes through initInputPort — it always calls the
     // single widget.onInputPort callback, so `session` registers via its own.
@@ -209,67 +238,84 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     widget.onIndexedOutputPort?.call(1, _linkageOut);
   }
 
-  void _onAppPathChanged() {
+  void _onFieldsChanged() {
     if (!mounted) return;
-    saveParams({'appPath': _appPath.text.trim()});
+    saveParams({
+      'appPath': _appPath.text.trim(),
+      'imagePath': _imagePath.text.trim(),
+    });
     setState(() {});
   }
 
   @override
   void dispose() {
-    _appPath.removeListener(_onAppPathChanged);
+    _appPath.removeListener(_onFieldsChanged);
+    _imagePath.removeListener(_onFieldsChanged);
     _imageIn.dispose();
     _sessionIn.dispose();
     _segmentOut.dispose();
     _linkageOut.dispose();
     _appPath.dispose();
+    _imagePath.dispose();
     super.dispose();
   }
 
   // ── Ingress ───────────────────────────────────────────────────────────────
 
   Future<void> _onImage(AaPayload aa) async {
-    final bytes = await _resolveImageBytes(aa);
+    final source = await _resolveFromAa(aa);
     if (!mounted) return;
-    setState(() {
-      _imageBytes = bytes;
-      _imageFilename = aa.value('filename') ??
-          aa.value('path') ??
-          aa.value('url') ??
-          _imageFilename;
-    });
+    setState(() => _portImage = source);
     maybeAutoFire();
   }
 
-  /// Turns an incoming AA into image bytes.
+  /// Reads an image location or blob out of an incoming AA.
   ///
   /// `AaPayload.vals` holds only strings and ints, so raw bytes cannot ride in
-  /// one directly — a `bytes` column carries base64. A `path`/`url` column is
-  /// also accepted because upstream file nodes emit locations, not blobs.
-  Future<Uint8List?> _resolveImageBytes(AaPayload aa) async {
+  /// one directly — a `bytes` column carries base64. `url` and `path` are also
+  /// accepted, because upstream nodes emit locations rather than blobs (the
+  /// Inventory node's `entry` payload carries `url`, for one).
+  Future<_ImageSource?> _resolveFromAa(AaPayload aa) async {
     final b64 = aa.value('bytes');
     if (b64 != null && b64.isNotEmpty) {
       try {
-        return base64Decode(b64);
+        return _ImageSource.bytes(
+          base64Decode(b64),
+          filename: aa.value('filename') ?? 'image.png',
+        );
       } catch (_) {
         setError('image: `bytes` column is not valid base64');
         return null;
       }
     }
 
-    final location = aa.value('path') ?? aa.value('url');
+    final location = aa.value('url') ?? aa.value('path');
     if (location == null || location.isEmpty) {
-      setError('image: expected a `bytes`, `path` or `url` column');
+      setError('image: expected a `bytes`, `url` or `path` column');
       return null;
     }
+    return _resolveLocation(location, aa.value('filename'));
+  }
 
+  /// Classifies a location into something SegForge can fetch, or bytes to
+  /// upload on its behalf.
+  ///
+  /// An http(s) URL is passed straight through: SegForge downloads it itself,
+  /// so re-fetching and re-uploading here would move the image three times
+  /// instead of once. A local path has to be read and uploaded, because
+  /// `package:http` cannot fetch `file://` and SegForge would have no way to
+  /// reach it.
+  Future<_ImageSource?> _resolveLocation(String location, String? filename) async {
+    final uri = Uri.tryParse(location);
+    if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+      return _ImageSource.url(location, filename: filename ?? _basename(location));
+    }
     try {
-      final uri = Uri.tryParse(location);
-      if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
-        return await _api.fetchBytes(location);
-      }
       final path = uri != null && uri.scheme == 'file' ? uri.toFilePath() : location;
-      return await File(path).readAsBytes();
+      return _ImageSource.bytes(
+        await File(path).readAsBytes(),
+        filename: filename ?? _basename(path) ?? 'image.png',
+      );
     } catch (e) {
       setError(e);
       return null;
@@ -284,11 +330,8 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   }
 
   void _dropImage() {
-    if (!mounted || _imageBytes == null) return;
-    setState(() {
-      _imageBytes = null;
-      _imageFilename = null;
-    });
+    if (!mounted || _portImage == null) return;
+    setState(() => _portImage = null);
     setIdle();
   }
 
@@ -320,15 +363,13 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   // ── Open Forge ────────────────────────────────────────────────────────────
 
   bool get _canOpenForge =>
-      _imageBytes != null &&
+      (_portImage != null || _imagePath.text.trim().isNotEmpty) &&
       _appPath.text.trim().isNotEmpty &&
       status != NodeStatus.working;
 
   Future<void> _onOpenForge() async {
     if (!_canOpenForge) return;
     final gen = ++_execGen;
-    final bytes = _imageBytes!;
-    final filename = _basename(_imageFilename) ?? 'image.png';
 
     setWorking();
     setState(() {
@@ -338,24 +379,37 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     });
 
     try {
-      // 1. Register the image server-side. This both creates the session and
-      //    makes the image fetchable over SegForge's /storage mount, which is
-      //    how a byte[] input becomes the URL the app takes at launch.
-      final upload = await _api.uploadImage(
-        bytes,
-        filename: filename,
-        sessionId: _sessionId,
-      );
+      // The port wins over the field, so a connected upstream is never
+      // silently overridden by a stale typed location.
+      final source = _portImage ??
+          await _resolveLocation(_imagePath.text.trim(), null);
+      if (gen != _execGen || !mounted) return;
+      if (source == null) return; // _resolveLocation already reported why.
+
+      final String sessionId;
+      final String imageUrl;
+      if (source.url != null) {
+        // SegForge fetches the URL itself and uploads into whatever session it
+        // is told to use, so all this needs is an id to read back afterwards.
+        sessionId = _sessionId ?? await _api.newSession();
+        imageUrl = source.url!;
+      } else {
+        // No URL exists for these bytes, so register them to get one.
+        final upload = await _api.uploadImage(
+          source.bytes!,
+          filename: source.filename,
+          sessionId: _sessionId,
+        );
+        sessionId = upload.sessionId;
+        imageUrl = _api.originalImageUrl(sessionId);
+      }
       if (gen != _execGen || !mounted) return;
 
-      final sessionId = upload.sessionId;
-
-      // 2. Launch the app and wait for its window to close.
       final process = await _launcher(
         executable: _appPath.text.trim(),
         environment: {
           'SEGFORGE_SESSION_ID': sessionId,
-          'SEGFORGE_IMAGE_URL': _api.originalImageUrl(sessionId),
+          'SEGFORGE_IMAGE_URL': imageUrl,
           'SEGFORGE_BACKEND_URL': _api.baseUrl,
         },
       );
@@ -369,8 +423,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       if (gen != _execGen || !mounted) return;
       setState(() => _running = null);
 
-      // 3. Read back what the session ended up holding.
-      await _collect(sessionId, filename, gen);
+      await _collect(sessionId, source.filename, gen);
     } catch (e) {
       if (gen != _execGen || !mounted) return;
       setState(() => _running = null);
@@ -451,6 +504,25 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     maybeAutoFire();
   }
 
+  /// Opens a picker and drops the chosen file into the image field.
+  ///
+  /// The path goes through [IOSupport.pathToFileUri] so the field only ever
+  /// holds a real URL, matching how the other file-backed nodes behave.
+  Future<void> _pickImage() async {
+    final picked = await (widget.pickFile ?? _openImageDialog)();
+    if (picked == null || !mounted) return;
+    _imagePath.text = IOSupport.pathToFileUri(picked.path);
+  }
+
+  static Future<XFile?> _openImageDialog() => openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(
+            label: 'Images',
+            extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff'],
+          ),
+        ],
+      );
+
   void _onCancelPressed() {
     if (status != NodeStatus.working) return;
     _execGen++;
@@ -505,6 +577,25 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SizedBox(height: BaseNodeState.portLaneClearance(2)),
+        Text(
+          _portImage != null ? 'Image (from upstream)' : 'Image',
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 4),
+        IOSupport.field(
+          controller: _imagePath,
+          // A connected upstream wins, so the field is inert while one supplies
+          // the image rather than pretending to be in charge.
+          enabled: !busy && _portImage == null,
+          trailing: IconButton(
+            icon: const Icon(Icons.folder_open, size: 16),
+            tooltip: 'Choose an image',
+            onPressed: (busy || _portImage != null) ? null : _pickImage,
+          ),
+        ),
+        const SizedBox(height: 8),
         Text(
           'SegForge app',
           style: theme.textTheme.labelSmall?.copyWith(
