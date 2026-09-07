@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' show File, Process;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -12,7 +12,6 @@ import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/seg_forge_api.dart';
 import '../../../services/seg_forge_mapping.dart';
-import '../../../services/storage_service.dart';
 import '../base/base_node_widget.dart';
 import '../base/execute_button.dart';
 import '../base/wait_checkbox.dart';
@@ -313,44 +312,18 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   // ── Sessions ──────────────────────────────────────────────────────────────
 
   /// Loads the list of saved SegForge sessions from the backend.
-  /// Loads saved sessions from disk (StorageService).
+  /// Loads saved sessions from backend Parquet storage.
   Future<void> _loadSessions() async {
     try {
-      final storage = StorageService();
-      final baseDir = await storage.resolveBaseDir();
-      final sessionsDir = Directory('${baseDir.path}/sf/sessions');
-
-      List<Map<String, dynamic>> sessions = [];
-      if (await sessionsDir.exists()) {
-        final files = await sessionsDir.list().toList();
-        for (final item in files) {
-          if (item is File && item.path.endsWith('.json')) {
-            try {
-              final content = await item.readAsString();
-              final data = jsonDecode(content) as Map<String, dynamic>;
-              sessions.add(data);
-            } catch (e) {
-              debugPrint('Warning: Failed to load session file ${item.path}: $e');
-            }
-          }
-        }
-      }
-
-      // Sort by created_at descending (newest first)
-      sessions.sort((a, b) {
-        final aTime = a['created_at'] as String?;
-        final bTime = b['created_at'] as String?;
-        if (aTime == null || bTime == null) return 0;
-        return bTime.compareTo(aTime);
-      });
-
+      final sessions = await _api.listSessions();
       if (!mounted) return;
       setState(() {
         _sessionsList = sessions;
         _selectedSessionId = sessions.isNotEmpty ? sessions[0]['session_id'] as String : null;
       });
     } catch (e) {
-      debugPrint('Warning: Failed to load sessions from disk: $e');
+      debugPrint('Warning: Failed to load sessions from backend: $e');
+      // Continue with empty list if load fails.
     }
   }
 
@@ -410,7 +383,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     if (result != true || !mounted) return;
 
     try {
-      // Generate ID and create session locally
+      // Generate ID and create session via backend (persists to Parquet)
       final sessionId = _newSessionId();
       final now = DateTime.now();
       final newSession = {
@@ -421,15 +394,8 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
         'image_url': '',
       };
 
-      // Persist to disk, creating directory if needed (mkdir -p equivalent)
-      final storage = StorageService();
-      final baseDir = await storage.resolveBaseDir();
-      final sessionsDir = Directory('${baseDir.path}/sf/sessions');
-      if (!await sessionsDir.exists()) {
-        await sessionsDir.create(recursive: true);
-      }
-      await storage.write('sf/sessions/$sessionId', newSession);
-
+      // Send to backend for Parquet persistence
+      await _api.saveSession(newSession);
       if (!mounted) return;
 
       // Add to local list and select it
