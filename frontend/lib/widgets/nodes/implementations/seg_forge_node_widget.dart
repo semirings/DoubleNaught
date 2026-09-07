@@ -382,33 +382,24 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
     if (result != true || !mounted) return;
 
-    try {
-      // Generate ID and create session via backend (persists to Parquet)
-      final sessionId = _newSessionId();
-      final now = DateTime.now();
-      final newSession = {
-        'session_id': sessionId,
-        'name': nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : 'Session ${now.toString().substring(0, 10)}',
-        'description': descCtrl.text.trim(),
-        'created_at': now.toIso8601String(),
-        'image_url': '',
-      };
+    // Generate ID for the new session. It will be persisted to Parquet only after
+    // SegForge runs and produces results (in _collect).
+    final sessionId = _newSessionId();
+    final now = DateTime.now();
+    final newSession = {
+      'session_id': sessionId,
+      'name': nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : 'Session ${now.toString().substring(0, 10)}',
+      'description': descCtrl.text.trim(),
+      'created_at': now.toIso8601String(),
+      'image_url': '',
+    };
 
-      // Send to backend for Parquet persistence
-      await _api.saveSession(newSession);
-      if (!mounted) return;
-
-      // Add to local list and select it
-      setState(() {
-        _sessionsList.insert(0, newSession);
-        _selectedSessionId = sessionId;
-      });
-    } catch (e) {
-      setError('Failed to create session: $e');
-    } finally {
-      nameCtrl.dispose();
-      descCtrl.dispose();
-    }
+    setState(() {
+      _sessionsList.insert(0, newSession);
+      _selectedSessionId = sessionId;
+    });
+    nameCtrl.dispose();
+    descCtrl.dispose();
   }
 
   // ── Backend Management ────────────────────────────────────────────────────────
