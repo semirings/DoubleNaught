@@ -54,6 +54,7 @@ from .classify import (
 from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cxcywh_to_xyxy
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
+from .segforge_session_store import SegForgeSessionStore
 from .models import (
     D4mExecRequest,
     D4mExecResponse,
@@ -229,6 +230,11 @@ review_store = ReviewStore()
 # Disk-backed, seed-on-first-run URL inventory. Tests point `inventory_store` at
 # a temp directory.
 inventory_store = InventoryStore()
+
+# Disk-backed SegForge session persistence (Parquet files under storage/).
+segforge_session_store = SegForgeSessionStore(
+    storage_dir=Path.home() / ".dn_cache" / "storage" / "segforge_sessions"
+)
 
 
 def _require_session(session_id: str) -> Session:
@@ -1716,5 +1722,81 @@ async def save_file_cancel(request: SaveCleanupRequest) -> SaveCleanupResponse:
         request.has_jsonl_column,
     )
     return SaveCleanupResponse(removed=removed)
+
+
+# --- SegForge Session Persistence ---------------------------------------------
+
+@app.post("/segforge/sessions")
+async def segforge_save_session(request: dict) -> dict:
+    """Save a SegForge session to Parquet.
+
+    Receives the full session response from SF backend /loadSession/{id},
+    persists it to Arrow/Parquet for later inspection and replay.
+
+    Request body: session_data dict with session_id, name, description, image_url,
+                  width, height, prompts, results (masks, boxes, scores).
+    """
+    try:
+        session_id = request.get("session_id")
+        if not session_id:
+            raise ValueError("session_id is required")
+
+        output_path = segforge_session_store.save_session(
+            session_id=session_id,
+            session_data=request,
+        )
+
+        return {
+            "session_id": session_id,
+            "path": str(output_path),
+            "message": f"Saved SegForge session {session_id} to {output_path.name}",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save session: {str(exc)}")
+
+
+@app.get("/segforge/sessions")
+async def segforge_list_sessions() -> dict:
+    """List all saved SegForge sessions.
+
+    Returns metadata (session_id, name, description, created_at, image_url)
+    for each saved session, useful for a session picker UI.
+    """
+    try:
+        sessions = segforge_session_store.list_sessions()
+        return {"sessions": sessions}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {str(exc)}")
+
+
+@app.get("/segforge/sessions/{session_id}")
+async def segforge_load_session(session_id: str) -> dict:
+    """Load a saved SegForge session from Parquet.
+
+    Returns the full session data (metadata, prompts, results) for replay or inspection.
+    """
+    try:
+        session_data = segforge_session_store.load_session(session_id)
+        if session_data is None:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+        return session_data
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load session: {str(exc)}")
+
+
+@app.delete("/segforge/sessions/{session_id}")
+async def segforge_delete_session(session_id: str) -> dict:
+    """Delete a saved SegForge session's Parquet file."""
+    try:
+        deleted = segforge_session_store.delete_session(session_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+        return {"session_id": session_id, "message": f"Deleted session {session_id}"}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(exc)}")
 
 
