@@ -120,6 +120,12 @@ Future<Uint8List> _realPng(int w, int h) async {
           headers: {'content-type': 'application/json'},
         );
       }
+      if (path == '/saveSession') {
+        return http.Response(
+            jsonEncode({'message': 'Session saved', 'session_id': _sessionId}),
+            200,
+            headers: {'content-type': 'application/json'});
+      }
       if (path == '/saveMasks') {
         return http.Response(jsonEncode({'mask_count': segmentCount}), 200,
             headers: {'content-type': 'application/json'});
@@ -148,7 +154,10 @@ Future<Uint8List> _realPng(int w, int h) async {
       }
       // SF backend health + session init (called by _ensureBackendHealthy / initSession).
       if (path == '/health') {
-        return http.Response(jsonEncode({'status': 'ok'}), 200,
+        // model_loaded matters: the node waits for it before uploading,
+        // because /upload answers 503 until SAM has finished loading.
+        return http.Response(
+            jsonEncode({'status': 'ok', 'model_loaded': true}), 200,
             headers: {'content-type': 'application/json'});
       }
       if (path == '/initSession') {
@@ -193,7 +202,13 @@ Future<Uint8List> _realPng(int w, int h) async {
 /// A launcher that never spawns anything; the test decides when it "exits".
 class _FakeProcess implements SegForgeProcess {
   final Completer<int> _completer = Completer<int>();
+
+  /// Shared with the backend fake's call log, so a test can assert that the
+  /// save happened *before* the window was taken away.
+  final List<String>? log;
   bool killed = false;
+
+  _FakeProcess({this.log});
 
   @override
   Future<int> get exitCode => _completer.future;
@@ -201,6 +216,7 @@ class _FakeProcess implements SegForgeProcess {
   @override
   void kill() {
     killed = true;
+    log?.add('KILL');
     if (!_completer.isCompleted) _completer.complete(-1);
   }
 
@@ -210,7 +226,7 @@ class _FakeProcess implements SegForgeProcess {
 }
 
 ({SegForgeLauncher launcher, List<Map<String, String>> envs, List<String> exes, List<_FakeProcess> procs})
-    _launcher({bool autoExit = true}) {
+    _launcher({bool autoExit = true, List<String>? log}) {
   final envs = <Map<String, String>>[];
   final exes = <String>[];
   final procs = <_FakeProcess>[];
@@ -220,13 +236,19 @@ class _FakeProcess implements SegForgeProcess {
   }) async {
     exes.add(executable);
     envs.add(environment);
-    final p = _FakeProcess();
+    final p = _FakeProcess(log: log);
     procs.add(p);
     if (autoExit) p.finish(0);
     return p;
   }
   return (launcher: launch, envs: envs, exes: exes, procs: procs);
 }
+
+/// A launch that never returns, so the node stays busy with no window to close.
+Future<SegForgeProcess> _neverLaunches({
+  required String executable,
+  required Map<String, String> environment,
+}) => Completer<SegForgeProcess>().future;
 
 Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
     _pump(
@@ -506,7 +528,7 @@ void main() {
       expect(aa.cols, contains('bbox'));
     });
 
-    testWidgets('closing SegForge without segmenting emits nothing and says so',
+    testWidgets('closing SegForge without segmenting reports done, not error',
         (tester) async {
       final l = _launcher();
       final ports = await _pump(
@@ -521,7 +543,12 @@ void main() {
 
       expect(ports.segments, isEmpty);
       expect(ports.linkage, isEmpty);
-      expect(find.textContaining('without producing'), findsOneWidget);
+      // Nothing failed — the user just closed the app without segmenting, so
+      // the status row is informative rather than red.
+      expect(
+        find.text('done · closed without producing a segmentation'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('a mask that cannot be fetched omits the column, not the row',
@@ -629,7 +656,7 @@ void main() {
       expect(l.exes, hasLength(1), reason: 'Execute must not relaunch');
     });
 
-    testWidgets('Cancel kills the app and leaves the outputs alone',
+    testWidgets('Open Forge is the button that turns, not Execute',
         (tester) async {
       final l = _launcher(autoExit: false);
       final ports = await _pump(
@@ -645,11 +672,64 @@ void main() {
       // Still open: the fake process has not exited.
       expect(l.procs.single.killed, isFalse);
 
-      await tester.tap(find.byType(ExecuteButton)); // reads as Cancel while busy
+      expect(find.widgetWithText(OutlinedButton, 'Open Forge'), findsNothing);
+      final close = find.widgetWithText(OutlinedButton, 'Close Forge');
+      expect(close, findsOneWidget);
+      expect(tester.widget<OutlinedButton>(close).onPressed, isNotNull);
+
+      // Execute is a forward-what-is-held button; a forge run is not its
+      // execution, so it must not read as Cancel.
+      expect(tester.widget<ExecuteButton>(find.byType(ExecuteButton)).executing,
+          isFalse);
+      expect(find.text('Cancel'), findsNothing);
+    });
+
+    testWidgets('Close Forge saves the session, closes the app, and collects',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes);
+      final l = _launcher(autoExit: false, log: backend.calls);
+      final ports =
+          await _pump(tester, api: backend.api, launcher: l.launcher);
+
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
 
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Close Forge'));
+      await tester.pumpAndSettle();
+
+      // The flush has to precede the kill: /loadSession reads state.json, so
+      // anything still only in SegForge's memory would be lost.
+      expect(backend.calls, contains('POST /saveSession'));
+      expect(backend.calls.indexOf('POST /saveSession'),
+          lessThan(backend.calls.indexOf('KILL')));
       expect(l.procs.single.killed, isTrue);
+
+      // Closing the app this way collects exactly as closing its window does.
+      expect(ports.segments, hasLength(1));
+      expect(ports.linkage, hasLength(1));
+      expect(find.widgetWithText(OutlinedButton, 'Open Forge'), findsOneWidget);
+    });
+
+    testWidgets('with no window up yet, the forge button aborts the run',
+        (tester) async {
+      final ports = await _pump(
+        tester,
+        api: _api(imageBytes: _bytes).api,
+        launcher: _neverLaunches,
+      );
+
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Close Forge'));
+      await tester.pumpAndSettle();
+
+      // Back to idle with nothing emitted — a cancel, per the contract.
+      expect(find.widgetWithText(OutlinedButton, 'Open Forge'), findsOneWidget);
       expect(ports.segments, isEmpty);
+      expect(ports.linkage, isEmpty);
     });
 
     testWidgets('an image column that is not base64 is reported, not thrown',

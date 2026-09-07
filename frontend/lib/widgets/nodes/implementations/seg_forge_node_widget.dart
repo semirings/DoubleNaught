@@ -104,10 +104,13 @@ class _ImageSource {
 ///
 /// **Open Forge** uploads the image to SegForge's backend, launches the app
 /// pointed at that session, waits for the window to close, then reads the
-/// results back over HTTP and holds them. **Execute** is the ordinary node
-/// Execute: it forwards whatever is currently held on the two outputs. So a
-/// forge run can be reviewed before it is released downstream, and the same
-/// results can be re-emitted without reopening the app.
+/// results back over HTTP and holds them. While a run is in flight it reads
+/// **Close Forge** — the forge run is that button's business start to finish,
+/// so Execute is left alone rather than turning into Cancel underneath it.
+/// **Execute** is the ordinary node Execute: it forwards whatever is currently
+/// held on the two outputs. So a forge run can be reviewed before it is
+/// released downstream, and the same results can be re-emitted without
+/// reopening the app.
 ///
 /// With Wait unchecked the node is reactive in the usual way — results landing
 /// after the app closes fire it immediately.
@@ -414,29 +417,37 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   static const String _sfUvicorn =
       '/Users/gcr/populi.Wk/SegForge/.venv/bin/uvicorn';
 
-  /// Ensures the SF backend is healthy, auto-launching it if necessary.
+  /// Ensures the SF backend is up **with its model loaded**, auto-launching it
+  /// if nothing is listening.
   ///
-  /// First does a quick health check. If unhealthy, spawns uvicorn in the
-  /// background and polls until it responds (up to ~20 s). Throws if the
-  /// backend cannot be reached after launch.
+  /// Two conditions, not one: `/upload` — the very next call — answers 503
+  /// until SAM has finished loading, and on a cold start that lands well after
+  /// the port opens. Whether to spawn uvicorn is therefore decided by
+  /// [SegForgeApi.isListening] (so a backend that is merely still loading does
+  /// not get a second copy fighting it for the port), while whether to proceed
+  /// is decided by [SegForgeApi.healthCheck].
   Future<void> _ensureBackendHealthy(int gen) async {
-    // Fast path: already up.
+    // Fast path: up and ready.
     try {
       if (await _api.healthCheck()) return;
     } catch (_) {}
 
     if (gen != _execGen || !mounted) return;
 
-    // Not running — launch it in the background.
-    await Process.start(
-      _sfUvicorn,
-      ['main:app', '--host', '127.0.0.1', '--port', '8401'],
-      workingDirectory: _sfBackendDir,
-      mode: ProcessStartMode.detachedWithStdio,
-    );
+    if (!await _api.isListening()) {
+      await Process.start(
+        _sfUvicorn,
+        ['main:app', '--host', '127.0.0.1', '--port', '8401'],
+        workingDirectory: _sfBackendDir,
+        mode: ProcessStartMode.detachedWithStdio,
+      );
+      if (gen != _execGen || !mounted) return;
+    }
 
-    // Poll until healthy (10 × 2 s = 20 s max).
-    for (var attempt = 0; attempt < 10; attempt++) {
+    // Loading the model dominates this wait — the port itself opens in about a
+    // second — so the budget is minutes, not the seconds a liveness check
+    // would need. Close Forge aborts if the user does not want to wait.
+    for (var attempt = 0; attempt < 90; attempt++) {
       if (gen != _execGen || !mounted) return;
       await Future.delayed(const Duration(seconds: 2));
       try {
@@ -445,7 +456,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     }
 
     throw Exception(
-      'SegForge backend did not become healthy at ${_api.baseUrl} after launch.',
+      'SegForge backend at ${_api.baseUrl} never reported its model loaded.',
     );
   }
 
@@ -492,12 +503,22 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       }
       if (gen != _execGen || !mounted) return;
 
-      // Initialize the session on the backend with metadata. The backend stores
-      // this so SF frontend can fetch it via /getSession/{id}.
+      // Initialize the session on the backend with metadata. SegForge reads it
+      // back over /loadSession and shows it, so this passes on the name and
+      // description the user actually gave the session in the picker — a
+      // synthesized 'Session <id>' would just repeat the id back at them.
+      final selected = _sessionsList.firstWhere(
+        (s) => s['session_id'] == sessionId,
+        orElse: () => <String, dynamic>{},
+      );
+      final name = (selected['name'] as String?)?.trim();
+      final description = (selected['description'] as String?)?.trim();
       await _api.initSession(
         sessionId: sessionId,
-        name: 'Session $sessionId',
-        description: source.filename,
+        name: name == null || name.isEmpty ? 'Session $sessionId' : name,
+        description: description == null || description.isEmpty
+            ? source.filename
+            : description,
         imageUrl: imageUrl,
       );
       if (gen != _execGen || !mounted) return;
@@ -536,14 +557,16 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
     if (session.isEmpty) {
       // Closing the app without ever running an inference is an ordinary
-      // outcome, not a crash. Say so and emit nothing, matching how the other
-      // nodes report a run that produced no rows.
+      // outcome, not a failure — the run finished, it just produced nothing.
+      // So this reports `done` with what happened, the way the other nodes
+      // report a run that came back with no rows; red is reserved for
+      // something actually going wrong.
       setState(() {
         _segmentAa = null;
         _linkageAa = null;
         _summaryText = null;
       });
-      setError('SegForge closed without producing a segmentation');
+      setComplete(detail: 'closed without producing a segmentation');
       return;
     }
 
@@ -625,6 +648,39 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     maybeAutoFire();
   }
 
+  // ── Close Forge ───────────────────────────────────────────────────────────
+
+  /// Save-and-close, the second half of the forge button's job.
+  ///
+  /// Flushes SegForge's session to disk before taking the window away, because
+  /// `/loadSession` reads state.json rather than the backend's memory — then
+  /// kills the app, which completes `exitCode` and lets [_onOpenForge]'s own
+  /// continuation collect the results exactly as if the user had closed the
+  /// window themselves. Killing is the only lever available: there is no IPC
+  /// channel to ask the app to quit politely.
+  Future<void> _onCloseForge() async {
+    final process = _running;
+    if (process == null) return;
+    final gen = _execGen;
+
+    final sessionId = _selectedSessionId;
+    if (sessionId != null) {
+      try {
+        await _api.saveSessionToDisk(sessionId);
+      } catch (e) {
+        // A failed flush is not worth abandoning the close over — SegForge
+        // writes state.json after every inference anyway, so the disk copy is
+        // at worst missing changes made outside an inference.
+        debugPrint('Warning: Failed to save SegForge session $sessionId: $e');
+      }
+    }
+    if (gen != _execGen || !mounted) return;
+
+    process.kill();
+  }
+
+  /// Hard abort, used when the forge button is pressed with no window to
+  /// close — during upload/launch, or while results are being collected.
   void _onCancelPressed() {
     if (status != NodeStatus.working) return;
     _execGen++;
@@ -771,23 +827,44 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
         const SizedBox(height: 8),
         SizedBox(
           height: 30,
-          child: OutlinedButton.icon(
-            onPressed: _canOpenForge ? _onOpenForge : null,
-            icon: const Icon(Icons.open_in_new, size: 14),
-            label: const Text('Open Forge'),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              textStyle: theme.textTheme.labelSmall,
-            ),
-          ),
+          child: busy
+              // The button that started the run is the button that ends it.
+              // While the window is up this saves and closes it; before it is
+              // up (upload/launch) or after it has gone (collecting results)
+              // there is nothing to close, so the press aborts the run.
+              ? OutlinedButton.icon(
+                  onPressed: _running != null ? _onCloseForge : _onCancelPressed,
+                  icon: const Icon(Icons.close, size: 14),
+                  label: const Text('Close Forge'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    textStyle: theme.textTheme.labelSmall,
+                    // The contract's amber, so stopping never reads as failure.
+                    foregroundColor: const Color.fromRGBO(242, 140, 51, 1),
+                    side: const BorderSide(
+                      color: Color.fromRGBO(242, 140, 51, 1),
+                    ),
+                  ),
+                )
+              : OutlinedButton.icon(
+                  onPressed: _canOpenForge ? _onOpenForge : null,
+                  icon: const Icon(Icons.open_in_new, size: 14),
+                  label: const Text('Open Forge'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    textStyle: theme.textTheme.labelSmall,
+                  ),
+                ),
         ),
         const SizedBox(height: 8),
         WaitCheckbox(checked: wait, onChanged: onWaitChanged, locked: busy),
         const SizedBox(height: 6),
+        // Never renders as Cancel: the only thing that makes this node busy is
+        // a forge run, and Close Forge is what stops one. Execute itself just
+        // forwards what is held, which takes no time to cancel.
         ExecuteButton(
           enabled: isReady && !busy,
-          executing: busy,
-          onPressed: busy ? _onCancelPressed : onExecutePressed,
+          onPressed: onExecutePressed,
         ),
         const SizedBox(height: 8),
         statusRow(),

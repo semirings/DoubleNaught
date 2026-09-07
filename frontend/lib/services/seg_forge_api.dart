@@ -245,6 +245,29 @@ class SegForgeApi {
     }
   }
 
+  /// Flushes SegForge's in-memory session to its `state.json` (`POST
+  /// /saveSession` on the SegForge backend — *not* DoubleNaught's Parquet
+  /// store, which is [saveSession]).
+  ///
+  /// [loadSession] reads from disk, so anything still only in the backend's
+  /// memory is invisible to the node. SegForge already writes state.json after
+  /// every inference, but Close Forge takes the window away from the user, so
+  /// it flushes first rather than assuming that.
+  Future<void> saveSessionToDisk(String sessionId) async {
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      final response = await transport.post(
+        Uri.parse('$baseUrl/saveSession'),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({'session_id': sessionId}),
+      );
+      if (response.statusCode != 200) _fail('Save session to disk', response);
+    } finally {
+      own?.close();
+    }
+  }
+
   /// URL of a single saved mask PNG, 8-bit grayscale at full image size.
   String maskUrl(String sessionId, int index) =>
       '$baseUrl/storage/sessions/$sessionId/masks/'
@@ -280,12 +303,12 @@ class SegForgeApi {
     }
   }
 
-  /// Checks whether the SF backend is healthy and ready to handle requests.
+  /// Whether anything is answering on the backend's port at all.
   ///
-  /// Returns true if GET /health succeeds, false if the backend is unreachable
-  /// or unhealthy. Used by the SegForge node to decide whether to launch the
-  /// backend before using it.
-  Future<bool> healthCheck() async {
+  /// Distinct from [healthCheck]: a backend that is listening but still
+  /// loading its model must not be launched a second time, so "should I spawn
+  /// uvicorn" and "may I upload yet" are two different questions.
+  Future<bool> isListening() async {
     final own = client == null ? http.Client() : null;
     final transport = client ?? own!;
     try {
@@ -293,6 +316,30 @@ class SegForgeApi {
         Uri.parse('$baseUrl/health'),
       ).timeout(const Duration(seconds: 2));
       return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    } finally {
+      own?.close();
+    }
+  }
+
+  /// Checks whether the SF backend is up **and has its model loaded**.
+  ///
+  /// `/health` answers 200 from the moment uvicorn is listening, but `/upload`
+  /// — the node's first call — answers 503 "Model not loaded yet" until SAM
+  /// finishes loading, which on a cold start is well after the port opens. So
+  /// readiness here means `model_loaded`, not merely reachable; anything less
+  /// and an auto-launched backend gets uploaded to too early.
+  Future<bool> healthCheck() async {
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      final response = await transport.get(
+        Uri.parse('$baseUrl/health'),
+      ).timeout(const Duration(seconds: 2));
+      if (response.statusCode != 200) return false;
+      final j = jsonDecode(response.body) as Map<String, dynamic>;
+      return j['model_loaded'] == true;
     } catch (_) {
       return false;
     } finally {
