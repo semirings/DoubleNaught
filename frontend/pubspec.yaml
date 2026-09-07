@@ -50,6 +50,7 @@ dev_dependencies:
   integration_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: "^0.14.4"
 
 flutter:
   uses-material-design: true
@@ -57,3 +58,17 @@ flutter:
     - .env
     - assets/png/
     - assets/svg/
+
+flutter_launcher_icons:
+  image_path: "img/app.png" # Standard master fallback image
+  image_path_ios: "img/app.png"
+  image_path_android: "img/app.png"
+  image_path_macos: "img/app.icns" # Pointing directly to your compiled .icns file
+  android: true
+  ios: true
+  macos:
+    generate: true
+    image_path: "img/app.icns"
+  windows:
+    generate: true
+    image_path: "img/app.png"

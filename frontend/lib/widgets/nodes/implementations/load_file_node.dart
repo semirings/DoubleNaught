@@ -18,9 +18,11 @@ import '../base/output_connector.dart';
 /// A workflow source node that loads files from the backend storage directory
 /// and auto-detects Associative Arrays based on schema metadata or column patterns.
 ///
-/// Supports .parquet, .arrow, .json, .csv, .txt files. AA detection is handled
-/// by the backend /load endpoint, which checks for metadata tags and reconstructs
-/// native AA objects. Non-AA files are returned as raw tables/text.
+/// Supports `.parquet`, `.arrow`, `.json`, `.csv` (tabular); `.txt`, `.jl`, `.md`
+/// (plain text including source code); and image files (`.png`, `.jpg`, `.jpeg`,
+/// `.webp`, `.bmp`, `.gif`, `.tif`, `.tiff`). AA detection is handled by the
+/// backend `/load` endpoint, which checks for metadata tags, reconstructs native AA
+/// objects for structured files, and preserves image bytes as base64 with metadata.
 ///
 /// This is the canonical **root node**: no input ports at all (see
 /// `UX_UI/EXECUTION_MODEL.md` §1), so it is always manually triggered via
@@ -76,8 +78,9 @@ class LoadFileNode extends BaseNodeWidget {
   ///
   /// `.csv` is here because the backend reconstructs an AA from one; `.jl` and
   /// `.md` are here because they are plain text a user may legitimately want to
-  /// load — note the backend does not yet route those two anywhere and answers
-  /// "Unsupported file format", so they pass selection and fail at Execute.
+  /// load. Images (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.gif`, `.tif`,
+  /// `.tiff`) are preserved as binary base64 in AA metadata for downstream nodes
+  /// like SegForge.
   static const List<String> allowedExtensions = [
     '.jl',
     '.md',
@@ -86,6 +89,14 @@ class LoadFileNode extends BaseNodeWidget {
     '.parquet',
     '.arrow',
     '.csv',
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.webp',
+    '.bmp',
+    '.gif',
+    '.tif',
+    '.tiff',
   ];
 
   /// The lowercase extension of [path] including the dot, or empty when it has

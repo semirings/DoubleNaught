@@ -3,7 +3,7 @@
 Loads files and auto-detects Associative Arrays based on schema metadata tags or
 column patterns.
 
-Two families of input:
+Three families of input:
 
 * **Structured** — .parquet, .arrow, .json, .csv — reconstructed as an AA where
   the shape allows (see ``_load_csv`` for the CSV conventions).
@@ -11,6 +11,9 @@ Two families of input:
   AA, for a downstream node (a prompt, an LLM dispatch) to read. The set matches
   the Load File node's own ``allowedExtensions``, so anything the picker accepts
   is something this loader can answer.
+* **Binary images** — .png, .jpg, .jpeg, .webp, .bmp, .gif, .tif, .tiff — preserved
+  as base64 in an AA with metadata columns (path, format, dimensions) for nodes like
+  SegForge that need to locate and identify image sources.
 """
 
 from __future__ import annotations
@@ -43,6 +46,9 @@ _SCHEMA_MODE_ALIASES = {"forceAa": "force_aa", "rawTable": "raw_table"}
 # `frontend/lib/widgets/nodes/implementations/load_file_node.dart`: the
 # picker and the loader agreeing is what keeps a selectable file loadable.
 TEXT_SUFFIXES = (".txt", ".jl", ".md")
+
+# Image formats — preserved as binary base64, not text.
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff")
 
 
 def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[AssocArray], Optional[dict]]:
@@ -183,6 +189,8 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
             aa, data = _load_csv(single_file, schema_mode)
         elif suffix in TEXT_SUFFIXES:
             aa, data = _load_text(single_file, schema_mode)
+        elif suffix in IMAGE_SUFFIXES:
+            aa, data = _load_image(single_file, schema_mode)
         else:
             raise ValueError(f"Unsupported file format: {suffix}")
     finally:
@@ -218,6 +226,58 @@ def _load_text(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Opti
             cols=["text", "file_path"],
             vals=[text, str(path)],
         ),
+        raw,
+    )
+
+
+def _load_image(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Optional[dict]]:
+    """Load an image file as binary data.
+
+    Images are preserved in their native binary form (as base64 in the AA, since
+    `vals` holds only strings and ints). Metadata columns carry the path, format,
+    and file size for downstream nodes (e.g., SegForge) that need to identify the
+    source.
+
+    Under `raw_table` the AA is withheld and only the raw dict comes back.
+    """
+    import base64
+
+    image_bytes = path.read_bytes()
+    image_b64 = base64.b64encode(image_bytes).decode('ascii')
+
+    # Get image dimensions via PIL if available, else omit.
+    width, height = None, None
+    try:
+        from PIL import Image
+        with Image.open(path) as img:
+            width, height = img.size
+    except Exception:
+        pass
+
+    file_size = path.stat().st_size
+    file_ext = path.suffix.lower()
+
+    # Build raw output (always available).
+    raw = {
+        "bytes_b64": image_b64,
+        "file_path": str(path),
+        "format": file_ext[1:] if file_ext else "unknown",
+        "file_size": file_size,
+        "width": width,
+        "height": height,
+    }
+
+    if schema_mode == "raw_table":
+        return None, raw
+
+    # AA form: one row with image metadata columns. Preserve binary as base64 in
+    # the AA's vals field (the only way to carry bytes).
+    rows = ["0", "0", "0", "0", "0", "0"]
+    cols = ["bytes", "file_path", "format", "file_size", "width", "height"]
+    vals = [image_b64, str(path), file_ext[1:] if file_ext else "unknown", file_size, width, height]
+
+    return (
+        AssocArray(rows=rows, cols=cols, vals=vals),
         raw,
     )
 

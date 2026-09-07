@@ -13,16 +13,16 @@
 			"path": "../../d4m.Wk/D4M.jl"
 		},
 		{
-			"path": "../../fhir.Wk/fhir-genalytics.platform/d4m.acc.access"
-		},
-		{
-			"path": "../../fhir.Wk/fhir-genalytics.platform/d4m.acc.microservice"
-		},
-		{
 			"path": "../../Vignettes/DoubleNaughtExpl"
 		},
 		{
 			"path": "../../d4m.Wk/D4M.py"
+		},
+		{
+			"path": "../SegForge"
+		},
+		{
+			"path": "../InsightCircle"
 		}
 	],
 	"settings": {
