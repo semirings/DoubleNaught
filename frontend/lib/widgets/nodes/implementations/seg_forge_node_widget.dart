@@ -4,7 +4,6 @@ import 'dart:io' show File, Process;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../../../models/aa_payload.dart';
@@ -15,11 +14,9 @@ import '../../../services/seg_forge_api.dart';
 import '../../../services/seg_forge_mapping.dart';
 import '../base/base_node_widget.dart';
 import '../base/execute_button.dart';
-import '../base/input_connector.dart';
 import '../base/io_support.dart';
 import '../base/wait_checkbox.dart';
 import '../base/wait_gated_execution.dart';
-import '../../../models/workflow.dart' show PortRef;
 
 /// A launched SegForge process, reduced to what the node needs to await it.
 ///
@@ -122,25 +119,12 @@ class SegForgeNodeWidget extends BaseNodeWidget {
   /// Process seam; defaults to [launchSegForgeProcess].
   final SegForgeLauncher? launcher;
 
-  /// File-dialog seam. Defaults to `file_selector`'s [openFile]; overridden by
-  /// tests, which cannot drive a platform dialog.
-  final Future<XFile?> Function()? pickFile;
-
   /// Crop seam; defaults to [cropPng].
   ///
   /// Injectable because rasterizing through `dart:ui` inside `testWidgets`
   /// does not complete — the test zone never produces a frame for it — so
   /// widget tests substitute a synchronous stand-in.
   final Future<Uint8List?> Function(Uint8List bytes, ui.Rect rect)? cropper;
-
-  /// Called when an edge is dropped on `session`.
-  final void Function(PortRef source)? onSessionConnect;
-
-  /// Registers the `session` port.
-  final void Function(InputPort port)? onSessionInputPort;
-
-  /// Whether `session` has an incoming edge.
-  final bool sessionConnected;
 
   /// Registers an output port by index (0 = `segment`, 1 = `linkage`).
   final void Function(int idx, OutputPort port)? onIndexedOutputPort;
@@ -157,11 +141,7 @@ class SegForgeNodeWidget extends BaseNodeWidget {
     super.connectedOutputs,
     this.api,
     this.launcher,
-    this.pickFile,
     this.cropper,
-    this.onSessionConnect,
-    this.onSessionInputPort,
-    this.sessionConnected = false,
     this.onIndexedOutputPort,
   });
 
@@ -185,18 +165,20 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   late final Future<Uint8List?> Function(Uint8List, ui.Rect) _cropper;
 
   late final InputPort _imageIn;
-  late final InputPort _sessionIn;
   final OutputPort _segmentOut = OutputPort('segment');
   final OutputPort _linkageOut = OutputPort('linkage');
 
   final TextEditingController _appPath = TextEditingController();
-  final TextEditingController _imagePath = TextEditingController();
 
-  /// Set from the `image` port. When null the [_imagePath] field is used, so a
-  /// connected upstream always wins over a typed location.
+  /// Set from the `image` port. When null the port is the only way to provide
+  /// an image — there is no manual field anymore.
   _ImageSource? _portImage;
 
-  String? _sessionId;
+  /// All available SegForge sessions (from backend, plus any created this session).
+  List<Map<String, dynamic>> _sessionsList = [];
+
+  /// Currently selected session ID from the picklist.
+  String? _selectedSessionId;
 
   AaPayload? _segmentAa;
   AaPayload? _linkageAa;
@@ -217,32 +199,27 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     _cropper = widget.cropper ?? cropPng;
 
     _appPath.text = widget.initialParams?['appPath'] ?? '';
-    _imagePath.text = widget.initialParams?['imagePath'] ?? '';
-    // Persist the path and re-evaluate Open Forge's enablement as it is typed.
+    // Persist the app path and re-evaluate Open Forge's enablement as it is typed.
     _appPath.addListener(_onFieldsChanged);
-    _imagePath.addListener(_onFieldsChanged);
 
     // Only the canonical port goes through initInputPort — it always calls the
-    // single widget.onInputPort callback, so `session` registers via its own.
+    // single widget.onInputPort callback.
     _imageIn = InputPort('image');
     initInputPort(_imageIn, _onImage);
     _imageIn.onDisconnected.listen((_) => _dropImage());
 
-    _sessionIn = InputPort('session', isRequired: false);
-    widget.onSessionInputPort?.call(_sessionIn);
-    _sessionIn.onDataArrived.listen(_onSession);
-    _sessionIn.onDisconnected.listen((_) => _dropSession());
-
     initOutputPort(_segmentOut);
     widget.onIndexedOutputPort?.call(0, _segmentOut);
     widget.onIndexedOutputPort?.call(1, _linkageOut);
+
+    // Load available sessions from backend and select the first one by default.
+    _loadSessions();
   }
 
   void _onFieldsChanged() {
     if (!mounted) return;
     saveParams({
       'appPath': _appPath.text.trim(),
-      'imagePath': _imagePath.text.trim(),
     });
     setState(() {});
   }
@@ -250,13 +227,10 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   @override
   void dispose() {
     _appPath.removeListener(_onFieldsChanged);
-    _imagePath.removeListener(_onFieldsChanged);
     _imageIn.dispose();
-    _sessionIn.dispose();
     _segmentOut.dispose();
     _linkageOut.dispose();
     _appPath.dispose();
-    _imagePath.dispose();
     super.dispose();
   }
 
@@ -322,22 +296,10 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     }
   }
 
-  void _onSession(AaPayload aa) {
-    if (!mounted) return;
-    setState(() => _sessionId = aa.value('session_id') ??
-        (aa.vals.isNotEmpty ? aa.vals.first.toString() : null));
-    maybeAutoFire();
-  }
-
   void _dropImage() {
     if (!mounted || _portImage == null) return;
     setState(() => _portImage = null);
     setIdle();
-  }
-
-  void _dropSession() {
-    if (!mounted || _sessionId == null) return;
-    setState(() => _sessionId = null);
   }
 
   // ── Wait / Execute ────────────────────────────────────────────────────────
@@ -358,6 +320,92 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     if (linkage != null && linkage.cols.isNotEmpty) _linkageOut.emit(linkage);
 
     setComplete(detail: _summaryText ?? 'forwarded');
+  }
+
+  // ── Sessions ──────────────────────────────────────────────────────────────
+
+  /// Loads the list of saved SegForge sessions from the backend.
+  Future<void> _loadSessions() async {
+    try {
+      final sessions = await _api.listSessions();
+      if (!mounted) return;
+      setState(() {
+        _sessionsList = sessions;
+        // Select the first session by default, or none if list is empty.
+        _selectedSessionId = sessions.isNotEmpty ? sessions[0]['session_id'] as String : null;
+      });
+    } catch (e) {
+      debugPrint('Warning: Failed to load sessions: $e');
+      // Continue with empty list if load fails.
+    }
+  }
+
+  /// Prompts user for session name/description and creates a new session.
+  Future<void> _createNewSession() async {
+    final nameCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Create New SegForge Session'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: nameCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Session Name',
+                hintText: 'e.g., "Slide Analysis"',
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: descCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Description',
+                hintText: 'e.g., "Segmenting presentation slides"',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != true || !mounted) return;
+
+    try {
+      final sessionId = await _api.newSession();
+      if (!mounted) return;
+
+      // Add to local list and select it.
+      final newSession = {
+        'session_id': sessionId,
+        'name': nameCtrl.text.isNotEmpty ? nameCtrl.text : 'Session $sessionId',
+        'description': descCtrl.text,
+        'created_at': DateTime.now().toIso8601String(),
+        'image_url': '',
+      };
+      setState(() {
+        _sessionsList.insert(0, newSession);
+        _selectedSessionId = sessionId;
+      });
+    } catch (e) {
+      setError('Failed to create session: $e');
+    } finally {
+      nameCtrl.dispose();
+      descCtrl.dispose();
+    }
   }
 
   // ── Backend Management ────────────────────────────────────────────────────────
@@ -396,8 +444,9 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   // ── Open Forge ────────────────────────────────────────────────────────────
 
   bool get _canOpenForge =>
-      (_portImage != null || _imagePath.text.trim().isNotEmpty) &&
+      _portImage != null &&
       _appPath.text.trim().isNotEmpty &&
+      _selectedSessionId != null &&
       status != NodeStatus.working;
 
   Future<void> _onOpenForge() async {
@@ -416,28 +465,22 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       await _ensureBackendHealthy(gen);
       if (gen != _execGen || !mounted) return;
 
-      // The port wins over the field, so a connected upstream is never
-      // silently overridden by a stale typed location.
-      final source = _portImage ??
-          await _resolveLocation(_imagePath.text.trim(), null);
-      if (gen != _execGen || !mounted) return;
-      if (source == null) return; // _resolveLocation already reported why.
+      // Image comes only from the input port; the manual field is gone.
+      final source = _portImage;
+      if (source == null) return; // Should not happen due to _canOpenForge check.
 
-      final String sessionId;
+      final String sessionId = _selectedSessionId!;
       final String imageUrl;
       if (source.url != null) {
-        // SegForge fetches the URL itself and uploads into whatever session it
-        // is told to use, so all this needs is an id to read back afterwards.
-        sessionId = _sessionId ?? await _api.newSession();
+        // SegForge fetches the URL itself and uploads into the selected session.
         imageUrl = source.url!;
       } else {
-        // No URL exists for these bytes, so register them to get one.
-        final upload = await _api.uploadImage(
+        // No URL exists for these bytes, so upload them to the selected session.
+        await _api.uploadImage(
           source.bytes!,
           filename: source.filename,
-          sessionId: _sessionId,
+          sessionId: sessionId,
         );
-        sessionId = upload.sessionId;
         imageUrl = _api.originalImageUrl(sessionId);
       }
       if (gen != _execGen || !mounted) return;
@@ -574,25 +617,6 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     maybeAutoFire();
   }
 
-  /// Opens a picker and drops the chosen file into the image field.
-  ///
-  /// The path goes through [IOSupport.pathToFileUri] so the field only ever
-  /// holds a real URL, matching how the other file-backed nodes behave.
-  Future<void> _pickImage() async {
-    final picked = await (widget.pickFile ?? _openImageDialog)();
-    if (picked == null || !mounted) return;
-    _imagePath.text = IOSupport.pathToFileUri(picked.path);
-  }
-
-  static Future<XFile?> _openImageDialog() => openFile(
-        acceptedTypeGroups: const [
-          XTypeGroup(
-            label: 'Images',
-            extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff'],
-          ),
-        ],
-      );
-
   void _onCancelPressed() {
     if (status != NodeStatus.working) return;
     _execGen++;
@@ -614,12 +638,6 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
         singleInputConnector(label: 'image'),
-        InputConnector(
-          label: 'session',
-          idx: 1,
-          active: widget.sessionConnected,
-          onConnect: widget.onSessionConnect,
-        ),
       ];
 
   @override
@@ -646,24 +664,57 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SizedBox(height: BaseNodeState.portLaneClearance(2)),
+        SizedBox(height: BaseNodeState.portLaneClearance(1)),
         Text(
-          _portImage != null ? 'Image (from upstream)' : 'Image',
+          'Session',
           style: theme.textTheme.labelSmall?.copyWith(
             color: scheme.onSurfaceVariant,
           ),
         ),
         const SizedBox(height: 4),
-        IOSupport.field(
-          controller: _imagePath,
-          // A connected upstream wins, so the field is inert while one supplies
-          // the image rather than pretending to be in charge.
-          enabled: !busy && _portImage == null,
-          trailing: IconButton(
-            icon: const Icon(Icons.folder_open, size: 16),
-            tooltip: 'Choose an image',
-            onPressed: (busy || _portImage != null) ? null : _pickImage,
-          ),
+        Row(
+          children: [
+            Expanded(
+              child: _sessionsList.isEmpty
+                  ? Text(
+                      'No sessions',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    )
+                  : DropdownButton<String>(
+                      value: _selectedSessionId,
+                      isDense: true,
+                      isExpanded: true,
+                      items: [
+                        ..._sessionsList.map((s) {
+                          final id = s['session_id'] as String;
+                          final name = (s['name'] as String?) ?? id;
+                          return DropdownMenuItem(
+                            value: id,
+                            child: Text(
+                              name.length > 30 ? '${name.substring(0, 27)}...' : name,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          );
+                        }),
+                        const DropdownMenuItem(
+                          value: '__CREATE_NEW__',
+                          child: Text('+ Create New'),
+                        ),
+                      ],
+                      onChanged: busy
+                          ? null
+                          : (v) {
+                              if (v == '__CREATE_NEW__') {
+                                _createNewSession();
+                              } else if (v != null) {
+                                setState(() => _selectedSessionId = v);
+                              }
+                            },
+                    ),
+            ),
+          ],
         ),
         const SizedBox(height: 8),
         Text(

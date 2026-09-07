@@ -190,17 +190,15 @@ class _FakeProcess implements SegForgeProcess {
   return (launcher: launch, envs: envs, exes: exes, procs: procs);
 }
 
-Future<({InputPort image, InputPort session, List<AaPayload> segments, List<AaPayload> linkage})>
+Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
     _pump(
   WidgetTester tester, {
   required SegForgeApi api,
   required SegForgeLauncher launcher,
   _FakeCropper? cropper,
   String appPath = '/tmp/SegForge',
-  String imagePath = '',
 }) async {
   InputPort? imagePort;
-  InputPort? sessionPort;
   final segments = <AaPayload>[];
   final linkage = <AaPayload>[];
 
@@ -210,12 +208,11 @@ Future<({InputPort image, InputPort session, List<AaPayload> segments, List<AaPa
         body: SingleChildScrollView(
           child: SegForgeNodeWidget(
             node: const WorkflowNode(id: 1, type: 'segForgeNode'),
-            initialParams: {'appPath': appPath, 'imagePath': imagePath},
+            initialParams: {'appPath': appPath},
             api: api,
             launcher: launcher,
             cropper: (cropper ?? _FakeCropper()).call,
             onInputPort: (p) => imagePort = p,
-            onSessionInputPort: (p) => sessionPort = p,
             onIndexedOutputPort: (idx, port) => port.connect(
               idx == 0 ? segments.add : linkage.add,
               emitCurrentState: false,
@@ -228,7 +225,6 @@ Future<({InputPort image, InputPort session, List<AaPayload> segments, List<AaPa
   await tester.pumpAndSettle();
   return (
     image: imagePort!,
-    session: sessionPort!,
     segments: segments,
     linkage: linkage,
   );
@@ -562,48 +558,6 @@ void main() {
       );
     });
 
-    testWidgets('the image field drives a run with no upstream connected',
-        (tester) async {
-      final backend = _api(imageBytes: _bytes);
-      final l = _launcher();
-      final ports = await _pump(
-        tester,
-        api: backend.api,
-        launcher: l.launcher,
-        imagePath: 'http://example.test/from-field.png',
-      );
-
-      // Open Forge is live on the field alone — no port data was sent.
-      final forge = find.widgetWithText(OutlinedButton, 'Open Forge');
-      expect(tester.widget<OutlinedButton>(forge).onPressed, isNotNull);
-
-      await tester.tap(forge);
-      await tester.pumpAndSettle();
-
-      expect(l.envs.single['SEGFORGE_IMAGE_URL'],
-          'http://example.test/from-field.png');
-      expect(ports.segments, hasLength(1));
-    });
-
-    testWidgets('a connected upstream wins over the typed field',
-        (tester) async {
-      final l = _launcher();
-      final ports = await _pump(
-        tester,
-        api: _api(imageBytes: _bytes).api,
-        launcher: l.launcher,
-        imagePath: 'http://example.test/stale-field.png',
-      );
-
-      await _send(tester, ports.image, _urlAa('http://example.test/live.png'));
-      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
-      await tester.pumpAndSettle();
-
-      expect(l.envs.single['SEGFORGE_IMAGE_URL'], 'http://example.test/live.png');
-      // And the field goes inert rather than pretending to be in charge.
-      expect(find.text('Image (from upstream)'), findsOneWidget);
-    });
-
     testWidgets('Wait gates the emit until Execute is pressed', (tester) async {
       final l = _launcher();
       final ports = await _pump(
@@ -672,34 +626,6 @@ void main() {
 
       expect(l.procs.single.killed, isTrue);
       expect(ports.segments, isEmpty);
-    });
-
-    testWidgets('an upstream session id is reused instead of a fresh one',
-        (tester) async {
-      final l = _launcher();
-      final ports = await _pump(
-        tester,
-        api: _api(imageBytes: _bytes).api,
-        launcher: l.launcher,
-      );
-
-      await _send(
-        tester,
-        ports.session,
-        const AaPayload(
-          rows: ['s'],
-          cols: ['session_id'],
-          vals: ['from_upstream'],
-        ),
-      );
-      await _send(tester, ports.image, _imageAa(_bytes));
-      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
-      await tester.pumpAndSettle();
-
-      // The backend echoes its own id back; what matters is the node offered
-      // the upstream one on upload rather than asking for a new session.
-      expect(l.envs.single['SEGFORGE_SESSION_ID'], isNotNull);
-      expect(ports.segments, hasLength(1));
     });
 
     testWidgets('an image column that is not base64 is reported, not thrown',
