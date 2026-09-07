@@ -277,4 +277,59 @@ class SegForgeApi {
       own?.close();
     }
   }
+
+  /// Checks whether the SF backend is healthy and ready to handle requests.
+  ///
+  /// Returns true if GET /health succeeds, false if the backend is unreachable
+  /// or unhealthy. Used by the SegForge node to decide whether to launch the
+  /// backend before using it.
+  Future<bool> healthCheck() async {
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      final response = await transport.get(
+        Uri.parse('$baseUrl/health'),
+      ).timeout(const Duration(seconds: 2));
+      return response.statusCode == 200;
+    } catch (_) {
+      return false;
+    } finally {
+      own?.close();
+    }
+  }
+
+  /// Initializes a session on the SF backend with metadata and image URL.
+  ///
+  /// Called after a session is allocated but before the SF frontend launches.
+  /// The backend stores the session metadata (id, name, description, image_url)
+  /// and makes them available to the frontend via `/getSession/{id}`.
+  ///
+  /// [sessionId], [name], [description], [imageUrl] are packed into an AA and
+  /// POSTed as JSON. The backend responds with session confirmation.
+  Future<Map<String, dynamic>> initSession({
+    required String sessionId,
+    required String name,
+    required String description,
+    required String imageUrl,
+  }) async {
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      final body = jsonEncode({
+        'session_id': sessionId,
+        'name': name,
+        'description': description,
+        'image_url': imageUrl,
+      });
+      final response = await transport.post(
+        Uri.parse('$baseUrl/initSession'),
+        headers: const {'Content-Type': 'application/json'},
+        body: body,
+      );
+      if (response.statusCode != 200) _fail('Init session', response);
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    } finally {
+      own?.close();
+    }
+  }
 }

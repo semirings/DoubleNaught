@@ -360,6 +360,39 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     setComplete(detail: _summaryText ?? 'forwarded');
   }
 
+  // ── Backend Management ────────────────────────────────────────────────────────
+
+  /// Ensures the SF backend is healthy and running.
+  ///
+  /// Checks `/health` on the configured backend address. If healthy, returns.
+  /// If unhealthy, attempts health check up to 3 times with 2-second waits
+  /// (giving an external backend ~6 seconds to start if just launching).
+  ///
+  /// Future enhancement: if a backend-path field is added to the node config,
+  /// this method can auto-launch the backend process. For now, assumes the
+  /// user has started the SF backend separately on the configured port.
+  Future<void> _ensureBackendHealthy(int gen) async {
+    // Poll for health with retries, in case backend is just starting up.
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (gen != _execGen || !mounted) return;
+      try {
+        final isHealthy = await _api.healthCheck();
+        if (isHealthy) return;
+      } catch (_) {
+        // Not ready yet; wait before retry.
+        if (attempt < 2) {
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      }
+    }
+
+    // Backend not healthy after retries.
+    throw Exception(
+      'SegForge backend is not running or not healthy at ${_api.baseUrl}. '
+      'Please start the backend manually: cd SegForge && ./run.sh BE',
+    );
+  }
+
   // ── Open Forge ────────────────────────────────────────────────────────────
 
   bool get _canOpenForge =>
@@ -379,6 +412,10 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     });
 
     try {
+      // Ensure SF backend is healthy; launch if necessary.
+      await _ensureBackendHealthy(gen);
+      if (gen != _execGen || !mounted) return;
+
       // The port wins over the field, so a connected upstream is never
       // silently overridden by a stale typed location.
       final source = _portImage ??
@@ -405,11 +442,21 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       }
       if (gen != _execGen || !mounted) return;
 
+      // Initialize the session on the backend with metadata. The backend stores
+      // this so SF frontend can fetch it via /getSession/{id}.
+      await _api.initSession(
+        sessionId: sessionId,
+        name: 'Session $sessionId',
+        description: source.filename,
+        imageUrl: imageUrl,
+      );
+      if (gen != _execGen || !mounted) return;
+
+      // Now launch SF frontend. It will read initialization from backend.
       final process = await _launcher(
         executable: _appPath.text.trim(),
         environment: {
           'SEGFORGE_SESSION_ID': sessionId,
-          'SEGFORGE_IMAGE_URL': imageUrl,
           'SEGFORGE_BACKEND_URL': _api.baseUrl,
         },
       );
