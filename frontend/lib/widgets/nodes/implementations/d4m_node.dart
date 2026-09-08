@@ -20,11 +20,19 @@ import '../base/wait_gated_execution.dart';
 // ---------------------------------------------------------------------------
 
 class _D4mPort {
+  /// Display label and, for a data port, the Julia variable the script reads.
+  /// Free text, and for a script port purely cosmetic.
   String name;
+
+  /// Whether this port carries the script rather than data. Fixed at creation:
+  /// a port cannot become — or stop being — the script port later, because
+  /// nothing about it is derived from its editable [name].
+  final bool isScript;
+
   final InputPort inputPort;
   String? handleId; // ingested server-side handle (set after Execute)
 
-  _D4mPort(this.name) : inputPort = InputPort(name);
+  _D4mPort(this.name, {this.isScript = false}) : inputPort = InputPort(name);
 }
 
 // ---------------------------------------------------------------------------
@@ -34,8 +42,13 @@ class _D4mPort {
 /// A **functional node** (AA-in → AA-out) that executes a multi-line D4M/Julia
 /// script over dynamically-managed input ports.
 ///
-/// * Input ports default to 1, expandable via the `+` button; each supports
-///   inline rename.
+/// * Input ports default to 1, expandable via the `+ port` button; each
+///   supports inline rename.
+/// * `+ script` adds the one port that carries a script rather than data: what
+///   arrives on it fills the script box instead of being bound as a Julia
+///   variable. There is at most one, it renders below the data ports, and it is
+///   marked structurally ([_D4mPort.isScript]) rather than by its name, so no
+///   rename can promote a data port into it or demote it out of the role.
 /// * Wait/Execute: reactive by default (fires the instant every declared port
 ///   has data and the script is non-empty); Wait gates that — see
 ///   `UX_UI/GLOBAL_UX_CONTRACT.md` §3.
@@ -153,7 +166,23 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
         .split(',')
         .where((s) => s.isNotEmpty)
         .toList();
-    _ports = names.map((n) => _D4mPort(n)).toList();
+
+    // Which slot is the script port is persisted in its own param rather than
+    // read back off the names: `isScript` is the whole point of this being
+    // structural, and a data port that happens to be *called* `script` must
+    // not come back promoted. `-1` says there is none; the param being absent
+    // entirely says the file predates it, and in those files the name really
+    // was the marker — hence the fallback.
+    final savedScriptIdx = int.tryParse(p['scriptPortIdx'] ?? '');
+    _ports = [
+      for (var i = 0; i < names.length; i++)
+        _D4mPort(
+          names[i],
+          isScript: savedScriptIdx != null
+              ? i == savedScriptIdx
+              : names[i].trim().toLowerCase() == kScriptPortName,
+        ),
+    ];
 
     _scriptCtrl = TextEditingController(text: p['script'] ?? '');
     _outSymCtrl = TextEditingController(text: p['outputSymbol'] ?? 'out');
@@ -196,9 +225,69 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
       if (!mounted) return;
       final idx = _ports.indexOf(port);
       if (idx < 0) return; // removed since this arrival was queued
+      if (port.isScript) {
+        _adoptScript(payload, idx);
+        return;
+      }
       setState(() => _portData[idx] = payload);
       maybeAutoFire();
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Script input port
+  // ---------------------------------------------------------------------------
+
+  /// The label a script port is created with, and its label for good — the
+  /// row's name field is read-only, so this is what it always reads.
+  ///
+  /// It is a label only. Nothing checks it: [_D4mPort.isScript] is what routes
+  /// an arrival to the editor, precisely so that a mistyped or edited name
+  /// cannot quietly turn the script port back into a data port and leave the
+  /// script box empty with nothing to explain why.
+  static const String kScriptPortName = 'script';
+
+  bool get _hasScriptPort => _ports.any((p) => p.isScript);
+
+  /// Columns a script can arrive in, most specific first.
+  ///
+  /// `text` is the shape Load File emits for a `.jl` file (one row, `text` +
+  /// `file_path`); the rest match what Polyglot Exec accepts, so a script can
+  /// come from any upstream that already feeds it.
+  static const List<String> _scriptCols = [
+    'script',
+    'text',
+    'code',
+    'source',
+    'raw_code',
+    'content',
+  ];
+
+  static String? scriptTextFrom(AaPayload payload) {
+    final aa = payload.toSparse();
+    for (final col in _scriptCols) {
+      final v = aa.value(col);
+      if (v != null && v.trim().isNotEmpty) return v;
+    }
+    return null;
+  }
+
+  /// Puts an arrived script into the editor, replacing whatever is there.
+  ///
+  /// The payload is still recorded against the port so its row shows the same
+  /// "has data" dot as any other, but it is never ingested — see
+  /// [_allPortsSatisfied] and [_execute].
+  void _adoptScript(AaPayload payload, int idx) {
+    final text = scriptTextFrom(payload);
+    setState(() {
+      _portData[idx] = payload;
+      if (text != null) _scriptCtrl.text = text;
+    });
+    if (text != null) {
+      _saveParams();
+      _republishEditor();
+    }
+    maybeAutoFire();
   }
 
   @override
@@ -239,14 +328,34 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
   // Port management
   // ---------------------------------------------------------------------------
 
-  void _addPort() {
+  /// Adds a port, data by default or the script port with [isScript].
+  ///
+  /// A data port lands *before* the script port when one exists, keeping the
+  /// script port at the bottom of the lane. Position and index are the same
+  /// thing here — the canvas anchors every connector and edge endpoint at
+  /// `kPortLaneTop + idx * kPortSpacing` — so "renders last" can only be had by
+  /// "is last", not by reordering the render alone.
+  void _addPort({bool isScript = false}) {
     setState(() {
-      final idx = _ports.length;
-      final name = String.fromCharCode('A'.codeUnitAt(0) + idx);
-      final port = _D4mPort(name.length == 1 ? name : 'p$idx');
-      _ports.add(port);
-      _nameCtrl[idx] = TextEditingController(text: _ports.last.name);
-      widget.onPort?.call(idx, port.inputPort);
+      final scriptIdx = _ports.indexWhere((p) => p.isScript);
+      final at = isScript || scriptIdx < 0 ? _ports.length : scriptIdx;
+      final auto = String.fromCharCode('A'.codeUnitAt(0) + at);
+      final port = _D4mPort(
+        isScript ? kScriptPortName : (auto.length == 1 ? auto : 'p$at'),
+        isScript: isScript,
+      );
+
+      // Everything index-keyed is re-laid against the new positions, because
+      // inserting anywhere but the end moves the ports above it — same reason
+      // [_removePort] shifts, just in the other direction.
+      final held = _bookkeepingByPort();
+      _ports.insert(at, port);
+      held[port] = (
+        nameCtrl: TextEditingController(text: port.name),
+        data: null,
+      );
+      _restoreBookkeeping(held);
+
       _listenPort(port);
     });
     _saveParams();
@@ -256,36 +365,64 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
     maybeAutoFire();
   }
 
+  /// The index-keyed bookkeeping (`_nameCtrl`, `_portData`), re-keyed by the
+  /// port it belongs to so it can survive the list changing shape.
+  ///
+  /// Keyed by port rather than by slot on purpose: a rename controller has to
+  /// follow its own port, or a port would inherit the neighbour's text — and
+  /// with it the neighbour's cursor.
+  Map<_D4mPort, ({TextEditingController nameCtrl, AaPayload? data})>
+      _bookkeepingByPort() => {
+            for (var i = 0; i < _ports.length; i++)
+              _ports[i]: (
+                nameCtrl: _nameCtrl[i] ??
+                    TextEditingController(text: _ports[i].name),
+                data: _portData[i],
+              ),
+          };
+
+  /// Writes [held] back out against each port's current position, and re-states
+  /// every index to the canvas — its connector registry is index-keyed too, and
+  /// nothing else tells it that a port's rendered index moved.
+  void _restoreBookkeeping(
+    Map<_D4mPort, ({TextEditingController nameCtrl, AaPayload? data})> held,
+  ) {
+    _nameCtrl.clear(); // controllers live on in `held`; nothing is disposed
+    _portData.clear();
+    for (var i = 0; i < _ports.length; i++) {
+      final entry = held[_ports[i]]!;
+      _nameCtrl[i] = entry.nameCtrl;
+      if (entry.data != null) _portData[i] = entry.data!;
+      widget.onPort?.call(i, _ports[i].inputPort);
+    }
+  }
+
   void _removePort(int idx) {
     if (_ports.length <= 1) return;
     setState(() {
-      _ports[idx].inputPort.dispose();
+      // Everything above the removed slot shifts down, which is the mirror of
+      // the insertion in [_addPort] — so it goes through the same re-keying
+      // rather than a second hand-rolled shift loop.
+      final removed = _ports[idx];
+      final held = _bookkeepingByPort();
       _ports.removeAt(idx);
-      _nameCtrl.remove(idx)?.dispose();
-      _portData.remove(idx);
-      // Shift everything above the removed slot down by one — the name
-      // controller, any arrived data, AND re-notify the canvas of each
-      // surviving port's new index. The re-notify is required: the canvas's
-      // registry is index-keyed too, and nothing else tells it a port's
-      // *rendered* connector index just changed (only [_listenPort]'s live
-      // lookup self-corrects; `onPort` does not).
-      for (var i = idx; i < _ports.length; i++) {
-        _nameCtrl[i] = _nameCtrl.remove(i + 1) ??
-            TextEditingController(text: _ports[i].name);
-        final shifted = _portData.remove(i + 1);
-        if (shifted != null) {
-          _portData[i] = shifted;
-        } else {
-          _portData.remove(i);
-        }
-        widget.onPort?.call(i, _ports[i].inputPort);
-      }
+      held.remove(removed)?.nameCtrl.dispose();
+      removed.inputPort.dispose();
+      _restoreBookkeeping(held);
     });
     _saveParams();
     // Removing an unsatisfied port can flip readiness from false to true.
     maybeAutoFire();
   }
 
+  /// Renames a port. Nothing but the label (and, for a data port, the Julia
+  /// variable the script reads) changes.
+  ///
+  /// In particular a rename can no longer make a port the script port, nor
+  /// stop one being it: that used to be exactly what typing `script` into a
+  /// connected port's name did, and the same mechanism meant one typo demoted
+  /// the script port to data silently — empty script box, Execute inert, no
+  /// error anywhere pointing at the name. `+ script` is now the only way in.
   void _renamePort(int idx, String name) {
     final trimmed = name.trim().isEmpty ? 'p$idx' : name.trim();
     setState(() => _ports[idx].name = trimmed);
@@ -299,6 +436,13 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
   void _saveParams() {
     saveParams({
       'portNames': _ports.map((p) => p.name).join(','),
+      // `-1` — not '' — means "no script port": it is always written, so a node
+      // that has none cannot be mistaken on reload for a save predating this
+      // param and fall back to matching by name. The sentinel is a real string
+      // rather than empty because `WorkflowStore` writes every param straight
+      // into the workflow AA, and a present-but-empty cell is what
+      // `ast_extract` warns breaks D4M.jl's own `find()`.
+      'scriptPortIdx': '${_ports.indexWhere((p) => p.isScript)}',
       'script': _scriptCtrl.text,
       'outputSymbol': _outSymCtrl.text,
     });
@@ -310,6 +454,10 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
 
   bool get _allPortsSatisfied {
     for (var i = 0; i < _ports.length; i++) {
+      // A script port feeds the editor, not a variable. The script's own
+      // non-emptiness is what [isReady] checks on its behalf, so a hand-typed
+      // script is not held back waiting on a port nobody wired.
+      if (_ports[i].isScript) continue;
       if (!_portData.containsKey(i)) return false;
     }
     return true;
@@ -372,9 +520,12 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
         owns ? D4mApi(baseUrl: widget.api.baseUrl, client: client) : widget.api;
 
     try {
-      // Ingest each port's AA that has data.
+      // Ingest each port's AA that has data. The script port is skipped: what
+      // arrived there is already in the editor, and binding it as a variable
+      // too would hand Julia the source of its own script.
       final inputHandles = <String, String>{};
       for (var i = 0; i < _ports.length; i++) {
+        if (_ports[i].isScript) continue;
         final data = _portData[i];
         if (data == null) continue;
         final ingest = await api.ingest(data);
@@ -638,49 +789,87 @@ class _D4mNodeState extends BaseNodeState<D4mNode>
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
+        // Index order is render order (see [_addPort]), and the script port is
+        // kept last, so it always renders under the data ports.
         for (var i = 0; i < _ports.length; i++) _portRow(i, theme),
-        // Add port button
+        // Add-port row. `+ script` is spelled out because it is now the only
+        // way to get a script port at all.
         SizedBox(
           height: kPortSpacing,
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: InkWell(
-              onTap: _addPort,
-              borderRadius: BorderRadius.circular(4),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.add, size: 14,
-                        color: theme.colorScheme.primary),
-                    const SizedBox(width: 4),
-                    Text('+',
-                        style: theme.textTheme.labelSmall
-                            ?.copyWith(color: theme.colorScheme.primary)),
-                  ],
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _addPortButton(theme, label: 'port', onTap: _addPort),
+              if (!_hasScriptPort)
+                _addPortButton(
+                  theme,
+                  label: kScriptPortName,
+                  onTap: () => _addPort(isScript: true),
+                  tooltip: 'A port whose incoming text fills the script box',
                 ),
-              ),
-            ),
+            ],
           ),
         ),
       ],
     );
   }
 
+  Widget _addPortButton(
+    ThemeData theme, {
+    required String label,
+    required VoidCallback onTap,
+    String? tooltip,
+  }) {
+    final button = InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(4),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.add, size: 14, color: theme.colorScheme.primary),
+            const SizedBox(width: 2),
+            Text(
+              label,
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: theme.colorScheme.primary),
+            ),
+          ],
+        ),
+      ),
+    );
+    return tooltip == null ? button : Tooltip(message: tooltip, child: button);
+  }
+
   Widget _portRow(int i, ThemeData theme) {
     final scheme = theme.colorScheme;
     final hasData = _portData.containsKey(i);
+    final isScript = _ports[i].isScript;
+    // The row height is exactly one port lane — the connector dot on the left
+    // edge is positioned off the same step — so the script port is set apart
+    // with a glyph and a dimmed label rather than with any extra spacing.
     return SizedBox(
       height: kPortSpacing,
       child: Row(
         children: [
-          // Editable name
+          if (isScript)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Icon(Icons.code, size: 13, color: scheme.onSurfaceVariant),
+            ),
+          // Name: editable for a data port, where it is the Julia variable the
+          // script reads. Read-only for the script port, whose name means
+          // nothing to anything — leaving it editable would only invite the
+          // belief that editing it changes what the port does.
           Expanded(
             child: TextField(
               controller: _nameCtrl[i],
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(fontFamily: 'monospace'),
+              readOnly: isScript,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: isScript ? scheme.onSurfaceVariant : null,
+              ),
               decoration: const InputDecoration(
                 isDense: true,
                 border: InputBorder.none,

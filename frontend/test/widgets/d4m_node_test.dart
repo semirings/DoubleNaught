@@ -23,6 +23,7 @@ class _Harness extends StatefulWidget {
   final D4mApi api;
   final Map<String, String>? initialParams;
   final void Function(Map<int, InputPort>)? onPorts;
+  final void Function(Map<String, String>)? onParams;
   final List<AaPayload> emitted;
   final VoidCallback? onAddLeft;
   final VoidCallback? onAddRight;
@@ -30,7 +31,9 @@ class _Harness extends StatefulWidget {
   const _Harness({
     required this.api,
     required this.emitted,
+    this.initialParams,
     this.onPorts,
+    this.onParams,
     this.onAddLeft,
     this.onAddRight,
   });
@@ -55,6 +58,7 @@ class _HarnessState extends State<_Harness> {
                 child: D4mNode(
                   node: const WorkflowNode(id: 1, type: 'd4m'),
                   initialParams: widget.initialParams,
+                  onParams: widget.onParams,
                   api: widget.api,
                   onPort: (idx, port) {
                     ports[idx] = port;
@@ -130,7 +134,7 @@ D4mApi _successApi() => D4mApi(
 
 void main() {
   group('dynamic ports', () {
-    testWidgets('starts with a single port "A"', (tester) async {
+    testWidgets('starts with a single port "in"', (tester) async {
       final ports = <int, InputPort>{};
       await tester.pumpWidget(_Harness(
         api: _successApi(),
@@ -144,7 +148,7 @@ void main() {
         tester
             .widgetList<TextField>(find.byType(TextField))
             .map((f) => f.controller?.text)
-            .contains('A'),
+            .contains('in'),
         isTrue,
       );
     });
@@ -157,31 +161,31 @@ void main() {
         onPorts: ports.addAll,
       ));
 
-      await tester.tap(find.text('+').first);
+      await tester.tap(find.text('port'));
       await tester.pumpAndSettle();
       expect(ports.keys, [0, 1]);
       expect(
         tester
             .widgetList<TextField>(find.byType(TextField))
             .map((f) => f.controller?.text),
-        containsAll(['A', 'B']),
+        containsAll(['in', 'B']),
       );
 
-      await tester.tap(find.text('+').first);
+      await tester.tap(find.text('port'));
       await tester.pumpAndSettle();
       expect(ports.keys, [0, 1, 2]);
       expect(
         tester
             .widgetList<TextField>(find.byType(TextField))
             .map((f) => f.controller?.text),
-        containsAll(['A', 'B', 'C']),
+        containsAll(['in', 'B', 'C']),
       );
     });
 
     testWidgets('a port can be renamed inline', (tester) async {
       await tester.pumpWidget(_Harness(api: _successApi(), emitted: const []));
 
-      final nameField = find.widgetWithText(TextField, 'A');
+      final nameField = find.widgetWithText(TextField, 'in');
       await tester.enterText(nameField, 'left');
       await tester.pumpAndSettle();
 
@@ -204,7 +208,7 @@ void main() {
         onPorts: ports.addAll,
       ));
 
-      await tester.tap(find.text('+').first); // add B
+      await tester.tap(find.text('port')); // add B
       await tester.pumpAndSettle();
       final portB = ports[1];
       expect(portB, isNotNull);
@@ -271,12 +275,12 @@ void main() {
   });
 
   group('output port', () {
-    testWidgets('is labeled "Out", not the legacy "evaluatedResult"',
+    testWidgets('is labeled "out", not the legacy "evaluatedResult"',
         (tester) async {
       await tester.pumpWidget(_Harness(api: _successApi(), emitted: const []));
       expect(
         tester.widget<OutputConnector>(find.byType(OutputConnector)).label,
-        'Out',
+        'out',
       );
     });
   });
@@ -323,7 +327,7 @@ void main() {
         onPorts: ports.addAll,
       ));
 
-      await tester.tap(find.text('+').first); // add B
+      await tester.tap(find.text('port')); // add B
       await tester.pumpAndSettle();
       await tester.enterText(
           find.widgetWithText(TextField, 'Julia D4M Script'), 'Out = A + B');
@@ -522,6 +526,277 @@ void main() {
             .borderState,
         CardBorderState.error,
       );
+    });
+  });
+
+  group('script port', () {
+    /// The shape Load File emits for a `.jl` file: one row, `text` alongside
+    /// the path it came from.
+    AaPayload sourceAa(String code, {String path = '/tmp/selectors.jl'}) =>
+        AaPayload(
+          rows: const ['0', '0'],
+          cols: const ['text', 'file_path'],
+          vals: [code, path],
+        );
+
+    String scriptText(WidgetTester tester) => tester
+        .widgetList<TextField>(find.byType(TextField))
+        .firstWhere((f) => f.decoration?.labelText == 'Julia D4M Script')
+        .controller!
+        .text;
+
+    /// A node whose second slot is the script port, marked the way the node
+    /// itself persists it.
+    const withScriptPort = {'portNames': 'A,script', 'scriptPortIdx': '1'};
+
+    /// The name field of the port at [i], identified by position in the row
+    /// list — the script box and the out-symbol field are TextFields too.
+    TextField nameField(WidgetTester tester, int i) => tester
+        .widgetList<TextField>(find.byType(TextField))
+        .elementAt(i);
+
+    testWidgets('the script port puts what arrives into the script box',
+        (tester) async {
+      final ports = <int, InputPort>{};
+      await tester.pumpWidget(_Harness(
+        api: _successApi(),
+        emitted: const [],
+        onPorts: ports.addAll,
+        initialParams: withScriptPort,
+      ));
+
+      expect(scriptText(tester), isEmpty);
+      await _feedPort(tester, ports, 1, sourceAa('Out = A[:, ["x"]]'));
+
+      expect(scriptText(tester), 'Out = A[:, ["x"]]');
+
+      // Replace, not append: an arrival is the script now, whatever was in the
+      // box before — including something typed by hand.
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Julia D4M Script'), 'Out = A');
+      await tester.pumpAndSettle();
+      await _feedPort(tester, ports, 1, sourceAa('Out = A + A'));
+
+      expect(scriptText(tester), 'Out = A + A');
+    });
+
+    testWidgets('a fresh node has none until + script is clicked',
+        (tester) async {
+      final ports = <int, InputPort>{};
+      final saved = <Map<String, String>>[];
+      await tester.pumpWidget(_Harness(
+        api: _successApi(),
+        emitted: const [],
+        onPorts: ports.addAll,
+        onParams: saved.add,
+      ));
+
+      expect(ports.keys, [0]);
+      expect(find.widgetWithText(Tooltip, 'script'), findsOneWidget,
+          reason: 'the affordance is there to be found');
+
+      await tester.tap(find.text('script'));
+      await tester.pumpAndSettle();
+
+      expect(ports.keys, [0, 1]);
+      // Which slot it is gets persisted, so a reload does not have to guess
+      // from the name.
+      expect(saved.last['portNames'], 'in,script');
+      expect(saved.last['scriptPortIdx'], '1');
+      // Offered once: the remaining 'script' text is the port's own name field.
+      expect(find.widgetWithText(Tooltip, 'script'), findsNothing);
+      expect(nameField(tester, 1).controller?.text, 'script');
+    });
+
+    testWidgets('its name field is read-only, unlike a data port\'s',
+        (tester) async {
+      await tester.pumpWidget(_Harness(
+        api: _successApi(),
+        emitted: const [],
+        initialParams: withScriptPort,
+      ));
+
+      expect(nameField(tester, 0).readOnly, isFalse);
+      expect(nameField(tester, 1).readOnly, isTrue,
+          reason: 'the name means nothing to anything now; editing it misleads');
+    });
+
+    testWidgets('it renders last, and stays last as data ports are added',
+        (tester) async {
+      final ports = <int, InputPort>{};
+      final saved = <Map<String, String>>[];
+      await tester.pumpWidget(_Harness(
+        api: _successApi(),
+        emitted: const [],
+        onPorts: ports.addAll,
+        onParams: saved.add,
+        initialParams: withScriptPort,
+      ));
+
+      List<String> laneLabels() => tester
+          .widgetList<InputConnector>(find.byType(InputConnector))
+          .map((c) => c.label)
+          .toList();
+      expect(laneLabels(), ['A', 'script']);
+
+      await tester.tap(find.text('port'));
+      await tester.pumpAndSettle();
+
+      // The new data port went in above the script port, not after it — index
+      // order is what the connector lane and the edge anchors both step by.
+      expect(laneLabels(), ['A', 'B', 'script']);
+      expect(saved.last['portNames'], 'A,B,script');
+      expect(saved.last['scriptPortIdx'], '2');
+    });
+
+    testWidgets('the port that moved keeps its own data, not the slot\'s',
+        (tester) async {
+      final ports = <int, InputPort>{};
+      final emitted = <AaPayload>[];
+      await tester.pumpWidget(_Harness(
+        api: _successApi(),
+        emitted: emitted,
+        onPorts: ports.addAll,
+        initialParams: withScriptPort,
+      ));
+
+      await _feedPort(tester, ports, 1, sourceAa('Out = A'));
+      expect(scriptText(tester), 'Out = A');
+
+      // Inserting a data port pushes the script port from slot 1 to slot 2.
+      await tester.tap(find.text('port'));
+      await tester.pumpAndSettle();
+
+      // Its script survived the move, and the vacated slot did not inherit it.
+      expect(scriptText(tester), 'Out = A');
+      expect(
+        tester.widget<ExecuteButton>(find.byType(ExecuteButton)).enabled,
+        isFalse,
+        reason: 'A and B are both still empty',
+      );
+    });
+
+    testWidgets('an unwired script port does not hold Execute back',
+        (tester) async {
+      final ports = <int, InputPort>{};
+      final emitted = <AaPayload>[];
+      await tester.pumpWidget(_Harness(
+        api: _successApi(),
+        emitted: emitted,
+        onPorts: ports.addAll,
+        initialParams: withScriptPort,
+      ));
+
+      await tester.enterText(
+          find.widgetWithText(TextField, 'Julia D4M Script'), 'Out = A');
+      await tester.pumpAndSettle();
+      await _feedPort(tester, ports, 0, _aa);
+      await tester.pumpAndSettle();
+
+      // A hand-typed script is a complete script; the port owes nothing.
+      expect(find.textContaining('done'), findsOneWidget);
+    });
+
+    testWidgets('the script port is not bound as a Julia variable',
+        (tester) async {
+      final ports = <int, InputPort>{};
+      final execBodies = <Map<String, dynamic>>[];
+      final api = D4mApi(
+        client: MockClient((request) async {
+          if (request.url.path.endsWith('/ingest')) {
+            return _jsonResponse({'handleId': 'h-in', 'nnz': 1});
+          }
+          if (request.url.path.endsWith('/exec')) {
+            execBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+            return _jsonResponse(
+                {'handleId': 'h-out', 'numRows': 1, 'numCols': 1, 'nnz': 1});
+          }
+          return _jsonResponse({
+            'handleId': 'h-out',
+            'page': 0,
+            'pageSize': 10000,
+            'totalNnz': 1,
+            'aa': _aa.toJson(),
+          });
+        }),
+      );
+
+      final emitted = <AaPayload>[];
+      await tester.pumpWidget(_Harness(
+        api: api,
+        emitted: emitted,
+        onPorts: ports.addAll,
+        initialParams: withScriptPort,
+      ));
+
+      await _feedPort(tester, ports, 1, sourceAa('Out = A'));
+      await _feedPort(tester, ports, 0, _aa);
+      await tester.pumpAndSettle();
+
+      expect(execBodies, hasLength(1));
+      final inputs = execBodies.single['inputs'] as Map<String, dynamic>;
+      expect(inputs.keys, ['A'],
+          reason: 'the script is the script, not a variable holding itself');
+      expect(execBodies.single['script'], 'Out = A');
+    });
+
+    testWidgets('naming a data port "script" does not promote it',
+        (tester) async {
+      final ports = <int, InputPort>{};
+      final saved = <Map<String, String>>[];
+      await tester.pumpWidget(_Harness(
+        api: _successApi(),
+        emitted: const [],
+        onPorts: ports.addAll,
+        onParams: saved.add,
+      ));
+
+      await tester.enterText(find.widgetWithText(TextField, 'in'), 'script');
+      await tester.pumpAndSettle();
+      await _feedPort(tester, ports, 0, sourceAa('Out = B'));
+
+      // Still a data port: the script box stays empty and the payload is held
+      // as data. Which is the point — if a name could promote a port, a typo
+      // in that name could demote one, silently.
+      expect(scriptText(tester), isEmpty);
+      expect(saved.last['scriptPortIdx'], '-1', reason: 'no script port');
+      expect(find.widgetWithText(Tooltip, 'script'), findsOneWidget,
+          reason: 'the node still has no script port to offer against');
+    });
+
+    testWidgets('the script port survives a rename attempt on itself',
+        (tester) async {
+      final ports = <int, InputPort>{};
+      await tester.pumpWidget(_Harness(
+        api: _successApi(),
+        emitted: const [],
+        onPorts: ports.addAll,
+        initialParams: withScriptPort,
+      ));
+
+      // enterText goes through the same channel a keystroke does, so a
+      // read-only field is the same wall here that it is on screen.
+      await tester.enterText(find.widgetWithText(TextField, 'script'), 'scirpt');
+      await tester.pumpAndSettle();
+      await _feedPort(tester, ports, 1, sourceAa('Out = A'));
+
+      expect(nameField(tester, 1).controller?.text, 'script');
+      expect(scriptText(tester), 'Out = A');
+    });
+
+    testWidgets('a workflow saved before scriptPortIdx still restores it',
+        (tester) async {
+      final ports = <int, InputPort>{};
+      await tester.pumpWidget(_Harness(
+        api: _successApi(),
+        emitted: const [],
+        onPorts: ports.addAll,
+        // No scriptPortIdx — in these files the name really was the marker.
+        initialParams: const {'portNames': 'A,script'},
+      ));
+
+      await _feedPort(tester, ports, 1, sourceAa('Out = A'));
+      expect(scriptText(tester), 'Out = A');
     });
   });
 
