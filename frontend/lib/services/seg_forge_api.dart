@@ -382,33 +382,13 @@ class SegForgeApi {
     }
   }
 
-  /// Saves a completed SegForge session to DoubleNaught's Parquet persistence.
+  /// Lists sessions SF has actually saved, for the Seg Forge node's picklist.
   ///
-  /// Called after the SF frontend closes and results are loaded. Persists the
-  /// session to Arrow/Parquet so it can be re-loaded and inspected later
-  /// without re-running the segmentation model.
-  ///
-  /// [sessionData] is the response from `loadSession()`, containing metadata,
-  /// prompts, results (masks, boxes, scores), and image dimensions.
-  Future<void> saveSession(Map<String, dynamic> sessionData) async {
-    final own = client == null ? http.Client() : null;
-    final transport = client ?? own!;
-    try {
-      final response = await transport.post(
-        Uri.parse('${BackendConfig.baseUrl}/segforge/sessions'),
-        headers: const {'Content-Type': 'application/json'},
-        body: jsonEncode(sessionData),
-      );
-      if (response.statusCode != 200) _fail('Save session', response);
-    } finally {
-      own?.close();
-    }
-  }
-
-  /// Lists all saved SegForge sessions from DoubleNaught's persistence.
-  ///
-  /// Returns metadata (session_id, name, description, created_at, image_url)
-  /// for each saved session, useful for a session picker UI.
+  /// DN's own backend reads this straight off SF's `registry.parquet` files
+  /// (`storage/sf/sessions/*/`) via the shared juliacall bridge — DN itself
+  /// no longer creates or loads full session content, only lists what SF has
+  /// saved. Returns metadata (session_id, name, description, created_at,
+  /// image_url) per session.
   Future<List<Map<String, dynamic>>> listSessions() async {
     final own = client == null ? http.Client() : null;
     final transport = client ?? own!;
@@ -422,27 +402,6 @@ class SegForgeApi {
         for (final s in (j['sessions'] as List? ?? const []))
           (s as Map).cast<String, dynamic>(),
       ];
-    } finally {
-      own?.close();
-    }
-  }
-
-  /// Loads a previously saved SegForge session from DoubleNaught's persistence.
-  ///
-  /// Returns the full session data matching `/loadSession/{id}` format, allowing
-  /// replay or inspection of past segmentation results.
-  Future<SegForgeSession> loadSavedSession(String sessionId) async {
-    final own = client == null ? http.Client() : null;
-    final transport = client ?? own!;
-    try {
-      final response = await transport.get(
-        Uri.parse('${BackendConfig.baseUrl}/segforge/sessions/$sessionId'),
-      );
-      if (response.statusCode != 200) _fail('Load saved session', response);
-      return SegForgeSession.fromJson(
-        sessionId,
-        jsonDecode(response.body) as Map<String, dynamic>,
-      );
     } finally {
       own?.close();
     }

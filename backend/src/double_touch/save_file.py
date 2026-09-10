@@ -13,6 +13,7 @@ from typing import Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import d4m_juliacall_bridge as bridge
 from .io_support import IOSupport
 from .models import AssocArray
 
@@ -47,43 +48,27 @@ def _merge_aa_append(incoming: AssocArray, base: str, format: str) -> AssocArray
 
     Returns the merged AA (existing ⊕ incoming).
     """
-    import sys
-    from juliacall import Main as jl
-
     out_path = _output_path_for_format(base, format)
-
-    # Load existing AA from file based on format
     format_lower = format.lower()
 
-    if format_lower == "parquet":
-        existing = jl.loadParquet(str(out_path))
-    elif format_lower == "csv":
-        existing = jl.ReadCSV(str(out_path))
-    elif format_lower == "jsonl":
-        existing = jl.loadParquet(str(out_path))  # JSONL stored as parquet
-    elif format_lower == "json":
-        existing = jl.loadParquet(str(out_path))
-    else:
-        raise ValueError(f"Append not supported for format: {format}")
+    jl = bridge.julia()
+    with bridge.LOCK:
+        # Load existing AA from file based on format
+        if format_lower == "csv":
+            existing = jl.ReadCSV(str(out_path))
+        elif format_lower in ("parquet", "jsonl", "json"):
+            existing = jl.loadParquet(str(out_path))  # jsonl/json stored as parquet
+        else:
+            raise ValueError(f"Append not supported for format: {format}")
 
-    # Convert incoming AssocArray to D4M/Julia Assoc type
-    # incoming is {rows, cols, vals} triplet form
-    incoming_jl = jl.Assoc(
-        incoming.rows,
-        incoming.cols,
-        incoming.vals
-    )
+        # incoming is {rows, cols, vals} triplet form
+        incoming_jl = bridge.to_julia_assoc(incoming.rows, incoming.cols, incoming.vals)
 
-    # Perform AA addition (⊕): merged = existing ⊕ incoming
-    merged_jl = existing + incoming_jl
+        # Perform AA addition (⊕): merged = existing ⊕ incoming
+        merged_jl = existing + incoming_jl
 
-    # Convert back to AssocArray (triplet form)
-    rows, cols, vals = jl.find(merged_jl)
-    return AssocArray(
-        rows=list(rows),
-        cols=list(cols),
-        vals=[str(v) for v in vals]
-    )
+        rows, cols, vals = bridge.from_julia_assoc(merged_jl)
+    return AssocArray(rows=rows, cols=cols, vals=[str(v) for v in vals])
 
 
 def save_aa_parquet(aa: AssocArray, filename: str) -> Path:

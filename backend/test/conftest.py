@@ -29,14 +29,14 @@ def _d4m_jl_available() -> bool:
         return False
 
 
-#: Apply to any test that exercises the D4M.jl bridge (`d4m_ops._julia()`),
+#: Apply to any test that exercises the D4M.jl bridge (`d4m_juliacall_bridge.julia()`),
 #: directly or via a helper like `d4m_ops.build_assoc`. Distinct from any
 #: `julia_required` marker some test files define for the separate
 #: `extract_ast.jl` subprocess dependency (Julia + Arrow.jl on PATH) — that
 #: one doesn't exercise this in-process bridge at all.
 d4m_jl_required = pytest.mark.skipif(
     not _d4m_jl_available(),
-    reason="D4M.jl did not load via juliacall — see d4m_ops._julia(); "
+    reason="D4M.jl did not load via juliacall — see d4m_juliacall_bridge.julia(); "
     "skip rather than fail when the Julia environment isn't ready",
 )
 
@@ -68,9 +68,9 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 def pytest_unconfigure(config):
-    from double_touch import d4m_ops
+    import d4m_juliacall_bridge as bridge
 
-    if d4m_ops._d4m_ready:
+    if bridge.is_ready():
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(_exitstatus)

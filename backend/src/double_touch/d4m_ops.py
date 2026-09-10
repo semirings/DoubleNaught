@@ -1,4 +1,4 @@
-"""D4M expression evaluation backed by D4M.jl via juliacall.
+"""D4M expression evaluation backed by D4M.jl via the shared juliacall bridge.
 
 Expressions are Julia source strings evaluated in a namespace that contains the
 named input Assoc objects.  Julia D4M syntax applies:
@@ -18,126 +18,34 @@ the DoubleNaught frontend also work:
     A(:)            → A
     A("r","c")      → A["r","c"]
 
-Thread safety: juliacall is not thread-safe; a module-level lock serializes
-every eval() call.
+The actual connect-once/lock/convert plumbing lives in ``d4m_juliacall_bridge``
+(shared with SegForge's backend) — this module adds only what's specific to
+DoubleNaught: the ``AssocArray`` wire type and the D4M-script evaluation
+routes (``eval_script``/``eval_expression``), which SegForge has no need for.
 """
 
 from __future__ import annotations
 
-import os
 import re
-import threading
 from typing import Any
+
+import d4m_juliacall_bridge as bridge
 
 from .models import AssocArray
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-# Absolute path to the D4M.jl source tree.  Override via env var for portability.
-_D4M_JL_PATH = os.environ.get(
-    "D4M_JL_PATH",
-    os.path.expanduser("~/d4m.Wk/D4M.jl"),
-)
-
-# ---------------------------------------------------------------------------
-# Julia / D4M.jl initialisation  (lazy, once per process)
-# ---------------------------------------------------------------------------
-
-_lock = threading.Lock()      # serialises all Julia eval calls (not thread-safe)
-_init_lock = threading.Lock() # protects one-time initialisation of the Julia runtime
-_jl: Any = None               # juliacall.Main once initialised
-_d4m_ready = False
-_AssocType: Any = None        # Julia Assoc type, cached after D4M loads
-
-
-def _julia():
-    """Return the juliacall Main module, loading D4M.jl on first call.
-
-    Thread-safe: the init lock ensures only one thread boots the Julia runtime
-    (cold start ~2 min) while _lock serialises every subsequent eval call.
-    """
-    global _jl, _d4m_ready, _AssocType
-    if _d4m_ready:
-        return _jl
-    with _init_lock:
-        # Double-checked locking: re-test inside the lock.
-        if _d4m_ready:
-            return _jl
-        if _jl is None:
-            from juliacall import Main as jl  # noqa: PLC0415  (lazy import)
-            _jl = jl
-        _jl.seval(
-            f'if !in("{_D4M_JL_PATH}", LOAD_PATH)\n'
-            f'    pushfirst!(LOAD_PATH, "{_D4M_JL_PATH}")\n'
-            f'end'
-        )
-        _jl.seval("using D4M")
-        _AssocType = _jl.seval("Assoc")
-        _d4m_ready = True
-    return _jl
-
-
-def warm() -> None:
-    """Block until Julia + D4M.jl are fully loaded. Call once at server start."""
-    _julia()
-
-
-# ---------------------------------------------------------------------------
-# Wire-format ↔ Julia Assoc conversion
-# ---------------------------------------------------------------------------
-
-def _julia_str(s: str) -> str:
-    """Escape *s* for embedding as a Julia double-quoted string literal."""
-    return (s
-        .replace('\\', '\\\\')
-        .replace('"',  '\\"')
-        .replace('\n', '\\n')
-        .replace('\r', '\\r')
-        .replace('\t', '\\t')
-        .replace('$',  '\\$')
-        .replace('\0', '\\0'))
+# Re-exported for callers/tests that reach into this module directly
+# (e.g. conftest.py's D4M-availability probe imports `warm` from here).
+warm = bridge.warm
 
 
 def _to_julia_assoc(aa: AssocArray) -> Any:
-    """Convert a wire AssocArray to a D4M.jl Assoc object.
-
-    rows/cols use the D4M comma-delimited string form (they are short IDs with
-    no commas).  vals are passed as a typed Julia array so that string values
-    containing commas are not mis-parsed by D4M's StrUnique splitter.
-    """
-    jl = _julia()
-    rows_str = ",".join(aa.rows) + ","
-    cols_str = ",".join(aa.cols) + ","
-    vals = list(aa.vals)
-    if vals and isinstance(vals[0], (int, float)):
-        # Float64 array avoids PyList dispatch issues.
-        jl_vals = jl.seval(
-            f"Float64[{', '.join(str(float(v)) for v in vals)}]"
-        )
-    else:
-        # Build a Julia Vector{String} directly.  Using a comma-delimited
-        # string would break on values that themselves contain commas (e.g.
-        # full text passages from ChunkNode).
-        escaped = ", ".join(f'"{_julia_str(str(v))}"' for v in vals)
-        jl_vals = jl.seval(f"String[{escaped}]")
-    return jl.Assoc(rows_str, cols_str, jl_vals)
+    """Convert a wire AssocArray to a D4M.jl Assoc object. Caller must hold the bridge lock."""
+    return bridge.to_julia_assoc(aa.rows, aa.cols, aa.vals)
 
 
 def _from_julia_assoc(result: Any) -> AssocArray:
-    """Convert a D4M.jl Assoc back to the wire AssocArray format."""
-    jl = _julia()
-    r, c, v = jl.find(result)
-    rows = [str(x) for x in r]
-    cols = [str(x) for x in c]
-    vals: list = []
-    for x in v:
-        # juliacall wraps Julia Float64/Int as Python float/int
-        if isinstance(x, (int, float)):
-            vals.append(float(x))
-        else:
-            vals.append(str(x))
+    """Convert a D4M.jl Assoc back to the wire AssocArray format. Caller must hold the bridge lock."""
+    rows, cols, vals = bridge.from_julia_assoc(result)
     return AssocArray(rows=rows, cols=cols, vals=vals)
 
 
@@ -191,7 +99,8 @@ def build_assoc(rows: list[str], cols: list[str], vals: list) -> AssocArray:
     entries via its own default operator, which callers assembling e.g. a
     multi-column definition index will not generally want applied silently.
     """
-    return _from_julia_assoc(_to_julia_assoc(AssocArray(rows=rows, cols=cols, vals=vals)))
+    rows, cols, vals = bridge.build_triples(rows, cols, vals)
+    return AssocArray(rows=rows, cols=cols, vals=vals)
 
 
 def eval_script(
@@ -216,10 +125,10 @@ def eval_script(
                        on the `except` clause below).
         TypeError:     Named symbol does not hold an Assoc.
     """
-    jl = _julia()
+    jl = bridge.julia()
     # Preprocess MATLAB-style call syntax using all input variable names.
     processed = _preprocess(script, set(inputs.keys()))
-    with _lock:
+    with bridge.LOCK:
         assigned: list[str] = []
         try:
             for name, aa in inputs.items():
@@ -244,7 +153,7 @@ def eval_script(
         finally:
             for name in assigned:
                 jl.seval(f"Main.eval(:(global {name} = nothing))")
-    if not jl.isa(result, _AssocType):
+    if not jl.isa(result, bridge.assoc_type()):
         raise TypeError(
             f"Output symbol '{output_symbol}' must hold an Assoc, "
             f"got {type(result).__name__}"
@@ -273,9 +182,9 @@ def eval_expression(inputs: dict[str, AssocArray], expression: str) -> AssocArra
                        see `eval_script`'s matching `except` clause for why).
         TypeError:     Expression result was not an Assoc.
     """
-    jl = _julia()
+    jl = bridge.julia()
     expression = _preprocess(expression, set(inputs.keys()))
-    with _lock:
+    with bridge.LOCK:
         assigned: list[str] = []
         try:
             for name, aa in inputs.items():
@@ -287,7 +196,7 @@ def eval_expression(inputs: dict[str, AssocArray], expression: str) -> AssocArra
         finally:
             for name in assigned:
                 jl.seval(f"Main.eval(:(global {name} = nothing))")
-    if not jl.isa(result, _AssocType):
+    if not jl.isa(result, bridge.assoc_type()):
         raise TypeError(
             f"Expression must return an Assoc, got {type(result).__name__}"
         )

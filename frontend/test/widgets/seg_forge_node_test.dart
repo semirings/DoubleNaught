@@ -94,6 +94,11 @@ Future<Uint8List> _realPng(int w, int h) async {
   Uint8List? imageBytes,
   int segmentCount = 1,
   bool maskAvailable = true,
+  // False models "nothing saved yet" — a test exercising the "+ New Session"
+  // creation flow wants an empty picklist, since a canned pre-existing entry
+  // would otherwise auto-select as an *already-saved* session (skipping
+  // upload/initSession, per _onOpenForge's isNewSession branch).
+  bool hasSavedSessions = true,
 }) {
   final calls = <String>[];
   final api = SegForgeApi(
@@ -164,30 +169,21 @@ Future<Uint8List> _realPng(int w, int h) async {
         return http.Response(jsonEncode({'session_id': _sessionId}), 200,
             headers: {'content-type': 'application/json'});
       }
-      // DN backend session persistence (called by _loadSessions / saveSession).
+      // DN backend session picklist (called by _loadSessions).
       if (request.method == 'GET' && path == '/segforge/sessions') {
         return http.Response(
           jsonEncode({
-            'sessions': [
-              {
-                'session_id': _sessionId,
-                'name': 'Test session',
-                'description': '',
-                'created_at': '2026-09-07T00:00:00Z',
-                'image_url': '',
-              }
-            ],
-          }),
-          200,
-          headers: {'content-type': 'application/json'},
-        );
-      }
-      if (request.method == 'POST' && path == '/segforge/sessions') {
-        return http.Response(
-          jsonEncode({
-            'session_id': _sessionId,
-            'path': '/tmp/$_sessionId.parquet',
-            'message': 'saved',
+            'sessions': hasSavedSessions
+                ? [
+                    {
+                      'session_id': _sessionId,
+                      'name': 'Test session',
+                      'description': '',
+                      'created_at': '2026-09-07T00:00:00Z',
+                      'image_url': '',
+                    }
+                  ]
+                : <Map<String, String>>[],
           }),
           200,
           headers: {'content-type': 'application/json'},
@@ -257,6 +253,7 @@ Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
   required SegForgeLauncher launcher,
   _FakeCropper? cropper,
   String appPath = '/tmp/SegForge',
+  String Function()? idGenerator,
 }) async {
   InputPort? imagePort;
   final segments = <AaPayload>[];
@@ -272,6 +269,7 @@ Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
             launcher: launcher,
             appPathOverride: appPath.isEmpty ? null : appPath,
             cropper: (cropper ?? _FakeCropper()).call,
+            idGenerator: idGenerator,
             onInputPort: (p) => imagePort = p,
             onIndexedOutputPort: (idx, port) => port.connect(
               idx == 0 ? segments.add : linkage.add,
@@ -292,6 +290,22 @@ Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
 
 Future<void> _send(WidgetTester tester, InputPort port, AaPayload aa) async {
   port.connect(OutputPort('upstream')..emit(aa));
+  await tester.pumpAndSettle();
+}
+
+/// Drives the "+ New Session" dialog end to end, leaving the freshly created
+/// (locally-staged, `_isNew: true`) session selected — the case Open Forge's
+/// isNewSession branch needs to see for "upload then initSession" to fire.
+Future<void> _createSession(
+  WidgetTester tester, {
+  String name = 'Test session',
+  String description = '',
+}) async {
+  await tester.tap(find.byTooltip('Create new session'));
+  await tester.pumpAndSettle();
+  await tester.enterText(find.byType(TextField).first, name);
+  await tester.enterText(find.byType(TextField).last, description);
+  await tester.tap(find.widgetWithText(TextButton, 'Save'));
   await tester.pumpAndSettle();
 }
 
@@ -454,11 +468,16 @@ void main() {
 
     testWidgets('a full run hands SegForge its inputs and emits both AAs',
         (tester) async {
-      final backend = _api(imageBytes: _bytes);
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
       final l = _launcher();
-      final ports =
-          await _pump(tester, api: backend.api, launcher: l.launcher);
+      final ports = await _pump(
+        tester,
+        api: backend.api,
+        launcher: l.launcher,
+        idGenerator: () => _sessionId,
+      );
 
+      await _createSession(tester);
       await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
@@ -572,11 +591,16 @@ void main() {
 
     testWidgets('a url is passed straight to SegForge, not re-uploaded',
         (tester) async {
-      final backend = _api(imageBytes: _bytes);
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
       final l = _launcher();
-      final ports =
-          await _pump(tester, api: backend.api, launcher: l.launcher);
+      final ports = await _pump(
+        tester,
+        api: backend.api,
+        launcher: l.launcher,
+        idGenerator: () => _sessionId,
+      );
 
+      await _createSession(tester);
       await _send(tester, ports.image, _urlAa('http://example.test/cat.png'));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();
@@ -592,11 +616,16 @@ void main() {
 
     testWidgets('raw bytes are uploaded, since they have no address',
         (tester) async {
-      final backend = _api(imageBytes: _bytes);
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
       final l = _launcher();
-      final ports =
-          await _pump(tester, api: backend.api, launcher: l.launcher);
+      final ports = await _pump(
+        tester,
+        api: backend.api,
+        launcher: l.launcher,
+        idGenerator: () => _sessionId,
+      );
 
+      await _createSession(tester);
       await _send(tester, ports.image, _imageAa(_bytes));
       await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
       await tester.pumpAndSettle();

@@ -54,7 +54,7 @@ from .classify import (
 from .inference import InferenceEngine, SegmentOutcome, StubInferenceEngine, _cxcywh_to_xyxy
 from . import review as review_logic
 from .inventory import InventoryStore, select_aa
-from .segforge_session_store import SegForgeSessionStore
+import d4m_juliacall_bridge
 from .models import (
     D4mExecRequest,
     D4mExecResponse,
@@ -230,11 +230,6 @@ review_store = ReviewStore()
 # Disk-backed, seed-on-first-run URL inventory. Tests point `inventory_store` at
 # a temp directory.
 inventory_store = InventoryStore()
-
-# Disk-backed SegForge session persistence (Parquet files under storage/).
-segforge_session_store = SegForgeSessionStore(
-    storage_dir=Path.home() / ".dn_cache" / "storage" / "segforge_sessions"
-)
 
 
 def _require_session(session_id: str) -> Session:
@@ -1725,78 +1720,69 @@ async def save_file_cancel(request: SaveCleanupRequest) -> SaveCleanupResponse:
 
 
 # --- SegForge Session Persistence ---------------------------------------------
+#
+# DN no longer creates, saves, or loads full SegForge session content — that
+# moved to SF's own backend (aa_persistence.py, storage/sf/sessions/<id>/
+# {registry,segment,linkage}.parquet), reached via the shared juliacall
+# bridge. DN's only remaining role is listing what SF has actually saved,
+# for the Seg Forge node's picklist — read directly off disk via that same
+# bridge, not the (now-deleted) hand-rolled pyarrow store this used to call.
 
-@app.post("/segforge/sessions")
-async def segforge_save_session(request: dict) -> dict:
-    """Save a SegForge session to Parquet.
-
-    Receives the full session response from SF backend /loadSession/{id},
-    persists it to Arrow/Parquet for later inspection and replay.
-
-    Request body: session_data dict with session_id, name, description, image_url,
-                  width, height, prompts, results (masks, boxes, scores).
-    """
-    try:
-        session_id = request.get("session_id")
-        if not session_id:
-            raise ValueError("session_id is required")
-
-        output_path = segforge_session_store.save_session(
-            session_id=session_id,
-            session_data=request,
-        )
-
-        return {
-            "session_id": session_id,
-            "path": str(output_path),
-            "message": f"Saved SegForge session {session_id} to {output_path.name}",
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to save session: {str(exc)}")
+_SEGFORGE_STORAGE_DIR = Path(
+    os.environ.get(
+        "SEGFORGE_STORAGE_DIR",
+        os.path.expanduser("~/populi.Wk/SegForge/storage/sf/sessions"),
+    )
+)
 
 
 @app.get("/segforge/sessions")
 async def segforge_list_sessions() -> dict:
-    """List all saved SegForge sessions.
+    """List sessions SF has actually saved, for the Seg Forge node's picklist.
 
-    Returns metadata (session_id, name, description, created_at, image_url)
-    for each saved session, useful for a session picker UI.
+    Reads registry.parquet directly under storage/sf/sessions/*/ via the
+    shared juliacall bridge. A session that was only ever staged (an id
+    minted, never opened/saved in SF) has no registry.parquet and does not
+    appear here.
     """
-    try:
-        sessions = segforge_session_store.list_sessions()
-        return {"sessions": sessions}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {str(exc)}")
-
-
-@app.get("/segforge/sessions/{session_id}")
-async def segforge_load_session(session_id: str) -> dict:
-    """Load a saved SegForge session from Parquet.
-
-    Returns the full session data (metadata, prompts, results) for replay or inspection.
-    """
-    try:
-        session_data = segforge_session_store.load_session(session_id)
-        if session_data is None:
-            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-        return session_data
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to load session: {str(exc)}")
+    sessions = []
+    if _SEGFORGE_STORAGE_DIR.exists():
+        for d in sorted(_SEGFORGE_STORAGE_DIR.iterdir()):
+            registry_path = d / "registry.parquet"
+            if not (d.is_dir() and registry_path.exists()):
+                continue
+            try:
+                _, cols, vals = d4m_juliacall_bridge.load_parquet(str(registry_path))
+            except Exception as exc:
+                print(f"Warning: failed to read {registry_path}: {exc}")
+                continue
+            fields = dict(zip(cols, vals))
+            sessions.append({
+                "session_id": d.name,
+                "name": fields.get("name") or "",
+                "description": fields.get("description") or "",
+                "created_at": fields.get("created_at") or "",
+                "image_url": fields.get("image_url") or "",
+            })
+    return {"sessions": sessions}
 
 
 @app.delete("/segforge/sessions/{session_id}")
 async def segforge_delete_session(session_id: str) -> dict:
-    """Delete a saved SegForge session's Parquet file."""
-    try:
-        deleted = segforge_session_store.delete_session(session_id)
-        if not deleted:
-            raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-        return {"session_id": session_id, "message": f"Deleted session {session_id}"}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(exc)}")
+    """Open question, not decided as part of retiring the old session store.
+
+    This used to delete from DN's own hand-rolled Parquet store. Session
+    content now lives entirely under SF's storage/sf/sessions/ — whether DN
+    should be able to reach in and delete it wasn't part of that decision.
+    Flagging rather than silently keeping the old (now nonexistent target)
+    behavior or silently dropping the route.
+    """
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Deleting a SegForge session from DoubleNaught is not implemented "
+            "— open question, see this route's docstring."
+        ),
+    )
 
 

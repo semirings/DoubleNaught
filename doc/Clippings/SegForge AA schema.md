@@ -8,6 +8,17 @@ description: "Gemini conversation with 70 messages"
 tags:
   - "clippings"
 ---
+> **Superseded.** This is an archived chat transcript, not a checked spec —
+> it assumed an `image_id` layer SF's actual one-image-per-session data model
+> doesn't have. The schema actually implemented and persisted
+> (`storage/sf/sessions/<id>/{registry,segment,linkage}.parquet`) is
+> documented in `SegForge/backend/aa_persistence.py`'s module docstring;
+> row keys there are `session_id:segment_id` / `session_id:_source` /
+> `session_id:_global`, with `segment_id` freshly minted per Save (not
+> stable across a session's history) and a `score` column alongside
+> `crop_bytes`/`mask_bytes`/`bbox`. Kept below only as a historical record of
+> the original brainstorm — don't treat it as current.
+
 ### 1\. The Core Associative Array Layouts
 
 Rather than forcing everything into a single monolithic matrix, SegForge sessions can be modeled using two primary interrelated associative arrays that share common key namespaces:

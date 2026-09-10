@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
 
 import '../../../models/aa_payload.dart';
 import '../../../services/image_crop.dart';
@@ -95,10 +96,26 @@ class _ImageSource {
 /// * `session` (input, idx 1, optional) — a `session_id` to work in. When
 ///   absent, SegForge's backend allocates one on upload.
 /// * `segment` (output, idx 0) — one row per segment,
-///   `session_id:image_id:segment_id`, columns `crop_bytes`, `mask_bytes`,
-///   `bbox`.
+///   `session_id:image_id:segment_id` (`segment_id` is `SegForgeMapping`'s
+///   own index-derived `seg_NNN`, rebuilt fresh every Open Forge run — never
+///   persisted, so nothing needs it stable), columns `crop_bytes`,
+///   `mask_bytes`, `bbox`.
 /// * `linkage` (output, idx 1) — prompts and confidences against their target,
 ///   `session_id:target_id`.
+///
+/// These two ports are this node's own construction (`SegForgeMapping`,
+/// Dart) and a *different* artifact from what SF's backend persists to
+/// `storage/sf/sessions/<id>/{registry,segment,linkage}.parquet` for
+/// session save/resume — that schema drops `image_id` entirely
+/// (`session_id:segment_id`) and mints a fresh UUIDv4 `segment_id` on every
+/// Save, not stable across a session's save history either. That persisted
+/// Segment AA also carries a `score` column (SAM3's per-segment confidence,
+/// `str(float(...))`) on the same `session_id:segment_id` row as
+/// `crop_bytes`/`mask_bytes`/`bbox` — added because this node's own
+/// `SegForgeMapping.linkage` reads `results.scores` back out of
+/// `/loadSession/{id}` to build its `confidence` rows, so SF's backend has
+/// to persist it even though the original schema sketch didn't call it out.
+/// Don't conflate the two artifacts when reading either side.
 ///
 /// ## Two buttons, two jobs
 ///
@@ -135,6 +152,11 @@ class SegForgeNodeWidget extends BaseNodeWidget {
   /// Registers an output port by index (0 = `segment`, 1 = `linkage`).
   final void Function(int idx, OutputPort port)? onIndexedOutputPort;
 
+  /// Session-id seam; defaults to a real UUIDv4. Injectable so tests can
+  /// exercise the "+ New Session" flow with a predictable id instead of a
+  /// fresh random one every run.
+  final String Function()? idGenerator;
+
   const SegForgeNodeWidget({
     super.key,
     required super.node,
@@ -150,6 +172,7 @@ class SegForgeNodeWidget extends BaseNodeWidget {
     this.appPathOverride,
     this.cropper,
     this.onIndexedOutputPort,
+    this.idGenerator,
   });
 
   @override
@@ -335,12 +358,9 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     }
   }
 
-  /// Time-ordered session ID (matches DN's existing pattern).
-  static String _newSessionId() {
-    final now = DateTime.now();
-    return 'session-${now.microsecondsSinceEpoch.toRadixString(36)}'
-        '-${now.hashCode.toRadixString(36)}';
-  }
+  /// Real UUIDv4 — matches SF's own `uuid.uuid4()` id scheme, so a session
+  /// id minted on either side means the same thing on both.
+  static String _newSessionId() => const Uuid().v4();
 
   /// Prompts user for session name/description and creates a new session.
   Future<void> _createNewSession() async {
@@ -390,9 +410,11 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
     if (result != true || !mounted) return;
 
-    // Generate ID for the new session. It will be persisted to Parquet only after
-    // SegForge runs and produces results (in _collect).
-    final sessionId = _newSessionId();
+    // Generate ID for the new session. Nothing is written to disk from DN's
+    // side, ever — this id/name/description stay local node state until SF
+    // itself saves the session (its first prompt, its Save button, or a
+    // Close Forge flush).
+    final sessionId = (widget.idGenerator ?? _newSessionId)();
     final now = DateTime.now();
     final newSession = {
       'session_id': sessionId,
@@ -400,14 +422,24 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       'description': descCtrl.text.trim(),
       'created_at': now.toIso8601String(),
       'image_url': '',
+      // Distinguishes a locally-staged draft (nothing on disk yet) from an
+      // entry that came from listSessions() — see _onOpenForge's use of this.
+      '_isNew': true,
     };
 
     setState(() {
       _sessionsList.insert(0, newSession);
       _selectedSessionId = sessionId;
     });
-    nameCtrl.dispose();
-    descCtrl.dispose();
+    // `showDialog`'s Future resolves as soon as `Navigator.pop` is called —
+    // before the dialog's closing transition has actually finished rendering
+    // the TextFields still attached to these controllers. Disposing them
+    // synchronously here tears them out from under that still-running
+    // animation; deferring to the next frame lets it finish detaching first.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      nameCtrl.dispose();
+      descCtrl.dispose();
+    });
   }
 
   // ── Backend Management ────────────────────────────────────────────────────────
@@ -488,8 +520,21 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       if (source == null) return; // Should not happen due to _canOpenForge check.
 
       final String sessionId = _selectedSessionId!;
+      final selected = _sessionsList.firstWhere(
+        (s) => s['session_id'] == sessionId,
+        orElse: () => <String, dynamic>{},
+      );
+      // A session already saved by SF (came from listSessions(), not from
+      // this node's own "+ New Session" form) already has its own name,
+      // description and image on disk — DN's job is just to hand SF the id
+      // and let it resume from storage/sf/sessions/<id>/ itself, including
+      // the source image, rather than re-supplying any of that.
+      final isNewSession = selected['_isNew'] == true;
+
       final String imageUrl;
-      if (source.url != null) {
+      if (!isNewSession) {
+        imageUrl = '';
+      } else if (source.url != null) {
         // SegForge fetches the URL itself and uploads into the selected session.
         imageUrl = source.url!;
       } else {
@@ -503,25 +548,23 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       }
       if (gen != _execGen || !mounted) return;
 
-      // Initialize the session on the backend with metadata. SegForge reads it
-      // back over /loadSession and shows it, so this passes on the name and
-      // description the user actually gave the session in the picker — a
-      // synthesized 'Session <id>' would just repeat the id back at them.
-      final selected = _sessionsList.firstWhere(
-        (s) => s['session_id'] == sessionId,
-        orElse: () => <String, dynamic>{},
-      );
-      final name = (selected['name'] as String?)?.trim();
-      final description = (selected['description'] as String?)?.trim();
-      await _api.initSession(
-        sessionId: sessionId,
-        name: name == null || name.isEmpty ? 'Session $sessionId' : name,
-        description: description == null || description.isEmpty
-            ? source.filename
-            : description,
-        imageUrl: imageUrl,
-      );
-      if (gen != _execGen || !mounted) return;
+      if (isNewSession) {
+        // Initialize the session on the backend with metadata. SegForge reads it
+        // back over /loadSession and shows it, so this passes on the name and
+        // description the user actually gave the session in the picker — a
+        // synthesized 'Session <id>' would just repeat the id back at them.
+        final name = (selected['name'] as String?)?.trim();
+        final description = (selected['description'] as String?)?.trim();
+        await _api.initSession(
+          sessionId: sessionId,
+          name: name == null || name.isEmpty ? 'Session $sessionId' : name,
+          description: description == null || description.isEmpty
+              ? source.filename
+              : description,
+          imageUrl: imageUrl,
+        );
+        if (gen != _execGen || !mounted) return;
+      }
 
       // Now launch SF frontend. It will read initialization from backend.
       final process = await _launcher(
@@ -570,28 +613,11 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       return;
     }
 
-    // Persist the session to DN's Parquet store for later replay/inspection.
-    try {
-      await _api.saveSession({
-        'session_id': session.sessionId,
-        'created_at': session.createdAt,
-        'name': session.sessionId,
-        'description': filename,
-        'image_url': '',
-        'width': session.width,
-        'height': session.height,
-        'prompts': session.prompts,
-        'results': {
-          'boxes': session.boxes,
-          'scores': session.scores,
-          'masks': session.masksRle,
-        },
-      });
-    } catch (e) {
-      // Save failure is a warning, not a fatal error; continue with results.
-      debugPrint('Warning: Failed to persist session $sessionId: $e');
-    }
-    if (gen != _execGen || !mounted) return;
+    // Session persistence (registry/segment/linkage AAs) is now SF's own
+    // responsibility: SF's backend saves after every prompt and, when the
+    // window is closed via the Close Forge button, `_onCloseForge` also
+    // flushes explicitly before killing the process. DN no longer keeps a
+    // second copy of session content.
 
     // Ask SegForge to materialize the mask and cutout PNGs. Its UI no longer
     // drives either, so the node does — otherwise mask_bytes would exist only

@@ -22,6 +22,11 @@ dependencies:
   # macOS builds, where a CWD-relative path escapes the app container.
   path_provider: ^2.1.6
 
+  # Real UUIDv4 generation for the Seg Forge node's "+ New Session" form —
+  # matches SF's own `uuid.uuid4()` id scheme. Already a transitive
+  # dependency; promoted to direct since this node now imports it.
+  uuid: ^4.5.3
+
   # State management used by Vyuh
   mobx: ^2.3.0+1
   flutter_mobx: ^2.2.0+2

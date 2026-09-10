@@ -13,8 +13,13 @@ dependencies = [
     # Phi-4-aligned token counting for ChunkNode (o200k_base encoding).
     "tiktoken>=0.7",
     # Julia bridge: evaluates D4M.jl expressions via the Julia runtime.
-    "juliacall>=0.9",
+    # Shared with SegForge's backend rather than duplicated — see
+    # ~/d4m.Wk/d4m_juliacall_bridge.
+    "d4m-juliacall-bridge",
 ]
+
+[tool.uv.sources]
+d4m-juliacall-bridge = { path = "../../d4m_juliacall_bridge", editable = true }
 
 [project.optional-dependencies]
 dev = [
