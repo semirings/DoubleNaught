@@ -1,4 +1,4 @@
-import '../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import 'aa_file.dart';
 import 'inventory_api.dart' show InventoryEntry, InventoryFields;
 

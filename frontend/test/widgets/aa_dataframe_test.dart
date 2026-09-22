@@ -1,4 +1,4 @@
-import 'package:double_vision/models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import 'package:double_vision/widgets/aa_dataframe.dart';
 import 'package:double_vision/widgets/nodes/base/base_node.dart';
 import 'package:flutter/material.dart';

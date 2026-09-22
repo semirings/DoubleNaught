@@ -42,14 +42,6 @@ double getNodeWidth(String type) {
       return 320; // ModelClassifierNode._width
     case 'model_builder':
       return 320; // ModelBuilderNode._width
-    case 'text_model_loader':
-      return 320; // TextModelLoaderNode._width
-
-    // Text processing
-    case 'text_prompt':
-      return 320; // TextPromptNode._width
-    case 'text_inference':
-      return 320; // TextInferenceNode._width
 
     // Categories and grouping
     case 'categories':

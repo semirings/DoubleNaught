@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../focus_panel.dart' show FocusContent;
 import '../base/base_node_widget.dart';

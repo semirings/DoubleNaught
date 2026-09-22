@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import 'nodes/base/base_node.dart' show kAaColumnHeaderColor, kAaRowHeaderColor, kAaValueColor;
 
 /// Maximum rows/columns rendered in the table.  Beyond these limits a

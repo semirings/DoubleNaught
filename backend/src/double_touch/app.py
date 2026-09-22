@@ -111,13 +111,6 @@ from .models import (
     SaveFileResponse,
     SegmentResponse,
     SegmentResults,
-    TextHealthResponse,
-    TextInferRequest,
-    TextInferResponse,
-    TextInferenceMetrics,
-    TextLoadRequest,
-    TextLoadResponse,
-    TextLoadStats,
     TextPromptRequest,
     UrlPayloadRequest,
     UrlPayloadResponse,
@@ -129,11 +122,6 @@ from .models import (
     ModelBuildResponse,
     SplitRequest,
     SplitResponse,
-)
-from .text_engine import (
-    default_text_engine,
-    messages_from_prompt_aa,
-    mlx_available,
 )
 from .review import ReviewStore
 from .sessions import PromptRecord, Session, SessionStore
@@ -219,10 +207,6 @@ engine: InferenceEngine = StubInferenceEngine()
 # deterministic stub (see double_touch.classify.default_classifier).
 classifier: ClassifierEngine = default_classifier()
 
-# Generative text engine — mlx-lm when available, else the deterministic stub
-# (see double_touch.text_engine.default_text_engine).
-text_engine = default_text_engine()
-
 # Disk-backed review sessions (survive interruption; resumable). Tests point
 # `review_store.base_dir` at a temp directory.
 review_store = ReviewStore()
@@ -295,16 +279,6 @@ async def health() -> HealthResponse:
         active_sessions=len(store),
         classifier=classifier.name,
         classifier_local_available=transformers_available(),
-    )
-
-
-@app.get("/text/health", response_model=TextHealthResponse)
-async def text_health() -> TextHealthResponse:
-    """Health snapshot for the text-inference subsystem."""
-    return TextHealthResponse(
-        backend=text_engine.name,
-        mlx_available=mlx_available(),
-        loaded_model_id=text_engine.loaded_model_id(),
     )
 
 
@@ -931,134 +905,6 @@ async def review_output(review_id: str) -> ReviewOutputResponse:
     return ReviewOutputResponse(
         aa=review_logic.output_aa(session), counts=review_logic.counts(session)
     )
-
-
-# --- Text inference nodes ---------------------------------------------------
-# Four-node pipeline:  TextModelLoaderNode → TextPromptNode
-#                      → TextInferenceNode → TextPreviewNode
-#
-# POST /text/load   — warm the model into cache; return model-handle AA.
-# POST /text/infer  — run mlx-lm.generate; return result AA + metrics.
-#
-# Both run in a thread-pool worker so they never block the event loop.  The
-# model-handle AA emitted by /text/load is passed verbatim to /text/infer,
-# which extracts the `model_id` column to look up (or reload) the cached model.
-
-
-def _aa_value_by_col(aa: AssocArray, col: str) -> Optional[str]:
-    """Return the first value in [aa] whose column matches [col]."""
-    try:
-        idx = aa.cols.index(col)
-        return str(aa.vals[idx]) if idx < len(aa.vals) else None
-    except ValueError:
-        return None
-
-
-@app.post("/text/load", response_model=TextLoadResponse)
-async def text_load(request: TextLoadRequest) -> TextLoadResponse:
-    """Load (or warm from cache) a generative text model.
-
-    The response includes a model-handle AA (row ``model:<slug>``, attribute
-    columns) that the Flutter canvas emits on the ``modelHandle`` output port,
-    ready to wire into ``TextInferenceNode``.  If the model is already cached
-    this is a near-instant metadata round-trip.
-    """
-    model_id = request.model_id.strip()
-    if not model_id:
-        raise HTTPException(status_code=422, detail="modelId must not be empty")
-
-    def _run() -> dict:
-        return text_engine.load_model(
-            model_id, lora_path=request.lora_path.strip() or None
-        )
-
-    handle_dict = await run_in_threadpool(_run)
-    handle_aa = AssocArray(
-        rows=handle_dict["row"],
-        cols=handle_dict["col"],
-        vals=handle_dict["val"],
-    )
-
-    # Surface key stats directly in the response for the node's UI.
-    ctx = int(_aa_value_by_col(handle_aa, "context_length") or "4096")
-    loaded_at = _aa_value_by_col(handle_aa, "loaded_at") or ""
-    stats = TextLoadStats(
-        model_id=model_id,
-        backend=text_engine.name,
-        context_length=ctx,
-        lora_path=request.lora_path.strip(),
-        loaded_at=loaded_at,
-    )
-    return TextLoadResponse(handle=handle_aa, stats=stats)
-
-
-@app.post("/text/infer", response_model=TextInferResponse)
-async def text_infer(request: TextInferRequest) -> TextInferResponse:
-    """Run generative inference and return the result AA + metrics.
-
-    Consumes two upstream AAs:
-    * ``model_handle`` — from TextModelLoaderNode (carries ``model_id``).
-    * ``prompt``       — from TextPromptNode (carries ``system_prompt`` /
-                         ``user_prompt`` / ``ext:image_prompt``).
-
-    The result AA row (``result:<uuid12>``) carries ``response_text`` plus
-    token-count / latency columns and the forward-compatibility ``ext:``
-    slots that downstream nodes (Flux, AA-context injection) can consume.
-    """
-    model_id = _aa_value_by_col(request.model_handle, "model_id")
-    if not model_id:
-        raise HTTPException(
-            status_code=422,
-            detail="modelHandle AA is missing a 'model_id' column",
-        )
-
-    messages = messages_from_prompt_aa(
-        request.prompt.rows,
-        request.prompt.cols,
-        request.prompt.vals,
-    )
-    if not any(m.get("role") == "user" for m in messages):
-        raise HTTPException(
-            status_code=422,
-            detail="prompt AA must contain a non-empty 'user_prompt' column",
-        )
-
-    p = request.params
-    t_start = time.perf_counter()
-
-    def _run() -> dict:
-        return text_engine.generate(
-            model_id,
-            messages,
-            max_tokens=p.max_tokens,
-            temperature=p.temperature,
-            top_p=p.top_p,
-            repetition_penalty=p.repetition_penalty,
-        )
-
-    result_dict = await run_in_threadpool(_run)
-    elapsed_ms = (time.perf_counter() - t_start) * 1000
-
-    result_aa = AssocArray(
-        rows=result_dict["row"],
-        cols=result_dict["col"],
-        vals=result_dict["val"],
-    )
-
-    input_tokens = int(_aa_value_by_col(result_aa, "input_tokens") or "0")
-    output_tokens = int(_aa_value_by_col(result_aa, "output_tokens") or "0")
-    tps = float(_aa_value_by_col(result_aa, "tokens_per_sec") or "0")
-    stop_reason = _aa_value_by_col(result_aa, "stop_reason") or "eos"
-
-    metrics = TextInferenceMetrics(
-        model_id=model_id,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        tokens_per_sec=round(tps, 2),
-        stop_reason=stop_reason,
-        generation_time_ms=round(elapsed_ms, 2),
-    )
-    return TextInferResponse(result=result_aa, metrics=metrics)
 
 
 @app.post("/segment/point", response_model=SegmentResponse)

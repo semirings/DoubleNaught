@@ -34,7 +34,8 @@ local = [
     "transformers>=4.44",
 ]
 # Real generative text inference via mlx-lm on Apple Silicon. Without it,
-# /text/infer falls back to the deterministic stub. Install with:
+# LlmBetterDocNode's local mode (/llm/enrich-ast) falls back to
+# StubTextEngine's echo-the-prompt behavior. Install with:
 #   pip install -e '.[text]'
 text = [
     "mlx>=0.14",

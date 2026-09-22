@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:double_vision/config/node_registry.dart';
-import 'package:double_vision/models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import 'package:double_vision/models/workflow.dart';
 import 'package:double_vision/pages/workflow_page.dart';
 import 'package:double_vision/services/infobus/input_port.dart';

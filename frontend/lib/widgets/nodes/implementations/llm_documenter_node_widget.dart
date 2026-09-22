@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-import '../../../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import '../../../models/auth_profile.dart';
 import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';

@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../config/env.dart';
-import '../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import '../models/workflow.dart';
 import 'aa_file.dart';
 

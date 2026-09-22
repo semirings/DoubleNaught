@@ -377,15 +377,6 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'function_extraction': // tolerate a snake_case spelling in saved workflows
         // One input: `codebasePath` (AA, idx 0) — supplies the path to parse.
         return const [0];
-      case 'text_model_loader':
-        // One optional input: `trigger` (AA, idx 0).
-        return const [0];
-      case 'text_inference':
-        // Two inputs: `modelHandle` (AA, idx 0), `promptIn` (AA, idx 1).
-        return const [0, 1];
-      case 'text_preview':
-        // One input: `resultIn` (AA, idx 0).
-        return const [0];
       case 'd4m':
         // Dynamic: snap to whichever input indices are actually registered.
         return _aaInputPorts[n.id]?.keys ?? const [0];
@@ -2567,56 +2558,6 @@ class _WorkflowPageState extends State<WorkflowPage>
           imageConnected: _hasIncomingEdgeAt(node.id, 2),
           onImageConnect: (source) => _connectAt(source, node.id, 2),
           imageInput: _inputForAt(node.id, 2),
-        );
-      case 'text_model_loader':
-        return TextModelLoaderNode(
-          node: node,
-          initialParams: _nodeParams[node.id],
-          onParams: (p) => _nodeParams[node.id] = p,
-          // `trigger` AA input (idx 0) — optional; drives reactive re-load.
-          triggerConnected: _hasIncomingEdgeAt(node.id, 0),
-          onTriggerConnect: (source) => _connectAt(source, node.id, 0),
-          onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          // `modelHandle` AA egress on the port bus.
-          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
-          connectedOutputs: _connectedOutputs(node.id),
-        );
-      case 'text_prompt':
-        return TextPromptNode(
-          node: node,
-          initialParams: _nodeParams[node.id],
-          onParams: (p) => _nodeParams[node.id] = p,
-          // `promptOut` AA egress on the port bus.
-          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
-          connectedOutputs: _connectedOutputs(node.id),
-        );
-      case 'text_inference':
-        return TextInferenceNode(
-          node: node,
-          initialParams: _nodeParams[node.id],
-          onParams: (p) => _nodeParams[node.id] = p,
-          // `modelHandle` AA input (idx 0) — from TextModelLoaderNode.
-          modelHandleConnected: _hasIncomingEdgeAt(node.id, 0),
-          onModelHandleConnect: (source) => _connectAt(source, node.id, 0),
-          onModelHandlePort: (port) => _registerAaInput(node.id, 0, port),
-          // `promptIn` AA input (idx 1) — from TextPromptNode.
-          promptConnected: _hasIncomingEdgeAt(node.id, 1),
-          onPromptConnect: (source) => _connectAt(source, node.id, 1),
-          onPromptPort: (port) => _registerAaInput(node.id, 1, port),
-          // `resultOut` AA egress on the port bus.
-          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
-          connectedOutputs: _connectedOutputs(node.id),
-        );
-      case 'text_preview':
-        return TextPreviewNode(
-          node: node,
-          // `resultIn` AA input (idx 0) — from TextInferenceNode.
-          resultConnected: _hasIncomingEdgeAt(node.id, 0),
-          onConnect: (source) => _connectAt(source, node.id, 0),
-          onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          // Route decoded text content to the Focus Panel tab.
-          onContent: _pushFocusContent,
-          onView: _openFocusTab,
         );
       case 'sam3':
         return Sam3Node(

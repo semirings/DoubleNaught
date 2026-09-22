@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import '../../../models/workflow.dart';
 import '../../../services/chunk_api.dart';
 import '../../../services/infobus/input_port.dart';

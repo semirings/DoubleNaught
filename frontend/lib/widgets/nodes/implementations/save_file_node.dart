@@ -7,7 +7,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-import '../../../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/save_file_api.dart';

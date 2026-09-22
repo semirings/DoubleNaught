@@ -10,9 +10,6 @@
 			"path": "../../d4m.Wk/AAschema"
 		},
 		{
-			"path": "../../d4m.Wk/D4M.jl"
-		},
-		{
 			"path": "../../Vignettes/DoubleNaughtExpl"
 		},
 		{
@@ -23,6 +20,15 @@
 		},
 		{
 			"path": "../InsightCircle"
+		},
+		{
+			"path": "../../semita.Wk/InsightCircle"
+		},
+		{
+			"path": "../D4M.jl"
+		},
+		{
+			"path": "../DoubleForgeCommons"
 		}
 	],
 	"settings": {

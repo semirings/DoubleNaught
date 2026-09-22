@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import '../../../models/workflow.dart';
 import '../../../services/category_store.dart';
 import '../../../services/infobus/output_port.dart';

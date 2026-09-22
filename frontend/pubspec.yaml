@@ -10,6 +10,16 @@ dependencies:
   flutter:
     sdk: flutter
 
+  # Paginated AA preview table AND the shared AaPayload data type itself —
+  # see DoubleForgeCommons/aa_preview_table. DN's own AaPayload
+  # (double_vision/models/aa_payload.dart) was retired in favor of this
+  # package's class; DN-specific conventions that don't belong in a shared,
+  # domain-agnostic type (e.g. the 'status' node-status wrapper) live on in
+  # DN's own code as thin functions built on top of it (see
+  # models/aa_status.dart).
+  aa_preview_table:
+    path: ../../DoubleForgeCommons/aa_preview_table
+
   cupertino_icons: ^1.0.8
 
   # Native/web file open dialog; XFile.openRead() gives a byte stream.

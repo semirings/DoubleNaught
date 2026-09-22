@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
-import '../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import '../backend_config.dart';
 
 /// Thin client for the zero-shot **classification runner** on the DoubleTouch

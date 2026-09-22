@@ -1,4 +1,4 @@
-import 'package:double_vision/models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import 'package:double_vision/models/auth_profile.dart';
 import 'package:flutter_test/flutter_test.dart';
 

@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:double_vision/models/auth_profile.dart';
 import 'package:double_vision/models/workflow.dart';
 import 'package:double_vision/services/infobus/output_port.dart';
-import 'package:double_vision/models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import 'package:double_vision/services/vault/encrypted_idb_vault_store.dart';
 import 'package:double_vision/services/vault/key_vault.dart';
 import 'package:double_vision/services/vault/provider_ping.dart';

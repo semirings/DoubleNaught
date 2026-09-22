@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import '../../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 
 /// A robust Output Port wrapper for N&N Canvas Nodes
 class OutputPort {

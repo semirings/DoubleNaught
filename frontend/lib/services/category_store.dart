@@ -1,4 +1,4 @@
-import '../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 import 'aa_file.dart';
 
 /// AA-native access to the **category set** at `storage/categories/categories.json`.

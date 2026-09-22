@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../config/env.dart';
-import '../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 
 /// Shared load/save for an associative array persisted as a single JSON file —
 /// the one implementation behind every AA-at-rest catalog (models, inventory,

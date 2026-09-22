@@ -1,6 +1,7 @@
 import 'dart:async';
 
-import '../../models/aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
+import '../../models/aa_status.dart';
 import '../../services/infobus/input_port.dart';
 import '../../services/infobus/output_port.dart';
 
@@ -46,13 +47,13 @@ class AgentNode {
     final context = contextPort.hasData ? contextPort.pop() : null;
 
     _isExecuting = true;
-    statusPort.emit(AaPayload.status('thinking'));
+    statusPort.emit(aaStatusPayload('thinking'));
     try {
       final result = await callMlxBackend(task, context);
       resultPort.emit(result);
-      statusPort.emit(AaPayload.status('idle'));
+      statusPort.emit(aaStatusPayload('idle'));
     } catch (_) {
-      statusPort.emit(AaPayload.status('error'));
+      statusPort.emit(aaStatusPayload('error'));
     } finally {
       _isExecuting = false;
       // Drain: if another trigger + task queued up while we were busy, run again.
@@ -65,7 +66,7 @@ class AgentNode {
   /// end-to-end. Replace with the real call during integration.
   // TODO: dispatch to the MLX/double_touch backend and return its AA result.
   Future<AaPayload> callMlxBackend(AaPayload task, AaPayload? context) async {
-    return AaPayload.status('result');
+    return aaStatusPayload('result');
   }
 
   /// Cancel listeners and dispose every port. Call when the node is removed

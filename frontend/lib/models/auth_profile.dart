@@ -1,4 +1,4 @@
-import 'aa_payload.dart';
+import 'package:aa_preview_table/aa_preview_table.dart';
 
 /// A credential provider the vault can hold a profile for.
 ///

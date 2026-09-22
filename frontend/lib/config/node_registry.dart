@@ -134,13 +134,6 @@ const List<NodeType> nodeTypes = [
     tags: ['inspect', 'table', 'view', 'debug', 'output'],
   ),
   NodeType(
-    name: 'Text Preview',
-    type: 'text_preview',
-    category: NodeCategory.data,
-    description: 'Read an inference result as prose.',
-    tags: ['inspect', 'view', 'output', 'result'],
-  ),
-  NodeType(
     name: 'Image Display',
     type: 'image_display',
     category: NodeCategory.data,
@@ -201,13 +194,6 @@ const List<NodeType> nodeTypes = [
     category: NodeCategory.ai,
     description: 'Compose a prompt, optionally seeded from a file.',
     tags: ['prompt', 'instruction', 'compose', 'text'],
-  ),
-  NodeType(
-    name: 'Text Prompt',
-    type: 'text_prompt',
-    category: NodeCategory.ai,
-    description: 'Author a prompt for local text inference.',
-    tags: ['prompt', 'instruction', 'text'],
   ),
   NodeType(
     name: 'Model Classifier',
@@ -295,20 +281,6 @@ const List<NodeType> nodeTypes = [
     category: NodeCategory.training,
     description: 'Restore a built model from a checkpoint.',
     tags: ['checkpoint', 'weights', 'restore', 'slm'],
-  ),
-  NodeType(
-    name: 'Text Model Loader',
-    type: 'text_model_loader',
-    category: NodeCategory.training,
-    description: 'Load a local text model for inference.',
-    tags: ['local', 'slm', 'weights', 'runner', 'load'],
-  ),
-  NodeType(
-    name: 'Text Inference',
-    type: 'text_inference',
-    category: NodeCategory.training,
-    description: 'Generate text from a locally loaded model.',
-    tags: ['local', 'slm', 'generate', 'runner', 'inference'],
   ),
 ];
 
