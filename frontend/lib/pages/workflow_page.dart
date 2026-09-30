@@ -385,6 +385,7 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'chunk':
       case 'review':
       case 'aa2jsonl':
+      case 'balloon_scrub':
       case 'image_display':
       case 'inventory':
         return const [0];
@@ -1871,6 +1872,27 @@ class _WorkflowPageState extends State<WorkflowPage>
     });
   }
 
+  /// The New Workflow button: same reset as [_clear] (the toolbar's
+  /// trash-can button already does exactly this — an editor-state reset,
+  /// never a disk delete; [_deleteWorkflow] is the one that touches disk),
+  /// but guarded by a confirm when there's anything on the canvas to lose.
+  /// Reuses the same "has any nodes" proxy [_openWorkflow] already uses for
+  /// its own replace-canvas confirm — this codebase has no dedicated
+  /// unsaved-changes tracker, and node-count is the existing convention for
+  /// "there's something here worth asking about", not a new one.
+  Future<void> _newWorkflow() async {
+    if (_nodes.isNotEmpty) {
+      final ok = await _confirm(
+        title: 'New Workflow',
+        message: 'Discard unsaved changes and start a new workflow?',
+        confirmLabel: 'Discard',
+        destructive: true,
+      );
+      if (!ok) return;
+    }
+    _clear();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1879,6 +1901,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           const _LogoBanner(),
           _Header(
             onAdd: _addNode,
+            onNew: _newWorkflow,
             onCatalogClosed: () => _canvasFocus.requestFocus(),
             onRun: _nodes.isEmpty ? null : _runWorkflow,
             running: _isRunning,
@@ -2411,6 +2434,16 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
+      case 'balloon_scrub':
+        return BalloonScrubNode(
+          node: node,
+          // `image` (AA, idx 0) — the page to scrub.
+          inputConnected: _hasIncomingEdge(node.id),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          onInputConnect: (source) => _connect(source, node.id),
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
       case 'preview':
         return PreviewNode(
           node: node,
@@ -2877,11 +2910,11 @@ class _LogoBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    const white = Colors.white;
+    const aboutColor = Colors.cyan;
     final aboutStyle = OutlinedButton.styleFrom(
-      foregroundColor: white,
-      iconColor: white,
-      side: const BorderSide(color: white, width: 1.5),
+      foregroundColor: aboutColor,
+      iconColor: aboutColor,
+      side: const BorderSide(color: aboutColor, width: 1.5),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
     );
@@ -2917,6 +2950,11 @@ class _LogoBanner extends StatelessWidget {
 class _Header extends StatelessWidget {
   final ValueChanged<NodeType> onAdd;
 
+  /// Start a new, empty, untitled workflow. Always enabled — even an empty
+  /// canvas is a valid target (it just resets immediately, nothing to
+  /// confirm).
+  final VoidCallback onNew;
+
   /// Evaluate the graph on the canvas; null disables it (nothing to run).
   final VoidCallback? onRun;
 
@@ -2942,6 +2980,7 @@ class _Header extends StatelessWidget {
 
   const _Header({
     required this.onAdd,
+    required this.onNew,
     required this.onSave,
     required this.onSaveAs,
     required this.saving,
@@ -2956,6 +2995,7 @@ class _Header extends StatelessWidget {
   });
 
   // Reference style: dark fill, coloured border + content, rounded corners.
+  static const _newColor = Colors.white; // white — starts a new workflow
   static const _runColor = Color(0xFF43A047); // green (Colors.green.shade600)
   static const _saveColor = Color(0xFF5B8DEF); // blue
   static const _deleteColor = Color(0xFFE5534B); // red
@@ -3026,6 +3066,32 @@ class _Header extends StatelessWidget {
           // Workflows — saved graphs to open, delete, or Save As.
           _buildWorkflowsMenu(theme),
           const Spacer(),
+          // New workflow — immediately left of Go, so the destructive Delete
+          // (far right) stays furthest from it.
+          //
+          // Slightly tighter horizontal padding than Go/Save/Delete's own
+          // _outlined() default (14 -> 10) and a 6px gap instead of the
+          // usual 8px, matching _SelectionBar's own compact button
+          // treatment elsewhere in this file: at this toolbar's existing
+          // width budget, the full-size padding overflowed the Row by 5px
+          // (confirmed live, including in the pre-existing
+          // workflow_page_test.dart). Same border/radius/colour/font as
+          // every other button here — only the padding is trimmed, and
+          // only on this one button.
+          Tooltip(
+            message: 'New workflow',
+            child: OutlinedButton.icon(
+              onPressed: onNew,
+              style: _outlined(_newColor).copyWith(
+                padding: const WidgetStatePropertyAll(
+                  EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                ),
+              ),
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('New'),
+            ),
+          ),
+          const SizedBox(width: 6),
           // Primary execution trigger — first in the action bar, before Save.
           OutlinedButton.icon(
             onPressed: running ? null : onRun,

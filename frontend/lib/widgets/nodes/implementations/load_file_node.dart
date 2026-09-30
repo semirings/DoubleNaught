@@ -234,23 +234,43 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   /// path, but only because it is reading its own filesystem — a remote backend
   /// would not see the file, which is why this is hidden on web.
   Future<void> _onBrowseFilePressed() async {
-    final picked = await (widget.pickFile ?? _openNativeDialog)();
-    if (picked == null || !mounted) return;
+    debugPrint('[LoadFileNode] Browse: opening native file dialog…');
+    try {
+      final picked = await (widget.pickFile ?? _openNativeDialog)();
+      debugPrint('[LoadFileNode] Browse: dialog returned '
+          '${picked == null ? 'null (cancelled)' : picked.path}');
+      if (picked == null || !mounted) {
+        debugPrint('[LoadFileNode] Browse: stopping — '
+            '${picked == null ? 'no file picked' : 'widget unmounted'}');
+        return;
+      }
 
-    // Validate here, because the dialog no longer can — see [_openNativeDialog].
-    if (!LoadFileNode.isAllowedPath(picked.path)) {
-      setState(() => _rejectedFile = picked.name);
-      return;
+      // Validate here, because the dialog no longer can — see [_openNativeDialog].
+      if (!LoadFileNode.isAllowedPath(picked.path)) {
+        debugPrint('[LoadFileNode] Browse: rejected, disallowed extension: '
+            '${picked.path}');
+        setState(() => _rejectedFile = picked.name);
+        return;
+      }
+
+      final pathWithUri = IOSupport.pathToFileUri(picked.path);
+      debugPrint('[LoadFileNode] Browse: converted to $pathWithUri');
+
+      setState(() {
+        _urlController.text = pathWithUri;
+        _rejectedFile = null;
+      });
+      debugPrint(
+          '[LoadFileNode] Browse: URL field now "${_urlController.text}"');
+      setIdle();
+      saveParams({'filePath': pathWithUri});
+    } catch (e, st) {
+      // Unlike _onBrowseDirectoryPressed, this path previously had no
+      // try/catch — any exception here (e.g. from the platform channel or
+      // Uri.file()) would be swallowed by the Zone's unhandled-error
+      // handler, producing exactly "dialog opens, pick does nothing".
+      debugPrint('[LoadFileNode] Browse: FAILED with $e\n$st');
     }
-
-    final pathWithUri = IOSupport.pathToFileUri(picked.path);
-
-    setState(() {
-      _urlController.text = pathWithUri;
-      _rejectedFile = null;
-    });
-    setIdle();
-    saveParams({'filePath': pathWithUri});
   }
 
   Future<void> _onBrowseDirectoryPressed() async {

@@ -167,12 +167,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "Clippings/LLaMa.md",
+                "file": "Clippings/sf-display-and-workflow-v3-spec.md",
                 "mode": "source",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "LLaMa"
+              "title": "sf-display-and-workflow-v3-spec"
             }
           }
         ],
@@ -342,8 +342,9 @@
   },
   "active": "0366c6c7ca1ba85d",
   "lastOpenFiles": [
-    "Clippings/Eviction and Unemployment.md",
     "Clippings/LLaMa.md",
+    "Clippings/sf-display-and-workflow-v3-spec.md",
+    "Clippings/Eviction and Unemployment.md",
     "The Gemini-Claude LaMa-MLX opinion.md",
     "Clippings/Leases.md",
     "Clippings/sf-model-v2-design.md",
@@ -370,7 +371,6 @@
     "UX_UI prompt template.md",
     "Node Renaming.md",
     "Clippings/Gemini models.md",
-    "Clippings/Fine Tuning a VLM.md",
     "d4m.ipynb",
     "Pasted image 20260618111442.png",
     "Clippings",

@@ -406,4 +406,73 @@ class SegForgeApi {
       own?.close();
     }
   }
+
+  /// Detect every text region on a comic page and LaMa-scrub them in one pass.
+  ///
+  /// The session SegForge creates for this is deliberately never saved, so the
+  /// returned id is a record of the run rather than something to reload.
+  /// Nothing is captioned: held-and-scrubbed-without-a-caption is the implicit
+  /// discard state a word balloon belongs in.
+  Future<BalloonScrubResult> balloonScrub(
+    Uint8List bytes, {
+    required String filename,
+  }) async {
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/balloon-scrub'),
+      )..files.add(
+          http.MultipartFile.fromBytes('file', bytes, filename: filename));
+
+      final response =
+          await http.Response.fromStream(await transport.send(request));
+      if (response.statusCode != 200) _fail('Balloon scrub', response);
+
+      final j = jsonDecode(response.body) as Map<String, dynamic>;
+      return BalloonScrubResult(
+        sessionId: j['session_id'] as String,
+        imageBytes: base64Decode(j['image_b64'] as String),
+        width: (j['width'] as num).toInt(),
+        height: (j['height'] as num).toInt(),
+        confidenceThreshold: (j['confidence_threshold'] as num).toDouble(),
+        scrubbed: j['scrubbed'] as bool? ?? false,
+        detections: [
+          for (final d in (j['detections'] as List? ?? const []))
+            (d as Map).cast<String, dynamic>(),
+        ],
+      );
+    } finally {
+      own?.close();
+    }
+  }
+}
+
+/// One automatic balloon-scrub run.
+///
+/// [detections] is the whole audit trail — there is no per-detection human
+/// review in this flow, so it is the only record of what was scrubbed and why.
+/// Each entry carries `box` (pixel xyxy), `confidence`, `cls` and `mask_id`.
+class BalloonScrubResult {
+  final String sessionId;
+  final Uint8List imageBytes;
+  final int width;
+  final int height;
+  final double confidenceThreshold;
+
+  /// False when nothing was detected — the image comes back unchanged.
+  final bool scrubbed;
+
+  final List<Map<String, dynamic>> detections;
+
+  const BalloonScrubResult({
+    required this.sessionId,
+    required this.imageBytes,
+    required this.width,
+    required this.height,
+    required this.confidenceThreshold,
+    required this.scrubbed,
+    this.detections = const [],
+  });
 }

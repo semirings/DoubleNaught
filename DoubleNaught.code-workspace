@@ -29,6 +29,12 @@
 		},
 		{
 			"path": "../DoubleForgeCommons"
+		},
+		{
+			"path": "../d4m_juliacall_bridge"
+		},
+		{
+			"path": "../storage"
 		}
 	],
 	"settings": {

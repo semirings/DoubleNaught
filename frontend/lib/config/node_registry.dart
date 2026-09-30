@@ -210,6 +210,23 @@ const List<NodeType> nodeTypes = [
     tags: ['segment', 'vision', 'mask', 'image', 'sam'],
   ),
   NodeType(
+    name: 'Balloon Scrub',
+    type: 'balloon_scrub',
+    category: NodeCategory.ai,
+    description: 'Detect every speech balloon on a comic page and LaMa-scrub '
+        'them in one automatic pass.',
+    tags: [
+      'balloon',
+      'bubble',
+      'comic',
+      'scrub',
+      'inpaint',
+      'lama',
+      'text',
+      'remove',
+    ],
+  ),
+  NodeType(
     name: 'Seg Forge',
     type: 'segForgeNode',
     category: NodeCategory.ai,

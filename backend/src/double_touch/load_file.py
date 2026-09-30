@@ -32,7 +32,13 @@ import pyarrow.parquet as pq
 
 from .io_support import IOSupport
 from .models import AssocArray
-from .save_file import load_parquet_with_auto_detect, _table_to_aa
+from .save_file import (
+    load_parquet_with_auto_detect,
+    _build_assoc_array,
+    _is_null_cell,
+    _table_to_aa,
+    _wide_table_to_aa,
+)
 
 # Directory names skipped outright, on top of every dotted directory (.git, etc.)
 SKIP_DIRS = {"deps", "node_modules", "target", ".git"}
@@ -271,13 +277,20 @@ def _load_image(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Opt
         return None, raw
 
     # AA form: one row with image metadata columns. Preserve binary as base64 in
-    # the AA's vals field (the only way to carry bytes).
-    rows = ["0", "0", "0", "0", "0", "0"]
-    cols = ["bytes", "file_path", "format", "file_size", "width", "height"]
-    vals = [image_b64, str(path), file_ext[1:] if file_ext else "unknown", file_size, width, height]
+    # the AA's vals field (the only way to carry bytes). width/height are the
+    # same "may be absent" shape as any other loader's nullable cell — PIL
+    # missing or unable to introspect the format leaves them None, and
+    # (same bug class as the Parquet branch, same fix) a None must not reach
+    # AssocArray: the column is omitted for this row instead, not sent as
+    # None/""/0.
+    all_cols = ["bytes", "file_path", "format", "file_size", "width", "height"]
+    all_vals = [image_b64, str(path), file_ext[1:] if file_ext else "unknown", file_size, width, height]
+    cols = [c for c, v in zip(all_cols, all_vals) if not _is_null_cell(v)]
+    vals = [v for v in all_vals if not _is_null_cell(v)]
+    rows = ["0"] * len(cols)
 
     return (
-        AssocArray(rows=rows, cols=cols, vals=vals),
+        _build_assoc_array(rows, cols, vals),
         raw,
     )
 
@@ -290,9 +303,16 @@ def _load_parquet(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], O
         try:
             aa = _table_to_aa(table)
         except (KeyError, ValueError):
-            raise ValueError(
-                "force_aa mode: table does not have rowKey/colKey/val columns"
-            )
+            # Not narrow triplet form either — try D4M.jl's wide convention
+            # (any row-key + per-attribute columns, not just `chunkId`;
+            # force_aa is the explicit "I know this is an AA" opt-in, so
+            # it tries harder than auto-detect does).
+            aa = _wide_table_to_aa(table)
+            if aa is None:
+                raise ValueError(
+                    "force_aa mode: table has no rowKey/colKey/val columns, "
+                    "and no column could be pivoted into a wide AA"
+                )
 
     if schema_mode == "raw_table" or aa is None:
         # Return table as dict for JSON serialization.
@@ -313,9 +333,12 @@ def _load_arrow(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Opt
             aa = _table_to_aa(table)
         except (KeyError, ValueError):
             if schema_mode == "force_aa":
-                raise ValueError(
-                    "force_aa mode: table does not have rowKey/colKey/val columns"
-                )
+                aa = _wide_table_to_aa(table)
+                if aa is None:
+                    raise ValueError(
+                        "force_aa mode: table has no rowKey/colKey/val columns, "
+                        "and no column could be pivoted into a wide AA"
+                    )
 
     if schema_mode == "raw_table" or aa is None:
         return aa, table.to_pydict()
@@ -331,11 +354,19 @@ def _load_json(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Opti
     aa = None
     if isinstance(data, dict) and set(data.keys()) >= {"rows", "cols", "vals"}:
         try:
-            aa = AssocArray(
-                rows=data["rows"],
-                cols=data["cols"],
-                vals=data["vals"],
-            )
+            raw_rows, raw_cols, raw_vals = data["rows"], data["cols"], data["vals"]
+            # A null (JSON `null` -> Python None) entry is an absent cell, not
+            # "" / 0 / "null" — dropped here, same as every other
+            # tabular-to-triples branch, rather than rejecting the whole file
+            # the moment any one entry is missing.
+            rows, cols, vals = [], [], []
+            for r, c, v in zip(raw_rows, raw_cols, raw_vals):
+                if _is_null_cell(r) or _is_null_cell(c) or _is_null_cell(v):
+                    continue
+                rows.append(r)
+                cols.append(c)
+                vals.append(v)
+            aa = _build_assoc_array(rows, cols, vals) if vals else None
         except (TypeError, ValueError):
             if schema_mode == "force_aa":
                 raise ValueError("force_aa mode: JSON does not have valid AA structure")

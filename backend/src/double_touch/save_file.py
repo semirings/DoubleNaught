@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 from pathlib import Path
 from typing import Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import d4m_juliacall_bridge as bridge
+from pydantic import ValidationError
+
 from .io_support import IOSupport
 from .models import AssocArray
 
@@ -288,8 +291,11 @@ def load_parquet_with_auto_detect(file_path: str) -> tuple[Optional[AssocArray],
     """Load a Parquet file and auto-detect if it's an AA based on schema metadata.
 
     Checks for `dn_type: associative_array` metadata tag. If present, reconstructs
-    the AssocArray. Otherwise checks for triplet columns (rowKey, colKey, val) and
-    falls back to returning the raw table.
+    the AssocArray. Otherwise checks for triplet columns (rowKey, colKey, val), then
+    for D4M.jl's own wide-form convention (a `chunkId` row-key column, one column
+    per D4M column key — what `saveParquet` writes for any string-valued Assoc,
+    which is every SegForge-authored AA; see D4M.jl's `parquet_io.jl`). Falls back
+    to returning the raw table only when none of these match.
 
     Args:
         file_path: Path to the Parquet file.
@@ -312,12 +318,85 @@ def load_parquet_with_auto_detect(file_path: str) -> tuple[Optional[AssocArray],
         aa = _table_to_aa(table)
         return aa, table
 
+    # D4M.jl's wide-form convention: a `chunkId` row-key column, the rest are
+    # D4M column keys with absent cells stored as Parquet nulls.
+    if "chunkId" in col_names:
+        return _wide_table_to_aa(table, key_col="chunkId"), table
+
     # Not an AA — return raw table.
     return None, table
 
 
+def _is_null_cell(v: object) -> bool:
+    """True for anything that should be treated as an absent AA cell —
+    Parquet/Arrow's null (surfaces as Python `None` via `to_pylist()`), a
+    literal float NaN (some writers use NaN instead of a true Parquet null),
+    and pandas' `pd.NA` if pandas ever enters this path. Deliberately NOT
+    an empty string — CSV's own convention (see `_load_csv`) treats `""` as
+    absent too, but that's that loader's own call to make, not implied here.
+    """
+    if v is None:
+        return True
+    if isinstance(v, float) and math.isnan(v):
+        return True
+    # pd.NA (and similar "is NA" sentinels) support this protocol without
+    # requiring a pandas import here.
+    is_na = getattr(v, "__class__", None) is not None and str(type(v)) == "<class 'pandas._libs.missing.NAType'>"
+    return is_na
+
+
+def _build_assoc_array(rows: list, cols: list, vals: list) -> AssocArray:
+    """Construct an AssocArray, converting any residual pydantic validation
+    failure into a short, readable summary (row/column/reason) instead of
+    the raw multi-paragraph pydantic dump.
+
+    Callers should already have dropped null/NaN cells before this point
+    (see `_is_null_cell`) — this is the safety net for whatever else
+    doesn't fit `str | int | float` (bytes, lists, timestamps, ...), not
+    the primary null-handling mechanism.
+    """
+    try:
+        return AssocArray(rows=rows, cols=cols, vals=vals)
+    except ValidationError as exc:
+        raise ValueError(_summarize_assoc_array_error(exc, rows, cols)) from exc
+
+
+def _summarize_assoc_array_error(exc: ValidationError, rows: list, cols: list) -> str:
+    """Turn a pydantic `ValidationError` on `AssocArray` into a short
+    "row/col/reason" summary. Pydantic emits one error per attempted union
+    member (`vals: list[str | int | float]` tries str, then int, then float
+    for each bad index), so the same index appears up to 3 times — collapsed
+    here to one line per index.
+    """
+    seen: set[int] = set()
+    details = []
+    for err in exc.errors():
+        loc = err.get("loc", ())
+        if len(loc) >= 2 and loc[0] == "vals" and isinstance(loc[1], int):
+            idx = loc[1]
+            if idx in seen:
+                continue
+            seen.add(idx)
+            col = cols[idx] if idx < len(cols) else "?"
+            row = rows[idx] if idx < len(rows) else "?"
+            details.append(f"row={row!r} col={col!r} (vals[{idx}]): {err.get('msg', 'invalid value')}")
+    if not details:
+        return f"Could not build associative array: {len(exc.errors())} validation error(s)"
+    shown = details[:5]
+    msg = "Could not build associative array — invalid value(s): " + "; ".join(shown)
+    if len(details) > len(shown):
+        msg += f" (+{len(details) - len(shown)} more)"
+    return msg
+
+
 def _table_to_aa(table: pa.Table) -> AssocArray:
     """Convert a PyArrow table (triplet form) back to an AssocArray.
+
+    A null/NaN `val` cell is treated as an absent entry — no triple is
+    emitted for it, not `""`/`0`/`"null"` — matching every other
+    tabular-to-triples branch (`_load_csv`, `_load_json`,
+    `_wide_table_to_aa`). A row/col cell being null also drops its triple
+    (a null key makes no sense either).
 
     Args:
         table: PyArrow table with columns rowKey, colKey, val.
@@ -328,11 +407,55 @@ def _table_to_aa(table: pa.Table) -> AssocArray:
     Raises:
         KeyError: If required columns are missing.
     """
-    rows = table.column("rowKey").to_pylist()
-    cols = table.column("colKey").to_pylist()
-    vals = table.column("val").to_pylist()
+    raw_rows = table.column("rowKey").to_pylist()
+    raw_cols = table.column("colKey").to_pylist()
+    raw_vals = table.column("val").to_pylist()
 
-    return AssocArray(rows=rows, cols=cols, vals=vals)
+    rows, cols, vals = [], [], []
+    for r, c, v in zip(raw_rows, raw_cols, raw_vals):
+        if _is_null_cell(r) or _is_null_cell(c) or _is_null_cell(v):
+            continue
+        rows.append(r)
+        cols.append(c)
+        vals.append(v)
+
+    return _build_assoc_array(rows, cols, vals)
+
+
+def _wide_table_to_aa(table: pa.Table, key_col: Optional[str] = None) -> Optional[AssocArray]:
+    """Pivot a wide PyArrow table (one row per entity, one column per
+    attribute) into a sparse AssocArray — the inverse of D4M.jl's
+    `_saveParquetWide` (see `parquet_io.jl`): `key_col` (default: the
+    table's first column when not given) holds the row keys, and every
+    OTHER column becomes a colKey, contributing one triple per non-null
+    cell.
+
+    A null/NaN cell is skipped outright — no triple, not `""`/`0`/`"null"`.
+    A row whose every non-key cell is null therefore contributes no
+    triples at all, not an empty-valued one. Returns None if the whole
+    table produces no triples (nothing to build an AA from).
+    """
+    col_names = table.column_names
+    if not col_names:
+        return None
+    key = key_col if key_col in col_names else col_names[0]
+    row_keys = table.column(key).to_pylist()
+
+    rows, cols, vals = [], [], []
+    for col_name in col_names:
+        if col_name == key:
+            continue
+        col_values = table.column(col_name).to_pylist()
+        for row_key, val in zip(row_keys, col_values):
+            if _is_null_cell(row_key) or _is_null_cell(val):
+                continue
+            rows.append(row_key)
+            cols.append(col_name)
+            vals.append(val)
+
+    if not vals:
+        return None
+    return _build_assoc_array(rows, cols, vals)
 
 
 #: Extensions any of the savers below might append — stripped up front from a
