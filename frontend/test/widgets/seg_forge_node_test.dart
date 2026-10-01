@@ -322,6 +322,7 @@ AaPayload _urlAa(String url) =>
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 void main() {
+  _modeTests();
   group('catalog registration', () {
     test('Seg Forge is registered under AI & Teacher Models', () {
       final entry = nodeTypes.singleWhere((t) => t.type == 'segForgeNode');
@@ -816,6 +817,109 @@ void main() {
         await cropPng(png, const ui.Rect.fromLTRB(100, 100, 110, 110)),
         isNull,
       );
+    });
+  });
+}
+
+// ── v4 §3: mode radios ───────────────────────────────────────────────────────
+//
+// The mode is chosen ON this node, so it does not arrive over the `image` port
+// and is not read back out of an incoming AA (that AA is Load File's OUTPUT —
+// it flows INTO this node, so a column cannot be added to it from here). It
+// goes to the SF subprocess as SEGFORGE_MODE, to /initSession for persistence,
+// and is stamped onto this node's own OUTPUT AAs for lineage.
+
+void _modeTests() {
+  group('mode radios', () {
+    Finder radioFor(String label) => find.ancestor(
+          of: find.text(label),
+          matching: find.byType(RadioListTile<SegForgeMode>),
+        );
+
+    testWidgets('all three modes are shown, Comix selected by default',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      await _pump(tester, api: backend.api, launcher: _launcher().launcher);
+
+      expect(radioFor('Comix'), findsOneWidget);
+      expect(radioFor('Poster'), findsOneWidget);
+      expect(radioFor('Cine'), findsOneWidget);
+      expect(
+        tester.widget<RadioListTile<SegForgeMode>>(radioFor('Comix')).value,
+        SegForgeMode.comix,
+      );
+    });
+
+    testWidgets('Poster and Cine are genuinely non-interactive, not just styled',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      await _pump(tester, api: backend.api, launcher: _launcher().launcher);
+
+      for (final label in ['Poster', 'Cine']) {
+        final tile =
+            tester.widget<RadioListTile<SegForgeMode>>(radioFor(label));
+        expect(tile.enabled, isFalse, reason: '$label must be disabled');
+      }
+      expect(
+        tester.widget<RadioListTile<SegForgeMode>>(radioFor('Comix')).enabled,
+        isTrue,
+      );
+    });
+
+    testWidgets('tapping a disabled mode does not change the selection',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester, api: backend.api, launcher: l.launcher,
+          idGenerator: () => _sessionId);
+
+      await tester.tap(radioFor('Poster'), warnIfMissed: false);
+      await tester.pumpAndSettle();
+
+      // The only proof that matters: what actually gets launched.
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(l.envs.single['SEGFORGE_MODE'], 'comix',
+          reason: 'a disabled radio must not become the launched mode');
+    });
+
+    testWidgets('Comix rides to the subprocess as SEGFORGE_MODE',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester, api: backend.api, launcher: l.launcher,
+          idGenerator: () => _sessionId);
+
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(l.envs.single['SEGFORGE_MODE'], 'comix');
+      // Alongside, not instead of, the existing launch inputs.
+      expect(l.envs.single['SEGFORGE_SESSION_ID'], _sessionId);
+      expect(l.envs.single.containsKey('SEGFORGE_IMAGE_URL'), isTrue);
+    });
+
+    testWidgets('the mode is stamped onto the emitted AAs for lineage',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester, api: backend.api, launcher: l.launcher,
+          idGenerator: () => _sessionId);
+
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(ports.segments, isNotEmpty);
+      expect(ports.segments.last.cols, contains('mode'));
+      expect(ports.segments.last.value('mode'), 'comix');
+      expect(ports.linkage.last.value('mode'), 'comix');
     });
   });
 }

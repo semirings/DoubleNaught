@@ -131,6 +131,22 @@ class _ImageSource {
 ///
 /// With Wait unchecked the node is reactive in the usual way — results landing
 /// after the app closes fire it immediately.
+/// SegForge toolsets (sf-v4-greyscale-layer-design.md §3). Only [comix] is
+/// built; [poster] and [cine] are shown disabled so the direction is visible
+/// without implying they work.
+enum SegForgeMode {
+  comix('Comix', true),
+  poster('Poster', false),
+  cine('Cine', false);
+
+  const SegForgeMode(this.label, this.isImplemented);
+  final String label;
+  final bool isImplemented;
+
+  /// What rides in SEGFORGE_MODE and lands in SegForge's registry.parquet.
+  String get wireValue => name;
+}
+
 class SegForgeNodeWidget extends BaseNodeWidget {
   /// Backend seam; defaults to SegForge's own service on 8401.
   final SegForgeApi? api;
@@ -212,6 +228,12 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   /// Currently selected session ID from the picklist.
   String? _selectedSessionId;
 
+  /// Which toolset to launch SegForge with. Node-local: the mode is chosen
+  /// HERE, so it does not arrive over the `image` port and is not read back
+  /// out of an incoming AA. It is persisted in the node's own params and
+  /// stamped onto the node's OUTPUT AAs for lineage.
+  SegForgeMode _mode = SegForgeMode.comix;
+
   AaPayload? _segmentAa;
   AaPayload? _linkageAa;
   String? _summaryText;
@@ -226,6 +248,11 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   @override
   void initState() {
     super.initState();
+    final savedMode = widget.initialParams?['mode'];
+    _mode = SegForgeMode.values.firstWhere(
+      (m) => m.wireValue == savedMode,
+      orElse: () => SegForgeMode.comix,
+    );
     _api = widget.api ?? const SegForgeApi();
     _launcher = widget.launcher ?? launchSegForgeProcess;
     _cropper = widget.cropper ?? cropPng;
@@ -562,6 +589,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
               ? source.filename
               : description,
           imageUrl: imageUrl,
+          mode: _mode.wireValue,
         );
         if (gen != _execGen || !mounted) return;
       }
@@ -573,6 +601,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
           'SEGFORGE_SESSION_ID': sessionId,
           'SEGFORGE_IMAGE_URL': imageUrl,
           'SEGFORGE_BACKEND_URL': _api.baseUrl,
+          'SEGFORGE_MODE': _mode.wireValue,
         },
       );
       if (gen != _execGen || !mounted) {
@@ -665,8 +694,11 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     final linkageAa = SegForgeMapping.linkage(session, imageId: imageId);
 
     setState(() {
-      _segmentAa = segmentAa;
-      _linkageAa = linkageAa;
+      // Lineage: which toolset produced this. The mode is chosen on this node,
+      // so it rides out on what this node EMITS — it is not, and cannot be, a
+      // column on the image AA arriving at the `image` input port.
+      _segmentAa = _withMode(segmentAa);
+      _linkageAa = _withMode(linkageAa);
       _summaryText = '$count segment${count == 1 ? '' : 's'} · '
           '${session.prompts.length} prompt${session.prompts.length == 1 ? '' : 's'}';
     });
@@ -744,6 +776,61 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
         ),
       ];
 
+  /// Stamps a `mode` cell onto an outgoing AA, under the same row the AA
+  /// already uses, so downstream nodes can see which toolset produced it.
+  AaPayload _withMode(AaPayload aa) {
+    if (aa.rows.isEmpty) return aa;
+    return AaPayload(
+      rows: [...aa.rows, aa.rows.first],
+      cols: [...aa.cols, 'mode'],
+      vals: [...aa.vals, _mode.wireValue],
+    );
+  }
+
+  /// Comix / Poster / Cine. Poster and Cine are rendered disabled with a
+  /// "Coming soon" tooltip rather than omitted — the direction should be
+  /// visible — and genuinely cannot be selected, so neither can silently
+  /// become the launched mode.
+  Widget _buildModeRadios(ThemeData theme, ColorScheme scheme, bool busy) {
+    return RadioGroup<SegForgeMode>(
+      groupValue: _mode,
+      onChanged: (picked) {
+        if (picked == null) return;
+        setState(() => _mode = picked);
+        saveParams({'mode': picked.wireValue});
+      },
+      child: Row(
+      children: [
+        for (final mode in SegForgeMode.values)
+          Expanded(
+            child: Tooltip(
+              message: mode.isImplemented ? mode.label : 'Coming soon',
+              child: RadioListTile<SegForgeMode>(
+                value: mode,
+                // Null enabled is what actually disables it — a tooltip alone
+                // would leave it tappable and silently inert.
+                enabled: !busy && mode.isImplemented,
+                title: Text(
+                  mode.label,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: mode.isImplemented
+                        ? null
+                        : scheme.onSurfaceVariant.withValues(alpha: 0.5),
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                visualDensity: VisualDensity.compact,
+              ),
+            ),
+          ),
+      ],
+      ),
+    );
+  }
+
   @override
   Widget buildNodeBody(BuildContext context) {
     final theme = Theme.of(context);
@@ -755,6 +842,15 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SizedBox(height: BaseNodeState.portLaneClearance(1)),
+        Text(
+          'Mode',
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 4),
+        _buildModeRadios(theme, scheme, busy),
+        const SizedBox(height: 12),
         Text(
           'Session',
           style: theme.textTheme.labelSmall?.copyWith(

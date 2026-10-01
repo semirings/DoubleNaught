@@ -360,6 +360,7 @@ class SegForgeApi {
     required String name,
     required String description,
     required String imageUrl,
+    String mode = '',
   }) async {
     final own = client == null ? http.Client() : null;
     final transport = client ?? own!;
@@ -369,6 +370,10 @@ class SegForgeApi {
         'name': name,
         'description': description,
         'image_url': imageUrl,
+        // Empty on resume: SegForge then keeps the mode already stored for
+        // this session rather than having it overwritten. The backend guards
+        // on this being non-empty before merging it.
+        'mode': mode,
       });
       final response = await transport.post(
         Uri.parse('$baseUrl/initSession'),
