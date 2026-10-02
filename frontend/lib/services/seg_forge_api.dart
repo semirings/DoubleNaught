@@ -323,6 +323,38 @@ class SegForgeApi {
     }
   }
 
+  /// Whether the backend on the port is serving code that no longer exists.
+  ///
+  /// Asks the backend about itself (`/health`'s `stale` flag, computed by
+  /// SegForge's `source_fingerprint` module) rather than guessing from the
+  /// outside: it knows its own source tree and what it actually imported.
+  ///
+  /// A backend whose `/health` carries NO staleness fields at all is reported
+  /// stale too, and that case matters most — it means the process predates
+  /// this mechanism entirely, which is exactly the shape of the incident this
+  /// exists to catch (a Sept-30 backend still serving Oct-2 requests). A
+  /// too-old-to-answer backend is, definitionally, too old.
+  ///
+  /// Unreachable is NOT stale: that is [isListening]'s question, and answering
+  /// "stale" here would make a down backend look like one needing a kill.
+  Future<bool> isStale() async {
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      final response = await transport.get(
+        Uri.parse('\$baseUrl/health'),
+      ).timeout(const Duration(seconds: 2));
+      if (response.statusCode != 200) return false;
+      final j = jsonDecode(response.body) as Map<String, dynamic>;
+      if (!j.containsKey('stale')) return true; // predates the mechanism
+      return j['stale'] == true;
+    } catch (_) {
+      return false;
+    } finally {
+      own?.close();
+    }
+  }
+
   /// Checks whether the SF backend is up **and has its model loaded**.
   ///
   /// `/health` answers 200 from the moment uvicorn is listening, but `/upload`

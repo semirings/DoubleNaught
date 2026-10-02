@@ -46,15 +46,15 @@ since the underlying data it would read already exists.
 known in advance, same Display Layers card mechanism already built
 (independent multi-select, v3's existing pattern extended, not replaced).
 
-| # | Layer | Source | Fixed/dynamic |
-|---|-------|--------|----------------|
-| 0 | Original | True color upload | Fixed forever |
-| 1 | Greyscale | Greyscale(layer 0) | Fixed forever (pass 0) |
-| 2 | WB-scrub result | WB scrub applied to layer 1 | Fixed once WB scrub completes |
-| 3 | S&S working layer | Accumulating S&S rounds, from layer 2 | Updates every S&S round |
-| 4 | Masks — diagonal hatch | Existing Masks layer, unchanged | Tracks layer 3's current masks |
-| 5 | Masks — greyscale fill | Mask geometry, pixels from layer 1 (or layer 3's greyscale basis) | Tracks layer 3's current masks |
-| 6 | Masks — color fill | Mask geometry, pixels from layer 0 | Tracks layer 3's current masks |
+| #   | Layer                  | Source                                                            | Fixed/dynamic                  |
+| --- | ---------------------- | ----------------------------------------------------------------- | ------------------------------ |
+| 0   | Original               | True color upload                                                 | Fixed forever                  |
+| 1   | Greyscale              | Greyscale(layer 0)                                                | Fixed forever (pass 0)         |
+| 2   | WB-scrub result        | WB scrub applied to layer 1                                       | Fixed once WB scrub completes  |
+| 3   | S&S working layer      | Accumulating S&S rounds, from layer 2                             | Updates every S&S round        |
+| 4   | Masks — diagonal hatch | Existing Masks layer, unchanged                                   | Tracks layer 3's current masks |
+| 5   | Masks — greyscale fill | Mask geometry, pixels from layer 1 (or layer 3's greyscale basis) | Tracks layer 3's current masks |
+| 6   | Masks — color fill     | Mask geometry, pixels from layer 0                                | Tracks layer 3's current masks |
 
 "Masks" in layers 4-6 means both segments and cutouts — every
 MaskRecord, regardless of how it was selected (Prompt/Box/Point/Balloon

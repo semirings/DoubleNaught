@@ -485,10 +485,55 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   /// [SegForgeApi.isListening] (so a backend that is merely still loading does
   /// not get a second copy fighting it for the port), while whether to proceed
   /// is decided by [SegForgeApi.healthCheck].
+  /// Kills whatever is actually bound to [port], asking the OS rather than a
+  /// pidfile.
+  ///
+  /// A pidfile records intent and goes stale the moment its process is killed
+  /// hard, crashes, or is orphaned to init when its launching shell dies —
+  /// SegForge lost a day to exactly that. The kernel's view cannot drift.
+  Future<void> _killWhateverHoldsPort(int port) async {
+    final found = await Process.run('lsof', ['-ti:\$port']);
+    final pids = (found.stdout as String)
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty);
+    for (final pid in pids) {
+      await Process.run('kill', [pid]);
+    }
+    // Let the socket actually release before anything tries to rebind it.
+    for (var i = 0; i < 50; i++) {
+      final still = await Process.run('lsof', ['-ti:\$port']);
+      if ((still.stdout as String).trim().isEmpty) return;
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    for (final pid in pids) {
+      await Process.run('kill', ['-9', pid]);
+    }
+  }
+
   Future<void> _ensureBackendHealthy(int gen) async {
-    // Fast path: up and ready.
+    // Staleness first, BEFORE the healthy-so-reuse fast path below. A backend
+    // serving code that no longer exists answers healthCheck() exactly like a
+    // current one, so asking "are you healthy?" first would reuse it forever —
+    // which is precisely how a Sept-30 SegForge kept serving Oct-2 requests
+    // through repeated restart attempts. Killing is unconditional here: there
+    // is no reading of stale code that is worth keeping.
     try {
-      if (await _api.healthCheck()) return;
+      if (await _api.isStale()) {
+        await _killWhateverHoldsPort(8401);
+        if (gen != _execGen || !mounted) return;
+        await Process.start(
+          _sfUvicorn,
+          ['main:app', '--host', '127.0.0.1', '--port', '8401'],
+          workingDirectory: _sfBackendDir,
+          mode: ProcessStartMode.detachedWithStdio,
+        );
+        if (gen != _execGen || !mounted) return;
+        // Fall through to the readiness wait below rather than returning —
+        // the replacement still has a model to load.
+      } else if (await _api.healthCheck()) {
+        return; // Fast path: up, ready, and current.
+      }
     } catch (_) {}
 
     if (gen != _execGen || !mounted) return;

@@ -1,0 +1,50 @@
+{
+  "rows": [
+    "workflow",
+    "workflow",
+    "workflow",
+    "node:2",
+    "node:2",
+    "node:2",
+    "node:1",
+    "node:1",
+    "node:1",
+    "node:1",
+    "edge:0",
+    "edge:0",
+    "edge:0",
+    "edge:0"
+  ],
+  "cols": [
+    "id",
+    "name",
+    "version",
+    "type",
+    "x",
+    "y",
+    "type",
+    "x",
+    "y",
+    "param:filePath",
+    "fromNode",
+    "fromIdx",
+    "toNode",
+    "toIdx"
+  ],
+  "vals": [
+    "mccay",
+    "McCay",
+    "0.1.0",
+    "segForgeNode",
+    720.62890625,
+    279.50390625,
+    "load_file",
+    346.86328125,
+    391.10546875,
+    "file:///Users/gcr/populi.Wk/little-nemo/images/pages/little-nemo_0000.png",
+    1,
+    0,
+    2,
+    0
+  ]
+}
