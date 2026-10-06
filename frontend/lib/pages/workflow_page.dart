@@ -2509,6 +2509,17 @@ class _WorkflowPageState extends State<WorkflowPage>
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `segmentPromptInput` (AA, idx 1) and `panelPromptInput` (AA, idx
+          // 2) — optional prompt templates from Prompt nodes. Both register
+          // through their own callbacks because the canonical single-slot
+          // onInputPort above belongs to `image`.
+          onSegmentPromptInputPort: (port) =>
+              _registerAaInput(node.id, 1, port),
+          segmentPromptConnected: _hasIncomingEdgeAt(node.id, 1),
+          onSegmentPromptConnect: (source) => _connectAt(source, node.id, 1),
+          onPanelPromptInputPort: (port) => _registerAaInput(node.id, 2, port),
+          panelPromptConnected: _hasIncomingEdgeAt(node.id, 2),
+          onPanelPromptConnect: (source) => _connectAt(source, node.id, 2),
           // `segment` (idx 0) and `linkage` (idx 1). segment is also registered
           // flat, as the headline output the Focus Panel re-emits on.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,

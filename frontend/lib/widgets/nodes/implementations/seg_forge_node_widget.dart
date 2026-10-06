@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:aa_preview_table/aa_preview_table.dart';
+import '../../../models/workflow.dart';
 import '../../../services/image_crop.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
@@ -15,6 +16,7 @@ import '../../../services/seg_forge_api.dart';
 import '../../../services/seg_forge_mapping.dart';
 import '../base/base_node_widget.dart';
 import '../base/execute_button.dart';
+import '../base/input_connector.dart';
 import '../base/wait_checkbox.dart';
 import '../base/wait_gated_execution.dart';
 
@@ -168,6 +170,31 @@ class SegForgeNodeWidget extends BaseNodeWidget {
   /// Registers an output port by index (0 = `segment`, 1 = `linkage`).
   final void Function(int idx, OutputPort port)? onIndexedOutputPort;
 
+  /// Registers the optional `segmentPromptInput` port (idx 1).
+  ///
+  /// A dedicated callback rather than the canonical single-slot
+  /// [onInputPort], which `image` already owns — same convention as LLM
+  /// Documenter's `promptInput` (which itself cites ModelClassifierNode's
+  /// `categoryIn`).
+  final void Function(InputPort port)? onSegmentPromptInputPort;
+
+  /// Whether `segmentPromptInput` has an incoming edge.
+  final bool segmentPromptConnected;
+
+  /// Drag-to-connect target for `segmentPromptInput`.
+  final void Function(PortRef source)? onSegmentPromptConnect;
+
+  /// Registers the optional `panelPromptInput` port (idx 2). Same dedicated
+  /// callback convention as [onSegmentPromptInputPort] above, so the two
+  /// prompt ports read symmetrically.
+  final void Function(InputPort port)? onPanelPromptInputPort;
+
+  /// Whether `panelPromptInput` has an incoming edge.
+  final bool panelPromptConnected;
+
+  /// Drag-to-connect target for `panelPromptInput`.
+  final void Function(PortRef source)? onPanelPromptConnect;
+
   /// Session-id seam; defaults to a real UUIDv4. Injectable so tests can
   /// exercise the "+ New Session" flow with a predictable id instead of a
   /// fresh random one every run.
@@ -188,6 +215,12 @@ class SegForgeNodeWidget extends BaseNodeWidget {
     this.appPathOverride,
     this.cropper,
     this.onIndexedOutputPort,
+    this.onSegmentPromptInputPort,
+    this.segmentPromptConnected = false,
+    this.onSegmentPromptConnect,
+    this.onPanelPromptInputPort,
+    this.panelPromptConnected = false,
+    this.onPanelPromptConnect,
     this.idGenerator,
   });
 
@@ -215,6 +248,25 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   late final Future<Uint8List?> Function(Uint8List, ui.Rect) _cropper;
 
   late final InputPort _imageIn;
+  late final InputPort _segmentPromptIn;
+  late final InputPort _panelPromptIn;
+
+  /// The per-segment prompt template from a Prompt node on
+  /// `segmentPromptInput`, or '' when nothing is connected. Sent to SegForge
+  /// once, in /initSession, and ONLY when a new session is being created —
+  /// see `_execute`.
+  String _segmentPromptTemplate = '';
+
+  /// The per-panel prompt template from a Prompt node on `panelPromptInput`,
+  /// or '' when nothing is connected.
+  ///
+  /// Captured symmetrically with [_segmentPromptTemplate], but it has no
+  /// delivery channel to SegForge yet: `/initSession` carries exactly one
+  /// `prompt_template` field (the segment one), and adding a second would be
+  /// a SegForge schema/registry/persistence change this port-layer task does
+  /// not cover. So connecting this port is currently observable on the canvas
+  /// (lit connector, value held) but does not change what SegForge receives.
+  String _panelPromptTemplate = '';
   final OutputPort _segmentOut = OutputPort('segment');
   final OutputPort _linkageOut = OutputPort('linkage');
 
@@ -263,6 +315,21 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     initInputPort(_imageIn, _onImage);
     _imageIn.onDisconnected.listen((_) => _dropImage());
 
+    // Both prompt ports are optional, and the node works unchanged when
+    // neither is connected: the templates simply stay ''. Each registers
+    // through its own callback because initInputPort's single
+    // widget.onInputPort slot belongs to `image` — same convention as LLM
+    // Documenter's authInput/promptInput pair.
+    _segmentPromptIn = InputPort('segmentPromptInput');
+    widget.onSegmentPromptInputPort?.call(_segmentPromptIn);
+    _segmentPromptIn.onDataArrived.listen(_onSegmentPromptData);
+    _segmentPromptIn.onDisconnected.listen((_) => _dropSegmentPromptTemplate());
+
+    _panelPromptIn = InputPort('panelPromptInput');
+    widget.onPanelPromptInputPort?.call(_panelPromptIn);
+    _panelPromptIn.onDataArrived.listen(_onPanelPromptData);
+    _panelPromptIn.onDisconnected.listen((_) => _dropPanelPromptTemplate());
+
     initOutputPort(_segmentOut);
     widget.onIndexedOutputPort?.call(0, _segmentOut);
     widget.onIndexedOutputPort?.call(1, _linkageOut);
@@ -274,12 +341,40 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   @override
   void dispose() {
     _imageIn.dispose();
+    _segmentPromptIn.dispose();
+    _panelPromptIn.dispose();
     _segmentOut.dispose();
     _linkageOut.dispose();
     super.dispose();
   }
 
   // ── Ingress ───────────────────────────────────────────────────────────────
+
+  /// The Prompt node publishes rows `prompt:<nodeId>` with cols
+  /// ['prompt', 'char_count']; the template is the `prompt` column's value.
+  /// `char_count` is metadata and is deliberately ignored.
+  ///
+  /// Both prompt ports read the same shape, so a Prompt node can feed either
+  /// one — which port it lands on is what gives the template its meaning.
+  void _onSegmentPromptData(AaPayload aa) {
+    if (!mounted) return;
+    setState(() => _segmentPromptTemplate = aa.value('prompt') ?? '');
+  }
+
+  void _dropSegmentPromptTemplate() {
+    if (!mounted || _segmentPromptTemplate.isEmpty) return;
+    setState(() => _segmentPromptTemplate = '');
+  }
+
+  void _onPanelPromptData(AaPayload aa) {
+    if (!mounted) return;
+    setState(() => _panelPromptTemplate = aa.value('prompt') ?? '');
+  }
+
+  void _dropPanelPromptTemplate() {
+    if (!mounted || _panelPromptTemplate.isEmpty) return;
+    setState(() => _panelPromptTemplate = '');
+  }
 
   Future<void> _onImage(AaPayload aa) async {
     final source = await _resolveFromAa(aa);
@@ -635,6 +730,15 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
               : description,
           imageUrl: imageUrl,
           mode: _mode.wireValue,
+          // Only ever sent here, inside the isNewSession branch — SegForge
+          // persists it in its own registry and reads it back itself on
+          // every later launch. A consequence worth stating: editing the
+          // connected Prompt node afterwards does NOT reach an existing
+          // session, because /initSession is never called again for one.
+          //
+          // `_panelPromptTemplate` has no counterpart here on purpose: see
+          // its declaration.
+          promptTemplate: _segmentPromptTemplate,
         );
         if (gen != _execGen || !mounted) return;
       }
@@ -805,6 +909,18 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   @override
   List<Widget> buildInputConnectors(BuildContext context) => [
         singleInputConnector(label: 'image'),
+        InputConnector(
+          label: 'segment prompt',
+          idx: 1,
+          active: widget.segmentPromptConnected,
+          onConnect: widget.onSegmentPromptConnect,
+        ),
+        InputConnector(
+          label: 'panel prompt',
+          idx: 2,
+          active: widget.panelPromptConnected,
+          onConnect: widget.onPanelPromptConnect,
+        ),
       ];
 
   @override
@@ -886,7 +1002,11 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SizedBox(height: BaseNodeState.portLaneClearance(1)),
+        // Three left-edge input ports now (image, segment prompt, panel
+        // prompt). This still said 1 while the node already had two ports,
+        // so the second one overlapped the body; 3 matches the connector
+        // list above, as LLM Documenter does for its own three.
+        SizedBox(height: BaseNodeState.portLaneClearance(3)),
         Text(
           'Mode',
           style: theme.textTheme.labelSmall?.copyWith(

@@ -89,7 +89,7 @@ Future<Uint8List> _realPng(int w, int h) async {
 }
 
 /// A stand-in SegForge backend. Records every path it was asked for.
-({SegForgeApi api, List<String> calls}) _api({
+({SegForgeApi api, List<String> calls, List<Map<String, dynamic>> initBodies}) _api({
   Map<String, dynamic>? session,
   Uint8List? imageBytes,
   int segmentCount = 1,
@@ -101,6 +101,9 @@ Future<Uint8List> _realPng(int w, int h) async {
   bool hasSavedSessions = true,
 }) {
   final calls = <String>[];
+  // Decoded /initSession bodies, so a test can assert on exactly what DN
+  // sent (prompt_template included) rather than on a side effect of it.
+  final initBodies = <Map<String, dynamic>>[];
   final api = SegForgeApi(
     baseUrl: 'http://sf.test',
     client: MockClient((request) async {
@@ -166,6 +169,7 @@ Future<Uint8List> _realPng(int w, int h) async {
             headers: {'content-type': 'application/json'});
       }
       if (path == '/initSession') {
+        initBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
         return http.Response(jsonEncode({'session_id': _sessionId}), 200,
             headers: {'content-type': 'application/json'});
       }
@@ -192,7 +196,7 @@ Future<Uint8List> _realPng(int w, int h) async {
       return http.Response('{"detail":"unexpected $path"}', 500);
     }),
   );
-  return (api: api, calls: calls);
+  return (api: api, calls: calls, initBodies: initBodies);
 }
 
 /// A launcher that never spawns anything; the test decides when it "exits".
@@ -246,8 +250,13 @@ Future<SegForgeProcess> _neverLaunches({
   required Map<String, String> environment,
 }) => Completer<SegForgeProcess>().future;
 
-Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
-    _pump(
+Future<({
+  InputPort image,
+  InputPort segmentPrompt,
+  InputPort panelPrompt,
+  List<AaPayload> segments,
+  List<AaPayload> linkage
+})> _pump(
   WidgetTester tester, {
   required SegForgeApi api,
   required SegForgeLauncher launcher,
@@ -256,6 +265,8 @@ Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
   String Function()? idGenerator,
 }) async {
   InputPort? imagePort;
+  InputPort? segmentPromptPort;
+  InputPort? panelPromptPort;
   final segments = <AaPayload>[];
   final linkage = <AaPayload>[];
 
@@ -271,6 +282,8 @@ Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
             cropper: (cropper ?? _FakeCropper()).call,
             idGenerator: idGenerator,
             onInputPort: (p) => imagePort = p,
+            onSegmentPromptInputPort: (p) => segmentPromptPort = p,
+            onPanelPromptInputPort: (p) => panelPromptPort = p,
             onIndexedOutputPort: (idx, port) => port.connect(
               idx == 0 ? segments.add : linkage.add,
               emitCurrentState: false,
@@ -283,6 +296,8 @@ Future<({InputPort image, List<AaPayload> segments, List<AaPayload> linkage})>
   await tester.pumpAndSettle();
   return (
     image: imagePort!,
+    segmentPrompt: segmentPromptPort!,
+    panelPrompt: panelPromptPort!,
     segments: segments,
     linkage: linkage,
   );
@@ -321,8 +336,240 @@ AaPayload _urlAa(String url) =>
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+
+// ── Prompt templating v1 ─────────────────────────────────────────────────────
+//
+// Two optional ports carry templates from Prompt nodes:
+// `segmentPromptInput` (idx 1) and `panelPromptInput` (idx 2).
+//
+// `segmentPromptInput` is sent to SegForge ONCE, in /initSession, and only
+// when a NEW session is being created — SF persists it in its own registry and
+// reads it back itself after that.
+//
+// `panelPromptInput` is captured but has no delivery channel yet
+// (/initSession carries exactly one `prompt_template`). The tests below pin
+// that asymmetry deliberately, so that when a panel channel is added it is a
+// visible test change rather than a silent one.
+//
+// Both ports are optional in the strict sense: with nothing connected the node
+// must behave exactly as it did before they existed.
+
+void _promptTemplateTests() {
+  group('prompt input ports', () {
+    /// The Prompt node's own AA shape: rows `prompt:<id>`, cols
+    /// ['prompt', 'char_count'] (prompt_node_widget.dart's `_emit`).
+    AaPayload _promptAa(String text) => AaPayload(
+          rows: ['prompt:7', 'prompt:7'],
+          cols: const ['prompt', 'char_count'],
+          vals: [text, text.length],
+        );
+
+    testWidgets('unconnected: the node works unchanged and sends no template',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      // It still launches and still inits — the regression that matters.
+      expect(l.envs, hasLength(1));
+      expect(backend.initBodies, hasLength(1));
+      expect(backend.initBodies.single['prompt_template'], '',
+          reason: 'nothing connected means no template, not a missing key');
+    });
+
+    testWidgets('connected: the template lands in the /initSession body',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      await _send(tester, ports.segmentPrompt, _promptAa('describe {{text_tag}}'));
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(backend.initBodies.single['prompt_template'],
+          'describe {{text_tag}}');
+    });
+
+    testWidgets('the template rides /initSession only, never the environment',
+        (tester) async {
+      // Scope limit: no env var. Multi-line text in an env var is fragile,
+      // and the env path would re-send a possibly different value on resume.
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      await _send(tester, ports.segmentPrompt, _promptAa('a template'));
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      final env = l.envs.single;
+      expect(env.values, isNot(contains('a template')));
+      expect(env.keys.where((k) => k.toLowerCase().contains('prompt')), isEmpty);
+      expect(env.keys.where((k) => k.toLowerCase().contains('template')), isEmpty);
+    });
+
+    testWidgets('disconnecting clears it, so nothing stale is sent',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      final upstream = OutputPort('upstream')..emit(_promptAa('will be dropped'));
+      ports.segmentPrompt.connect(upstream);
+      await tester.pumpAndSettle();
+      ports.segmentPrompt.disconnect();
+      await tester.pumpAndSettle();
+
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(backend.initBodies.single['prompt_template'], '');
+    });
+
+    testWidgets('on RESUME nothing is sent: /initSession is not called at all',
+        (tester) async {
+      // hasSavedSessions: true selects a session SF already has, so Open
+      // Forge takes the !isNewSession branch. The stated consequence: a later
+      // edit to the Prompt node cannot reach an existing session.
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: true);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      await _send(tester, ports.segmentPrompt, _promptAa('edited after creation'));
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(l.envs, hasLength(1), reason: 'it still launches');
+      expect(backend.initBodies, isEmpty,
+          reason: '/initSession is gated on isNewSession, so a resumed '
+              'session keeps whatever template it was created with');
+    });
+
+    testWidgets('only the prompt column is read; char_count is ignored',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      await _send(tester, ports.segmentPrompt, _promptAa('just the prompt'));
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      expect(backend.initBodies.single['prompt_template'], 'just the prompt');
+    });
+
+    // ── panelPromptInput (idx 2) ─────────────────────────────────────────
+
+    testWidgets('both prompt ports are exposed and are distinct objects',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      // The rename is only meaningful if the two really are separate ports —
+      // a copy/paste that registered one port twice would still satisfy a
+      // "both callbacks fired" check.
+      expect(ports.segmentPrompt, isNot(same(ports.panelPrompt)));
+      expect(ports.segmentPrompt.id, 'segmentPromptInput');
+      expect(ports.panelPrompt.id, 'panelPromptInput');
+    });
+
+    testWidgets('the panel prompt does not leak into prompt_template',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      await _send(tester, ports.panelPrompt, _promptAa('describe this panel'));
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      // prompt_template is the SEGMENT channel. A panel template arriving on
+      // its own port must not be mistaken for it — that would silently change
+      // what every mask's caption is drafted from.
+      expect(backend.initBodies.single['prompt_template'], '');
+      // And it does not reach SegForge by some other key either.
+      expect(
+        backend.initBodies.single.entries
+            .where((e) => e.value == 'describe this panel'),
+        isEmpty,
+      );
+    });
+
+    testWidgets('the two prompt ports are independent', (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      await _send(tester, ports.segmentPrompt, _promptAa('segment template'));
+      await _send(tester, ports.panelPrompt, _promptAa('panel template'));
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      // Both connected: the segment one still wins its own field, unaffected
+      // by the panel one being present.
+      expect(backend.initBodies.single['prompt_template'], 'segment template');
+    });
+
+    testWidgets('a panel-prompt disconnect does not disturb the segment one',
+        (tester) async {
+      final backend = _api(imageBytes: _bytes, hasSavedSessions: false);
+      final l = _launcher();
+      final ports = await _pump(tester,
+          api: backend.api, launcher: l.launcher, idGenerator: () => _sessionId);
+
+      await _send(tester, ports.segmentPrompt, _promptAa('kept'));
+
+      final upstream = OutputPort('panel-upstream')
+        ..emit(_promptAa('dropped'));
+      ports.panelPrompt.connect(upstream);
+      await tester.pumpAndSettle();
+      ports.panelPrompt.disconnect();
+      await tester.pumpAndSettle();
+
+      await _createSession(tester);
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+
+      // Each port clears only its own template — the shared-field mistake
+      // this pins would have blanked the segment template here.
+      expect(backend.initBodies.single['prompt_template'], 'kept');
+    });
+  });
+}
+
 void main() {
   _modeTests();
+  _promptTemplateTests();
   group('catalog registration', () {
     test('Seg Forge is registered under AI & Teacher Models', () {
       final entry = nodeTypes.singleWhere((t) => t.type == 'segForgeNode');

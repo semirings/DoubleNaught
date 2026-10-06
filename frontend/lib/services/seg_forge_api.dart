@@ -393,6 +393,7 @@ class SegForgeApi {
     required String description,
     required String imageUrl,
     String mode = '',
+    String promptTemplate = '',
   }) async {
     final own = client == null ? http.Client() : null;
     final transport = client ?? own!;
@@ -406,6 +407,11 @@ class SegForgeApi {
         // this session rather than having it overwritten. The backend guards
         // on this being non-empty before merging it.
         'mode': mode,
+        // The per-mask prompt template (v4 §4 / templating v1). Same
+        // empty-means-leave-alone contract as `mode`: SegForge guards on this
+        // being non-empty before merging, so an empty value can never clobber
+        // a template already stored for this session.
+        'prompt_template': promptTemplate,
       });
       final response = await transport.post(
         Uri.parse('$baseUrl/initSession'),
