@@ -7,6 +7,7 @@ import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../focus_panel.dart' show FocusContent;
+import '../../markdown_edit_field.dart';
 import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
@@ -288,18 +289,9 @@ class _PromptNodeWidgetState extends BaseNodeState<PromptNodeWidget> {
           ],
         ),
         const SizedBox(height: 4),
-        TextField(
+        MarkdownEditField(
           controller: _prompt,
-          minLines: 4,
-          maxLines: 8,
-          keyboardType: TextInputType.multiline,
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-          decoration: const InputDecoration(
-            hintText: 'Compose a prompt…',
-            isDense: true,
-            border: OutlineInputBorder(),
-            contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-          ),
+          hintText: 'Compose a prompt…',
         ),
       ],
     );
