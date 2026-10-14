@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -9,7 +7,6 @@ import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/remote/model_catalog.dart';
-import '../../../services/remote/remote_request.dart';
 import '../../../services/vault/key_vault.dart';
 import '../base/base_node_widget.dart';
 import '../base/execute_button.dart';
@@ -17,6 +14,9 @@ import '../base/input_connector.dart';
 import '../base/wait_checkbox.dart';
 import '../base/wait_gated_execution.dart';
 import '../../../backend_config.dart';
+import 'llm/caption_task.dart';
+import 'llm/code_doc_task.dart';
+import 'llm/llm_task.dart';
 
 /// Which model generates each docstring. [local] needs no credential;
 /// [gemini] is remote and needs a matching Secure Settings credential on
@@ -73,6 +73,17 @@ class LLMDocumenterNodeWidget extends BaseNodeWidget {
   /// Registers the `promptInput` port.
   final void Function(InputPort port)? onPromptInputPort;
 
+  /// Called when an edge is dropped on `panelPromptInput` (idx 3). Only the
+  /// caption task reads it; appended after the original three so existing
+  /// wires, which are stored by index, survive.
+  final void Function(PortRef source)? onPanelPromptConnect;
+
+  /// Registers the `panelPromptInput` port.
+  final void Function(InputPort port)? onPanelPromptInputPort;
+
+  /// Whether `panelPromptInput` has an incoming edge.
+  final bool panelPromptConnected;
+
   /// Whether `authInput` has an incoming edge.
   final bool authConnected;
 
@@ -101,6 +112,9 @@ class LLMDocumenterNodeWidget extends BaseNodeWidget {
     this.onPromptConnect,
     this.onAuthInputPort,
     this.onPromptInputPort,
+    this.onPanelPromptConnect,
+    this.onPanelPromptInputPort,
+    this.panelPromptConnected = false,
     this.authConnected = false,
     this.promptConnected = false,
     this.vault,
@@ -117,12 +131,16 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
   @override String   get nodeTitle    => 'LLM Documenter';
   @override IconData get nodeIcon     => Icons.cloud_sync_outlined;
   @override double   get nodeWidth    => 320;
-  @override String   get workingLabel => 'enriching';
+  @override String   get workingLabel =>
+      _total > 0 ? 'enriching $_done/$_total' : 'enriching';
+
+  int _done = 0;
+  int _total = 0;
 
   /// The only model the local path ever loads — see `llm_better_doc.py`'s
   /// own default. Not user-editable; used whenever no remote credential is
   /// connected.
-  static const _localModelId = 'mlx-community/Phi-4-mini-instruct-4bit';
+  static const _localModelId = CodeDocTask.localModelId;
 
   late final KeyVault _vault;
   late final ModelCatalog _modelCatalog;
@@ -130,6 +148,7 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
   late final InputPort _in;
   late final InputPort _authIn;
   late final InputPort _promptIn;
+  late final InputPort _panelPromptIn;
   final OutputPort _out = OutputPort('documented');
 
   late final TextEditingController _maxTokens;
@@ -139,6 +158,7 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
   AaPayload? _incoming;
   AuthProfile? _authProfile;
   String? _promptHint;
+  String? _panelPromptHint;
 
   /// Defaults to [_ModelChoice.gemini] — this node's primary purpose is now
   /// remote-provider documentation generation; the local SLM remains a
@@ -179,8 +199,28 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
   /// choice with a matching credential connected.
   bool get _hasCredentialForChoice => !_isRemoteChoice || _matchingCredential;
 
+  /// What the incoming data is, decided by the data alone — the user picks
+  /// nothing. Null when nothing is connected or no task recognises it (which
+  /// disables Execute: no guessing).
+  LLMTask? get _task {
+    final aa = _incoming;
+    if (aa == null) return null;
+    for (final t in _tasks) {
+      if (t.accepts(aa)) return t;
+    }
+    return null;
+  }
+
+  /// A local model is only a valid choice for a task that can run on one.
+  bool get _choiceSuitsTask =>
+      _isRemoteChoice || (_task?.supportsLocal ?? false);
+
   @override
-  bool get isReady => _incoming != null && _hasCredentialForChoice;
+  bool get isReady =>
+      _incoming != null &&
+      _task != null &&
+      _choiceSuitsTask &&
+      _hasCredentialForChoice;
 
   @override
   void initState() {
@@ -211,6 +251,11 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
     _promptIn.onDataArrived.listen(_onPromptData);
     _promptIn.onDisconnected.listen((_) => _dropPrompt());
 
+    _panelPromptIn = InputPort('panelPromptInput');
+    widget.onPanelPromptInputPort?.call(_panelPromptIn);
+    _panelPromptIn.onDataArrived.listen(_onPanelPromptData);
+    _panelPromptIn.onDisconnected.listen((_) => _dropPanelPrompt());
+
     initOutputPort(_out);
 
     _maxTokens = TextEditingController(
@@ -232,6 +277,7 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
     _in.dispose();
     _authIn.dispose();
     _promptIn.dispose();
+    _panelPromptIn.dispose();
     _out.dispose();
     _execClient?.close();
     super.dispose();
@@ -309,6 +355,24 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
     maybeAutoFire();
   }
 
+  void _dropPanelPrompt() {
+    if (!mounted || _panelPromptHint == null) return;
+    setState(() {
+      _panelPromptHint = null;
+      _result = null;
+    });
+    maybeAutoFire();
+  }
+
+  void _onPanelPromptData(AaPayload payload) {
+    if (!mounted) return;
+    setState(() {
+      _panelPromptHint = payload.value('prompt');
+      _result = null;
+    });
+    maybeAutoFire();
+  }
+
   void _onPromptData(AaPayload payload) {
     if (!mounted) return;
     setState(() {
@@ -324,25 +388,62 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
   @override
   void fire() => _enrich();
 
+  /// The single task this node performs today. Task selection by data
+  /// (`accepts`) is added with the second task; one entry keeps behaviour
+  /// identical to before the refactor.
+  static const List<LLMTask> _tasks = [CodeDocTask(), CaptionTask()];
+
   Future<void> _enrich() async {
     final payload = _incoming;
     if (payload == null || !isReady || status == NodeStatus.working) return;
     final gen = ++_execGen;
+    _done = 0;
+    _total = 0;
     setWorking();
 
     final client = widget.clientFactory();
     _execClient = client;
 
     try {
-      if (_isRemoteChoice) {
-        // isReady already required a matching credential, so this is
-        // non-null — the explicit dropdown choice decides the dispatch
-        // path, not merely "is some credential connected" (a mismatched
-        // provider must not silently dispatch elsewhere).
-        await _enrichRemote(payload, _authProfile!, client, gen);
-      } else {
-        await _enrichLocal(payload, client, gen);
-      }
+      final task = _task!;
+      final profile = _authProfile;
+      final ctx = LLMRunContext(
+        client: client,
+        endpoint: _endpoint,
+        maxTokens: int.tryParse(_maxTokens.text.trim()),
+        temperature: double.tryParse(_temperature.text.trim()),
+        model: _remoteModel.text.trim(),
+        profile: profile,
+        apiKey: () => profile == null
+            ? Future<String?>.value(null)
+            : _vault.secretFor(profile),
+        promptHint: _promptHint,
+        panelPromptHint: _panelPromptHint,
+        isCancelled: () => gen != _execGen || !mounted,
+        onProgress: (done, total) {
+          if (gen != _execGen || !mounted) return;
+          setState(() {
+            _done = done;
+            _total = total;
+          });
+        },
+      );
+      // isReady already required a matching credential for the remote
+      // choice — the explicit dropdown choice decides the path, not merely
+      // "is some credential connected".
+      final result = _isRemoteChoice
+          ? await task.runRemote(ctx, payload)
+          : await task.runLocal(ctx, payload);
+      if (result == null || gen != _execGen || !mounted) return;
+      _finish(
+        result.aa,
+        rowsProcessed: result.rowsProcessed,
+        failed: result.failed,
+        noun: task.doneNoun,
+      );
+    } on LLMTaskError catch (e) {
+      if (gen != _execGen || !mounted) return;
+      setError(e.message);
     } catch (e) {
       if (gen != _execGen || !mounted) return;
       setError(e);
@@ -352,153 +453,18 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
     }
   }
 
-  // ── Local path (unchanged shape: one backend call) ──────────────────────
-
-  Future<void> _enrichLocal(
-    AaPayload payload,
-    http.Client client,
-    int gen,
-  ) async {
-    // Unparseable text falls back to the field's own default rather than
-    // blocking the run — same convention as Polyglot Exec's Timeout field.
-    final maxTokens = int.tryParse(_maxTokens.text.trim()) ?? 256;
-    final temperature = double.tryParse(_temperature.text.trim()) ?? 0.7;
-
-    final request = http.Request('POST', _endpoint('/llm/enrich-ast'))
-      ..headers['Content-Type'] = 'application/json'
-      ..body = jsonEncode({
-        'astIndex': {'rows': payload.rows, 'cols': payload.cols, 'vals': payload.vals},
-        'modelId': _localModelId,
-        'maxTokens': maxTokens,
-        'temperature': temperature,
-        'promptHint': _promptHint ?? '',
-      });
-
-    final response = await client.send(request);
-    final body = await response.stream.bytesToString();
-    if (gen != _execGen || !mounted) return;
-
-    if (response.statusCode != 200) {
-      setError(jsonDecode(body)['detail'] ?? 'HTTP ${response.statusCode}');
-      return;
-    }
-
-    final result = jsonDecode(body);
-    _finish(
-      AaPayload(
-        rows: List<String>.from(result['enrichedIndex']['rows'] ?? []),
-        cols: List<String>.from(result['enrichedIndex']['cols'] ?? []),
-        vals: List.from(result['enrichedIndex']['vals'] ?? []),
-      ),
-      rowsProcessed: (result['rowsProcessed'] ?? 0) as int,
-      failed: 0,
-    );
-  }
-
-  // ── Remote path: build-prompts → per-row RemoteRequest → merge-docstrings ─
-
-  Future<void> _enrichRemote(
-    AaPayload payload,
-    AuthProfile profile,
-    http.Client client,
-    int gen,
-  ) async {
-    final apiKey = await _vault.secretFor(profile);
-    if (gen != _execGen || !mounted) return;
-
-    final buildRequest = http.Request('POST', _endpoint('/llm/build-prompts'))
-      ..headers['Content-Type'] = 'application/json'
-      ..body = jsonEncode({
-        'astIndex': {'rows': payload.rows, 'cols': payload.cols, 'vals': payload.vals},
-        'promptHint': _promptHint ?? '',
-      });
-    final buildResponse = await client.send(buildRequest);
-    final buildBody = await buildResponse.stream.bytesToString();
-    if (gen != _execGen || !mounted) return;
-
-    if (buildResponse.statusCode != 200) {
-      setError(jsonDecode(buildBody)['detail'] ?? 'HTTP ${buildResponse.statusCode}');
-      return;
-    }
-
-    final prompts = List<Map<String, dynamic>>.from(
-      (jsonDecode(buildBody)['prompts'] as List?) ?? [],
-    );
-    if (prompts.isEmpty) {
-      setError('No documentable definitions in this index');
-      return;
-    }
-
-    final model = _remoteModel.text.trim();
-    final maxTokens = int.tryParse(_maxTokens.text.trim());
-    final temperature = double.tryParse(_temperature.text.trim());
-    final remote = RemoteRequest(client: client);
-
-    final docstrings = <String, String>{};
-    var failed = 0;
-    for (final entry in prompts) {
-      if (gen != _execGen || !mounted) return; // cancelled mid-loop
-
-      final result = await remote.send(
-        profile: profile,
-        model: model,
-        prompt: entry['prompt'] as String,
-        apiKey: apiKey,
-        maxTokens: maxTokens,
-        temperature: temperature,
-      );
-      if (gen != _execGen || !mounted) return; // cancelled while awaiting
-
-      if (result.ok && result.text.isNotEmpty) {
-        docstrings[entry['rowKey'] as String] = result.text;
-      } else {
-        failed++;
-      }
-    }
-
-    if (docstrings.isEmpty) {
-      setError('All $failed remote call(s) failed — nothing to merge');
-      return;
-    }
-
-    final mergeRequest = http.Request('POST', _endpoint('/llm/merge-docstrings'))
-      ..headers['Content-Type'] = 'application/json'
-      ..body = jsonEncode({
-        'astIndex': {'rows': payload.rows, 'cols': payload.cols, 'vals': payload.vals},
-        'docstrings': docstrings,
-      });
-    final mergeResponse = await client.send(mergeRequest);
-    final mergeBody = await mergeResponse.stream.bytesToString();
-    if (gen != _execGen || !mounted) return;
-
-    if (mergeResponse.statusCode != 200) {
-      setError(jsonDecode(mergeBody)['detail'] ?? 'HTTP ${mergeResponse.statusCode}');
-      return;
-    }
-
-    final result = jsonDecode(mergeBody);
-    _finish(
-      AaPayload(
-        rows: List<String>.from(result['enrichedIndex']['rows'] ?? []),
-        cols: List<String>.from(result['enrichedIndex']['cols'] ?? []),
-        vals: List.from(result['enrichedIndex']['vals'] ?? []),
-      ),
-      rowsProcessed: docstrings.length,
-      failed: failed,
-    );
-  }
-
   void _finish(
     AaPayload enrichedAa, {
     required int rowsProcessed,
     required int failed,
+    required String noun,
   }) {
     setState(() {
       _result = (rowsProcessed: rowsProcessed, colCount: enrichedAa.cols.length, failed: failed);
     });
     _out.emit(enrichedAa);
     setComplete(
-      detail: '$rowsProcessed documented'
+      detail: '$rowsProcessed $noun'
           '${failed > 0 ? ' · $failed failed' : ''}',
     );
   }
@@ -574,6 +540,12 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
           active: widget.promptConnected,
           onConnect: widget.onPromptConnect,
         ),
+        InputConnector(
+          label: 'panelPromptInput',
+          idx: 3,
+          active: widget.panelPromptConnected,
+          onConnect: widget.onPanelPromptConnect,
+        ),
       ];
 
   @override
@@ -597,7 +569,8 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        SizedBox(height: BaseNodeState.portLaneClearance(3)),
+        SizedBox(height: BaseNodeState.portLaneClearance(4)),
+        _taskLine(theme),
         _modelChoiceField(busy),
         if (_isRemoteChoice) ...[
           const SizedBox(height: 8),
@@ -659,6 +632,28 @@ class _LLMDocumenterNodeWidgetState extends BaseNodeState<LLMDocumenterNodeWidge
         const SizedBox(height: 8),
         statusRow(),
       ],
+    );
+  }
+
+  /// Says what the node decided the data is, so a wrong guess is visible
+  /// before anything is sent. Empty until data arrives, so an unconnected
+  /// node looks exactly as before.
+  Widget _taskLine(ThemeData theme) {
+    if (_incoming == null) return const SizedBox.shrink();
+    final task = _task;
+    final style = theme.textTheme.labelSmall?.copyWith(
+      color: task == null
+          ? theme.colorScheme.error
+          : theme.colorScheme.onSurfaceVariant,
+    );
+    final text = task == null
+        ? 'Input not recognised — nothing to do'
+        : _choiceSuitsTask
+            ? 'Detected: ${task.label}'
+            : 'Detected: ${task.label} — needs a remote model';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(text, key: const Key('llm-task-line'), style: style),
     );
   }
 

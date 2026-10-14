@@ -270,6 +270,10 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   final OutputPort _segmentOut = OutputPort('segment');
   final OutputPort _linkageOut = OutputPort('linkage');
 
+  /// `sf.llm_payload/v1` for the LLM node (idx 2, appended so existing wires
+  /// keep their indices).
+  final OutputPort _llmOut = OutputPort('llmPayload');
+
   /// Set from the `image` port. When null the port is the only way to provide
   /// an image — there is no manual field anymore.
   _ImageSource? _portImage;
@@ -288,6 +292,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
   AaPayload? _segmentAa;
   AaPayload? _linkageAa;
+  AaPayload? _llmAa;
   String? _summaryText;
 
   /// Non-null only while the app is open, so Cancel can terminate it.
@@ -333,6 +338,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     initOutputPort(_segmentOut);
     widget.onIndexedOutputPort?.call(0, _segmentOut);
     widget.onIndexedOutputPort?.call(1, _linkageOut);
+    widget.onIndexedOutputPort?.call(2, _llmOut);
 
     // Load available sessions from backend and select the first one by default.
     _loadSessions();
@@ -345,6 +351,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     _panelPromptIn.dispose();
     _segmentOut.dispose();
     _linkageOut.dispose();
+    _llmOut.dispose();
     super.dispose();
   }
 
@@ -447,17 +454,20 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   /// Execute forwards what is held, so readiness means "there is something to
   /// forward" — not "an image has arrived", which is Open Forge's condition.
   @override
-  bool get isReady => _segmentAa != null || _linkageAa != null;
+  bool get isReady =>
+      _segmentAa != null || _linkageAa != null || _llmAa != null;
 
   @override
   void fire() {
     final segment = _segmentAa;
     final linkage = _linkageAa;
+    final llm = _llmAa;
 
     // An empty AA is dropped by InputPort's ingress guard anyway, so emitting
     // one would be a silent no-op rather than a signal.
     if (segment != null && segment.cols.isNotEmpty) _segmentOut.emit(segment);
     if (linkage != null && linkage.cols.isNotEmpty) _linkageOut.emit(linkage);
+    if (llm != null && llm.cols.isNotEmpty) _llmOut.emit(llm);
 
     setComplete(detail: _summaryText ?? 'forwarded');
   }
@@ -666,6 +676,40 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       _selectedSessionId != null &&
       status != NodeStatus.working;
 
+  /// Whether Execute can read the selected session's saved work, with no
+  /// forge launched. Only offered when nothing is held yet — once a result is
+  /// held, Execute simply forwards it.
+  /// True while Execute is reading a saved session. The node is busy, but no
+  /// forge exists to close, so the forge button must not turn into Close Forge.
+  bool _readingSaved = false;
+
+  bool get _canReadSaved =>
+      !isReady && _selectedSessionId != null && status != NodeStatus.working;
+
+  /// Execute on a session that already has saved work: read what SegForge has
+  /// on disk and forward it. The forge is for *making* captions; getting them
+  /// out of a finished session should not require opening it again.
+  Future<void> _onReadSaved() async {
+    if (!_canReadSaved) return;
+    final gen = ++_execGen;
+    setState(() => _readingSaved = true);
+    setWorking();
+    try {
+      await _ensureBackendHealthy(gen);
+      if (gen != _execGen || !mounted) return;
+      await _collect(
+        _selectedSessionId!,
+        _portImage?.filename ?? 'image.png',
+        gen,
+      );
+    } catch (e) {
+      if (gen != _execGen || !mounted) return;
+      setError(e);
+    } finally {
+      if (mounted) setState(() => _readingSaved = false);
+    }
+  }
+
   Future<void> _onOpenForge() async {
     if (!_canOpenForge) return;
     final gen = ++_execGen;
@@ -674,6 +718,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     setState(() {
       _segmentAa = null;
       _linkageAa = null;
+      _llmAa = null;
       _summaryText = null;
     });
 
@@ -785,6 +830,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       setState(() {
         _segmentAa = null;
         _linkageAa = null;
+        _llmAa = null;
         _summaryText = null;
       });
       setComplete(detail: 'closed without producing a segmentation');
@@ -800,37 +846,54 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     // Ask SegForge to materialize the mask and cutout PNGs. Its UI no longer
     // drives either, so the node does — otherwise mask_bytes would exist only
     // when the user happened to press Save, and crop_bytes never.
-    await _api.saveMasks(sessionId);
-    if (gen != _execGen || !mounted) return;
-    await _api.createSegments(sessionId);
-    if (gen != _execGen || !mounted) return;
-
     final count = session.segmentCount;
     final crops = <Uint8List?>[];
     final masks = <Uint8List?>[];
-
-    final cutoutUrls = await _api.showSegments(sessionId);
-    if (gen != _execGen || !mounted) return;
-
-    for (var i = 0; i < count; i++) {
-      // Cutouts are full-canvas with transparency outside the mask, so crop to
-      // the segment's own box to get an actual sub-image.
-      Uint8List? crop;
-      if (i < cutoutUrls.length && i < session.boxes.length) {
-        final full = await _api.fetchBytes(cutoutUrls[i]);
-        if (gen != _execGen || !mounted) return;
-        final b = session.boxes[i];
-        crop = await _cropper(full, ui.Rect.fromLTRB(b[0], b[1], b[2], b[3]));
-        if (gen != _execGen || !mounted) return;
-      }
-      crops.add(crop);
-
-      try {
-        masks.add(await _api.fetchBytes(_api.maskUrl(sessionId, i)));
-      } catch (_) {
-        masks.add(null); // Missing mask is an omitted cell, not a failure.
-      }
+    // These calls feed only the legacy `segment` output (cutout and mask
+    // images). The caption payload does not depend on them, so a backend that
+    // cannot produce them — e.g. a restored session that no longer holds the
+    // original image bytes — must not take the whole run down with it.
+    String? imagesWhy;
+    try {
+      await _api.saveMasks(sessionId);
       if (gen != _execGen || !mounted) return;
+      await _api.createSegments(sessionId);
+      if (gen != _execGen || !mounted) return;
+
+      final cutoutUrls = await _api.showSegments(sessionId);
+      if (gen != _execGen || !mounted) return;
+
+      for (var i = 0; i < count; i++) {
+        // Cutouts are full-canvas with transparency outside the mask, so crop
+        // to the segment's own box to get an actual sub-image.
+        Uint8List? crop;
+        if (i < cutoutUrls.length && i < session.boxes.length) {
+          final full = await _api.fetchBytes(cutoutUrls[i]);
+          if (gen != _execGen || !mounted) return;
+          final b = session.boxes[i];
+          crop = await _cropper(full, ui.Rect.fromLTRB(b[0], b[1], b[2], b[3]));
+          if (gen != _execGen || !mounted) return;
+        }
+        crops.add(crop);
+
+        try {
+          masks.add(await _api.fetchBytes(_api.maskUrl(sessionId, i)));
+        } catch (_) {
+          masks.add(null); // Missing mask is an omitted cell, not a failure.
+        }
+        if (gen != _execGen || !mounted) return;
+      }
+    } catch (e) {
+      imagesWhy = e.toString().replaceFirst('Exception: ', '');
+      debugPrint('[SEG-FORGE] segment images unavailable: $e');
+      crops.clear();
+      masks.clear();
+    }
+    while (crops.length < count) {
+      crops.add(null);
+    }
+    while (masks.length < count) {
+      masks.add(null);
     }
 
     final imageId = SegForgeMapping.imageIdFor(filename);
@@ -842,14 +905,51 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     );
     final linkageAa = SegForgeMapping.linkage(session, imageId: imageId);
 
+    // The LLM payload is additive: if SF cannot produce it (e.g. nothing kept
+    // yet), the two legacy outputs are unaffected and this one stays empty.
+    AaPayload? llmAa;
+    String? llmWhy;
+    try {
+      final export = Map<String, dynamic>.of(await _api.exportLlmPayload(sessionId));
+      // The name in this node's session picker is the one the user chose, so it
+      // labels the loraset page; SF's own copy is only the fallback.
+      final picked = _sessionsList
+          .firstWhere((s) => s['session_id'] == sessionId,
+              orElse: () => <String, dynamic>{})['name'];
+      if (picked is String && picked.trim().isNotEmpty) {
+        export['session_name'] = picked.trim();
+      }
+      llmAa = SegForgeMapping.llmPayload(export);
+    } catch (e) {
+      // Not fatal to the other two outputs, but never silent: the LLM node just
+      // sits idle with nothing to say why, so say it here.
+      llmAa = null;
+      llmWhy = e.toString().replaceFirst('Exception: ', '');
+      debugPrint('[SEG-FORGE] llmPayload export failed: $e');
+    }
+    if (gen != _execGen || !mounted) return;
+
+    final why = llmWhy;
+    final whyShort = why == null
+        ? ''
+        : ' · llmPayload unavailable: '
+            '${why.length > 80 ? '${why.substring(0, 77)}...' : why}';
+    final imgWhy = imagesWhy;
+    final imgShort = imgWhy == null
+        ? ''
+        : ' · segment images unavailable: '
+            '${imgWhy.length > 60 ? '${imgWhy.substring(0, 57)}...' : imgWhy}';
+
     setState(() {
       // Lineage: which toolset produced this. The mode is chosen on this node,
       // so it rides out on what this node EMITS — it is not, and cannot be, a
       // column on the image AA arriving at the `image` input port.
       _segmentAa = _withMode(segmentAa);
       _linkageAa = _withMode(linkageAa);
+      _llmAa = llmAa;
       _summaryText = '$count segment${count == 1 ? '' : 's'} · '
-          '${session.prompts.length} prompt${session.prompts.length == 1 ? '' : 's'}';
+          '${session.prompts.length} prompt${session.prompts.length == 1 ? '' : 's'}'
+          '$imgShort$whyShort';
     });
     setComplete(detail: _summaryText);
     maybeAutoFire();
@@ -935,6 +1035,11 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
           idx: 1,
           hasData: (_linkageAa?.cols.isNotEmpty ?? false),
         ),
+        singleOutputConnector(
+          label: 'llmPayload',
+          idx: 2,
+          hasData: (_llmAa?.cols.isNotEmpty ?? false),
+        ),
       ];
 
   /// Stamps a `mode` cell onto an outgoing AA, under the same row the AA
@@ -1007,6 +1112,21 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
         // so the second one overlapped the body; 3 matches the connector
         // list above, as LLM Documenter does for its own three.
         SizedBox(height: BaseNodeState.portLaneClearance(3)),
+        // What Open Forge will actually send. Without this the node gave no
+        // sign which page it held, so a Load File that was changed but never
+        // executed silently opened the previous page.
+        Text(
+          _portImage == null
+              ? 'Image: none received'
+              : 'Image: ${_portImage!.filename}',
+          key: const ValueKey('seg-forge-held-image'),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 8),
         Text(
           'Mode',
           style: theme.textTheme.labelSmall?.copyWith(
@@ -1114,7 +1234,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
         const SizedBox(height: 8),
         SizedBox(
           height: 30,
-          child: busy
+          child: busy && !_readingSaved
               // The button that started the run is the button that ends it.
               // While the window is up this saves and closes it; before it is
               // up (upload/launch) or after it has gone (collecting results)
@@ -1143,6 +1263,18 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
                   ),
                 ),
         ),
+        if (!busy && !_canOpenForge)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+              _portImage == null
+                  ? 'Open Forge needs an image — Execute the Load File first'
+                  : 'Open Forge needs a session — pick one or press +',
+              key: const ValueKey('seg-forge-open-blocked'),
+              style: theme.textTheme.labelSmall
+                  ?.copyWith(color: scheme.tertiary),
+            ),
+          ),
         const SizedBox(height: 8),
         WaitCheckbox(checked: wait, onChanged: onWaitChanged, locked: busy),
         const SizedBox(height: 6),
@@ -1150,8 +1282,8 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
         // a forge run, and Close Forge is what stops one. Execute itself just
         // forwards what is held, which takes no time to cancel.
         ExecuteButton(
-          enabled: isReady && !busy,
-          onPressed: onExecutePressed,
+          enabled: (isReady || _canReadSaved) && !busy,
+          onPressed: isReady ? onExecutePressed : _onReadSaved,
         ),
         const SizedBox(height: 8),
         statusRow(),

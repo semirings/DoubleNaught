@@ -45,6 +45,18 @@ class MarkdownEditField extends StatefulWidget {
 class _MarkdownEditFieldState extends State<MarkdownEditField> {
   late bool _preview;
 
+  /// One controller per scrolling surface, so each can carry a visible
+  /// scrollbar. Without it the long text scrolls but nothing says there is more.
+  final ScrollController _previewScroll = ScrollController();
+  final ScrollController _editScroll = ScrollController();
+
+  @override
+  void dispose() {
+    _previewScroll.dispose();
+    _editScroll.dispose();
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();
@@ -85,8 +97,12 @@ class _MarkdownEditFieldState extends State<MarkdownEditField> {
         if (_preview)
           _buildPreview(theme)
         else
-          TextField(
+          Scrollbar(
+            controller: _editScroll,
+            thumbVisibility: true,
+            child: TextField(
             controller: widget.controller,
+            scrollController: _editScroll,
             minLines: widget.minLines,
             maxLines: widget.maxLines,
             keyboardType: TextInputType.multiline,
@@ -97,6 +113,7 @@ class _MarkdownEditFieldState extends State<MarkdownEditField> {
               border: const OutlineInputBorder(),
               contentPadding:
                   const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            ),
             ),
           ),
       ],
@@ -128,7 +145,11 @@ class _MarkdownEditFieldState extends State<MarkdownEditField> {
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.hintColor),
               )
-            : SingleChildScrollView(
+            : Scrollbar(
+                controller: _previewScroll,
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                controller: _previewScroll,
                 child: MarkdownBody(
                   data: text,
                   // Selectable would swallow the double-tap-to-edit gesture.
@@ -139,6 +160,7 @@ class _MarkdownEditFieldState extends State<MarkdownEditField> {
                     code: const TextStyle(
                         fontFamily: 'monospace', fontSize: 11),
                   ),
+                ),
                 ),
               ),
       ),

@@ -56,6 +56,8 @@ from . import review as review_logic
 from .inventory import InventoryStore, select_aa
 import d4m_juliacall_bridge
 from .models import (
+    LorasetSaveRequest,
+    LorasetSaveResponse,
     D4mExecRequest,
     D4mExecResponse,
     D4mIngestRequest,
@@ -128,6 +130,7 @@ from .sessions import PromptRecord, Session, SessionStore
 from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
 from .save_file import delete_output, execute_save
+from .loraset import LorasetError, save_loraset
 from .load_file import load_file
 from .ast_extract import (
     AstExtractError,
@@ -1210,6 +1213,15 @@ async def jsonl_format_arrow(
             "X-Dn-Schema": "jsonl_lines_v1",
         },
     )
+
+
+@app.post("/loraset/save", response_model=LorasetSaveResponse)
+async def loraset_save(request: LorasetSaveRequest) -> LorasetSaveResponse:
+    """Write captioned segment crops + metadata.jsonl under storage/loraset/<set>/<page>/."""
+    try:
+        return LorasetSaveResponse(**save_loraset(request.captions, request.loraset))
+    except LorasetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.post("/jsonl/format/aa", response_model=JsonlFormatResponse)

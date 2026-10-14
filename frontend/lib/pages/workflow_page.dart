@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../widgets/nodes/node_widths.dart';
@@ -359,10 +360,12 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'remoteServiceNode': // backward compat: old registry type
       case 'remote_service': // tolerate a snake_case spelling in saved workflows
       case 'llm_documenter': // tolerate a snake_case spelling in saved workflows
-        // Three inputs: `astIndex` (AA, idx 0, required), `authInput` (AA,
+        // Four inputs: `astIndex` (AA, idx 0, required), `authInput` (AA,
         // idx 1, optional — a Secure Settings credential), `promptInput`
-        // (AA, idx 2, optional — an additive style hint).
-        return const [0, 1, 2];
+        // (AA, idx 2, optional — an additive style hint, or the segment
+        // caption instructions), `panelPromptInput` (AA, idx 3, optional —
+        // panel caption instructions).
+        return const [0, 1, 2, 3];
       case 'polyglotExecNode':
       case 'polyglot_exec': // tolerate a snake_case spelling in saved workflows
         // One input: `executionPayload` (AA, idx 0).
@@ -370,6 +373,9 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'jsonlFormatterNode':
       case 'jsonl_formatter': // tolerate a snake_case spelling in saved workflows
         // One input: `astIndex` (AA, idx 0).
+        return const [0];
+      case 'saveLorasetNode':
+        // One input: `captions` (AA, idx 0) — the LLM caption output.
         return const [0];
       case 'functionExtractionNode':
       case 'astExtractNode': // backward compat: old registry type
@@ -473,8 +479,13 @@ class _WorkflowPageState extends State<WorkflowPage>
     final dx = (end.dx - start.dx).abs().clamp(40, 200).toDouble();
     final c1 = Offset(start.dx + dx, start.dy);
     final c2 = Offset(end.dx - dx, end.dy);
+    // Distance to the *polyline* through the samples, not to the samples
+    // themselves. Point samples are ~curve-length/steps apart, so on a long wire
+    // (a prompt run up the whole canvas) a click squarely on the line could sit
+    // further than the hit band from every sample and select nothing.
     var best = double.infinity;
-    const steps = 26;
+    const steps = 64;
+    Offset? prev;
     for (var i = 0; i <= steps; i++) {
       final t = i / steps;
       final u = 1 - t;
@@ -483,8 +494,17 @@ class _WorkflowPageState extends State<WorkflowPage>
           c1 * (3 * u * u * t) +
           c2 * (3 * u * t * t) +
           end * (t * t * t);
-      final d = (pt - p).distance;
-      if (d < best) best = d;
+      if (prev != null) {
+        final ab = pt - prev;
+        final len2 = ab.dx * ab.dx + ab.dy * ab.dy;
+        final f = len2 == 0
+            ? 0.0
+            : (((p - prev).dx * ab.dx + (p - prev).dy * ab.dy) / len2)
+                .clamp(0.0, 1.0);
+        final d = (prev + ab * f - p).distance;
+        if (d < best) best = d;
+      }
+      prev = pt;
     }
     return best;
   }
@@ -505,17 +525,42 @@ class _WorkflowPageState extends State<WorkflowPage>
     _canvasFocus.requestFocus(); // so Delete/Backspace target this canvas
 
     // Convert tap position from visual (transformed) space to scene space
-    final scene = _toSceneCoordinates(d.localPosition);
+    final scene = _sceneAt(d.globalPosition);
     debugPrint('[CANVAS-TAP] converted to scene: $scene');
 
     // Clicking empty canvas selects the edge there (if any) and clears node
     // selection.
+    assert(() {
+      // Debug only: how far this click is from every wire, so a wire that will
+      // not select can be told apart from a click that never reached the canvas.
+      final byId = {for (final n in _nodes) n.id: n};
+      for (final e in _edges) {
+        final f = byId[e.from.nodeId], t = byId[e.to.nodeId];
+        if (f == null || t == null) continue;
+        final dist = _distanceToCurve(
+            scene, _outputPortPos(f, e.from.idx), _inputPortPos(t, e.to.idx));
+        debugPrint('[EDGE-DIST] ${e.from.nodeId}:${e.from.idx} -> '
+            '${e.to.nodeId}:${e.to.idx}  ${dist.toStringAsFixed(1)}');
+      }
+      return true;
+    }());
     setState(() {
       final hitEdge = _edgeAt(scene);
       _selectedEdge = hitEdge;
       _selectedNodeIds.clear();
       debugPrint('[CANVAS-TAP] result: edge=$hitEdge, cleared nodes');
     });
+  }
+
+  /// A pointer's position in scene coordinates, from its *global* position.
+  ///
+  /// `_canvasKey` sits on the Stack *inside* the pan/zoom Transform, so
+  /// `globalToLocal` already undoes the view. A gesture's `localPosition` is
+  /// relative to whatever widget caught it — here a box far larger than the
+  /// viewport — so it is not a scene coordinate and must not be used as one.
+  Offset _sceneAt(Offset global) {
+    final box = _canvasKey.currentContext?.findRenderObject() as RenderBox?;
+    return box == null ? _toSceneCoordinates(global) : box.globalToLocal(global);
   }
 
   /// Convert a position from transformed visual space to untransformed scene space.
@@ -540,7 +585,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _onCanvasSecondaryTapUp(TapUpDetails d) {
-    final scene = _toSceneCoordinates(d.localPosition);
+    final scene = _sceneAt(d.globalPosition);
     final edge = _edgeAt(scene);
     if (edge != null) {
       setState(() => _selectedEdge = edge);
@@ -1154,8 +1199,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   /// Begin a box-select — unless the drag started on a node, which belongs to
   /// that node rather than to the canvas.
   void _onCanvasPanStart(DragStartDetails d) {
-    debugPrint('[MARQUEE-START] visual: ${d.localPosition}');
-    final scene = _toSceneCoordinates(d.localPosition);
+    final scene = _sceneAt(d.globalPosition);
     debugPrint('[MARQUEE-START] scene: $scene');
     final hitNode = _nodeAt(scene);
     debugPrint('[MARQUEE-START] hit node: ${hitNode?.id}, returning early: ${hitNode != null}');
@@ -1177,7 +1221,7 @@ class _WorkflowPageState extends State<WorkflowPage>
 
   void _onCanvasPanUpdate(DragUpdateDetails d) {
     if (_marqueeStart == null) return;
-    final scene = _toSceneCoordinates(d.localPosition);
+    final scene = _sceneAt(d.globalPosition);
     setState(() {
       _marqueeEnd = scene;
       final rect = _marqueeRect!;
@@ -2003,7 +2047,11 @@ class _WorkflowPageState extends State<WorkflowPage>
         // Scroll-to-zoom, middle-mouse pan, and trackpad two-finger pan/zoom.
         // The Listener passes normal events through, so node drag/connect are
         // untouched; it only *adds* view-transform handling.
-        child: Listener(
+        child: LayoutBuilder(
+          builder: (context, box) => Stack(
+          fit: StackFit.expand,
+          children: [
+        Listener(
           onPointerSignal: _onCanvasPointerSignal,
           onPointerDown: _onCanvasPointerDown,
           onPointerMove: _onCanvasPointerMove,
@@ -2015,7 +2063,11 @@ class _WorkflowPageState extends State<WorkflowPage>
             // Stack so globalToLocal keeps mapping correctly under pan/zoom.
             child: Transform(
               transform: _view,
-              child: Stack(
+              // Hit-testable beyond its own bounds: the Stack is only viewport-
+              // sized, but nodes live anywhere in scene space — after a pan,
+              // or at negative coordinates, they sit outside it and a normal
+              // Stack would never hand them a click.
+              child: _UnboundedHitStack(
                 key: _canvasKey,
                 // Don't clip to the viewport-sized Stack — panning must reveal
                 // nodes positioned beyond it. The outer ClipRect bounds paint.
@@ -2023,7 +2075,13 @@ class _WorkflowPageState extends State<WorkflowPage>
                 children: [
                   // Edge layer (beneath nodes): select/deselect, right-click
                   // menu, and hover feedback. Curves live in empty canvas space.
-                  Positioned.fill(
+                  // Far larger than any view: the backdrop must catch a click or
+                  // box-select wherever the view has been panned to.
+                  Positioned(
+                    left: -_kCanvasReach,
+                    top: -_kCanvasReach,
+                    right: -_kCanvasReach,
+                    bottom: -_kCanvasReach,
                     child: MouseRegion(
                       onHover: _onCanvasHover,
                       onExit: (_) {
@@ -2119,8 +2177,110 @@ class _WorkflowPageState extends State<WorkflowPage>
             ),
           ),
         ),
+          ..._canvasScrollbars(box.biggest, scheme),
+          ],
+        ),
+        ),
       ),
     );
+  }
+
+  static const double _kBarThickness = 8;
+  static const double _kBarMargin = 2;
+  static const double _kBarMinThumb = 32;
+
+  /// Scrollbars for the pan/zoom canvas: one along the bottom, one down the
+  /// right. Each spans the nodes plus whatever of the scene is on screen, so the
+  /// thumb shrinks as the content outgrows the view and fills the track when
+  /// everything fits (then the bar is hidden). Dragging a thumb pans the view.
+  List<Widget> _canvasScrollbars(Size viewport, ColorScheme scheme) {
+    if (_nodes.isEmpty || viewport.isEmpty) return const [];
+    final z = _zoom;
+    final tx = _view.storage[12];
+    final ty = _view.storage[13];
+    // The part of the scene currently on screen.
+    final visible = Rect.fromLTWH(
+      -tx / z,
+      -ty / z,
+      viewport.width / z,
+      viewport.height / z,
+    );
+    var world = visible;
+    for (final n in _nodes) {
+      world = world.expandToInclude(_nodeRect(n).inflate(40));
+    }
+
+    final bars = <Widget>[];
+
+    Widget bar({
+      required bool horizontal,
+      required double visStart,
+      required double visLen,
+      required double worldStart,
+      required double worldLen,
+      required double trackLen,
+    }) {
+      final thumbLen = (trackLen * visLen / worldLen)
+          .clamp(_kBarMinThumb, trackLen)
+          .toDouble();
+      final room = trackLen - thumbLen;
+      final frac = worldLen <= visLen
+          ? 0.0
+          : ((visStart - worldStart) / (worldLen - visLen)).clamp(0.0, 1.0);
+      final offset = room * frac;
+      // One pixel of thumb travel is this many scene units.
+      final scenePerPx = room <= 0 ? 0.0 : (worldLen - visLen) / room;
+      final thumb = Container(
+        decoration: BoxDecoration(
+          color: scheme.onSurface.withValues(alpha: 0.35),
+          borderRadius: BorderRadius.circular(_kBarThickness / 2),
+        ),
+      );
+      return Positioned(
+        left: horizontal ? offset + _kBarMargin : null,
+        top: horizontal ? null : offset + _kBarMargin,
+        right: horizontal ? null : _kBarMargin,
+        bottom: horizontal ? _kBarMargin : null,
+        width: horizontal ? thumbLen : _kBarThickness,
+        height: horizontal ? _kBarThickness : thumbLen,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.basic,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onPanUpdate: (d) {
+              final px = horizontal ? d.delta.dx : d.delta.dy;
+              // Thumb right/down = view moves right/down in the scene = the
+              // content moves the other way on screen.
+              final move = -px * scenePerPx * z;
+              _panBy(horizontal ? Offset(move, 0) : Offset(0, move));
+            },
+            child: thumb,
+          ),
+        ),
+      );
+    }
+
+    if (world.width > visible.width + 0.5) {
+      bars.add(bar(
+        horizontal: true,
+        visStart: visible.left,
+        visLen: visible.width,
+        worldStart: world.left,
+        worldLen: world.width,
+        trackLen: viewport.width - 2 * _kBarMargin - _kBarThickness,
+      ));
+    }
+    if (world.height > visible.height + 0.5) {
+      bars.add(bar(
+        horizontal: false,
+        visStart: visible.top,
+        visLen: visible.height,
+        worldStart: world.top,
+        worldLen: world.height,
+        trackLen: viewport.height - 2 * _kBarMargin - _kBarThickness,
+      ));
+    }
+    return bars;
   }
 
   /// A node plus its interaction chrome (selection, title-bar drag handle,
@@ -2226,7 +2386,7 @@ class _WorkflowPageState extends State<WorkflowPage>
   }
 
   void _onCanvasHover(PointerHoverEvent event) {
-    final edge = _edgeAt(event.localPosition);
+    final edge = _edgeAt(_sceneAt(event.position));
     if (!identical(edge, _hoveredEdge)) {
       setState(() => _hoveredEdge = edge);
     }
@@ -2496,6 +2656,11 @@ class _WorkflowPageState extends State<WorkflowPage>
           promptConnected: _hasIncomingEdgeAt(node.id, 2),
           onPromptConnect: (source) => _connectAt(source, node.id, 2),
           onPromptInputPort: (port) => _registerAaInput(node.id, 2, port),
+          // `panelPromptInput` (AA, idx 3, optional) — instructions for panel
+          // captions; read only when the input is a Seg Forge export.
+          panelPromptConnected: _hasIncomingEdgeAt(node.id, 3),
+          onPanelPromptConnect: (source) => _connectAt(source, node.id, 3),
+          onPanelPromptInputPort: (port) => _registerAaInput(node.id, 3, port),
           // `documented` (AA, idx 0) — the 8-column result with better_docstring.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
@@ -2520,7 +2685,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           onPanelPromptInputPort: (port) => _registerAaInput(node.id, 2, port),
           panelPromptConnected: _hasIncomingEdgeAt(node.id, 2),
           onPanelPromptConnect: (source) => _connectAt(source, node.id, 2),
-          // `segment` (idx 0) and `linkage` (idx 1). segment is also registered
+          // `segment` (idx 0), `linkage` (idx 1), `llmPayload` (idx 2). segment is also registered
           // flat, as the headline output the Focus Panel re-emits on.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           onIndexedOutputPort: (idx, port) =>
@@ -2556,6 +2721,16 @@ class _WorkflowPageState extends State<WorkflowPage>
           // `out_aa` (AA, idx 0) — json_line / symbol_name.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'saveLorasetNode':
+        return SaveLorasetNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `captions` (AA, idx 0) — the LLM node's caption output.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
         );
       case 'polyglotExecNode':
       case 'polyglot_exec': // tolerate a snake_case spelling in saved workflows
@@ -3277,5 +3452,43 @@ class _Splitter extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// How far, in scene units, the canvas backdrop extends past the Stack on every
+/// side. Generous rather than exact: it only has to out-reach panning.
+const double _kCanvasReach = 100000;
+
+/// A [Stack] whose children can be hit anywhere, not just inside its own box.
+class _UnboundedHitStack extends Stack {
+  const _UnboundedHitStack({super.key, super.clipBehavior, super.children});
+
+  @override
+  RenderStack createRenderObject(BuildContext context) =>
+      _RenderUnboundedHitStack(
+        alignment: alignment,
+        textDirection: textDirection ?? Directionality.maybeOf(context),
+        fit: fit,
+        clipBehavior: clipBehavior,
+      );
+}
+
+class _RenderUnboundedHitStack extends RenderStack {
+  _RenderUnboundedHitStack({
+    super.alignment,
+    super.textDirection,
+    super.fit,
+    super.clipBehavior,
+  });
+
+  /// [RenderBox.hitTest] refuses a point outside [size] before it looks at any
+  /// child; skip that gate so children outside the box are still reachable.
+  @override
+  bool hitTest(BoxHitTestResult result, {required Offset position}) {
+    if (hitTestChildren(result, position: position) || hitTestSelf(position)) {
+      result.add(BoxHitTestEntry(this, position));
+      return true;
+    }
+    return false;
   }
 }

@@ -736,6 +736,27 @@ class LlmMergeDocstringsResponse(CamelModel):
 # examples, one JSON object per line, and emits a 2-column AA.
 
 
+class LorasetSaveRequest(CamelModel):
+    # The LLM caption AA: segment rows with file_name, caption, page_name, image_b64.
+    captions: AssocArray
+    # Folder name under storage/loraset/.
+    loraset: str = "mccay"
+
+
+class LorasetPage(CamelModel):
+    page: str
+    images: int
+    path: str
+
+
+class LorasetSaveResponse(CamelModel):
+    loraset: str
+    pages: list[LorasetPage]
+    images: int
+    skipped: int
+    path: str
+
+
 class JsonlFormatRequest(CamelModel):
     # The source AA in wire (sparse triple) form: the documented index for
     # "chatml", passages for "prompt_completion", anything for "passthrough".

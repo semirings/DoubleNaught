@@ -32,6 +32,14 @@ class RemoteResult {
   bool get ok => status == 'ok';
 }
 
+/// An image attached to a prompt. [base64Data] is the raw base64 payload with
+/// no `data:` prefix; each provider's body wraps it its own way.
+class RemoteImage {
+  final String mimeType;
+  final String base64Data;
+  const RemoteImage({required this.mimeType, required this.base64Data});
+}
+
 /// Progress states the node's status bar renders.
 enum RemotePhase { idle, connecting, streaming, done, error }
 
@@ -112,6 +120,12 @@ class RemoteRequest {
         AuthProvider.ollamaLocal => {'content-type': 'application/json'},
       };
 
+  /// [images] are purely additive too: with none, every body is exactly what
+  /// it was before images existed. With some, each provider gets its own
+  /// documented multimodal shape — Anthropic and OpenAI put them in the
+  /// message content, Gemini in `parts` as inline data (images before the
+  /// text), Ollama in the top-level `images` array.
+  ///
   /// [maxTokens]/[temperature] are purely additive overrides: when neither is
   /// given, every provider's body is byte-for-byte what it was before these
   /// existed. Anthropic is the one exception in shape only, not behavior —
@@ -126,6 +140,7 @@ class RemoteRequest {
     String prompt, {
     int? maxTokens,
     double? temperature,
+    List<RemoteImage> images = const [],
   }) {
     return switch (provider) {
       AuthProvider.anthropic => {
@@ -133,13 +148,43 @@ class RemoteRequest {
           'max_tokens': maxTokens ?? RemoteRequest.maxTokens,
           if (temperature != null) 'temperature': temperature,
           'messages': [
-            {'role': 'user', 'content': prompt},
+            {
+              'role': 'user',
+              'content': images.isEmpty
+                  ? prompt
+                  : [
+                      for (final i in images)
+                        {
+                          'type': 'image',
+                          'source': {
+                            'type': 'base64',
+                            'media_type': i.mimeType,
+                            'data': i.base64Data,
+                          },
+                        },
+                      {'type': 'text', 'text': prompt},
+                    ],
+            },
           ],
         },
       AuthProvider.openAiCompatible => {
           'model': model,
           'messages': [
-            {'role': 'user', 'content': prompt},
+            {
+              'role': 'user',
+              'content': images.isEmpty
+                  ? prompt
+                  : [
+                      {'type': 'text', 'text': prompt},
+                      for (final i in images)
+                        {
+                          'type': 'image_url',
+                          'image_url': {
+                            'url': 'data:${i.mimeType};base64,${i.base64Data}',
+                          },
+                        },
+                    ],
+            },
           ],
           'stream': false,
           if (maxTokens != null) 'max_tokens': maxTokens,
@@ -149,6 +194,13 @@ class RemoteRequest {
           'contents': [
             {
               'parts': [
+                for (final i in images)
+                  {
+                    'inline_data': {
+                      'mime_type': i.mimeType,
+                      'data': i.base64Data,
+                    },
+                  },
                 {'text': prompt},
               ],
             },
@@ -162,6 +214,7 @@ class RemoteRequest {
       AuthProvider.ollamaLocal => {
           'model': model,
           'prompt': prompt,
+          if (images.isNotEmpty) 'images': [for (final i in images) i.base64Data],
           'stream': false,
           if (maxTokens != null || temperature != null)
             'options': {
@@ -255,6 +308,7 @@ class RemoteRequest {
     String? apiKey,
     int? maxTokens,
     double? temperature,
+    List<RemoteImage> images = const [],
   }) async {
     final started = DateTime.now();
     int elapsed() => DateTime.now().difference(started).inMilliseconds;
@@ -298,6 +352,7 @@ class RemoteRequest {
           prompt,
           maxTokens: maxTokens,
           temperature: temperature,
+          images: images,
         ));
 
       final response = await client.send(request).timeout(timeout);

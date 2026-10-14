@@ -15,7 +15,8 @@ import '../base/wait_gated_execution.dart';
 enum JsonlFormatMode {
   chatml('ChatML Doc', 'chatml'),
   instructionTask('Instruction / Task', 'prompt_completion'),
-  passthrough('Passthrough', 'passthrough');
+  passthrough('Passthrough', 'passthrough'),
+  imageCaption('Image caption', 'image_caption');
 
   const JsonlFormatMode(this.label, this.wire);
 
@@ -94,6 +95,16 @@ class _JsonlFormatterNodeWidgetState extends BaseNodeState<JsonlFormatterNodeWid
   @override
   bool get isReady => _incoming != null;
 
+  /// LLM caption output (`file_name` + `improved_caption`) has exactly one
+  /// sensible format, so the data decides and the dropdown steps aside.
+  bool get _isCaptionData {
+    final cols = _incoming?.cols.toSet() ?? const <String>{};
+    return cols.contains('file_name') && cols.contains('improved_caption');
+  }
+
+  String get _effectiveWire =>
+      _isCaptionData ? JsonlFormatMode.imageCaption.wire : _mode.wire;
+
   @override
   void initState() {
     super.initState();
@@ -164,7 +175,7 @@ class _JsonlFormatterNodeWidgetState extends BaseNodeState<JsonlFormatterNodeWid
         owns ? JsonlFormatterApi(baseUrl: _api.baseUrl, client: client) : _api;
 
     try {
-      final result = await api.format(payload, formatMode: _mode.wire);
+      final result = await api.format(payload, formatMode: _effectiveWire);
       if (gen != _execGen || !mounted) return;
 
       setState(() => _result = result);
@@ -240,7 +251,18 @@ class _JsonlFormatterNodeWidgetState extends BaseNodeState<JsonlFormatterNodeWid
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SizedBox(height: BaseNodeState.portLaneClearance(1)),
-        DropdownMenu<JsonlFormatMode>(
+        if (_isCaptionData)
+          Padding(
+            key: const ValueKey('jsonl-detected-captions'),
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            child: Text(
+              'Detected: image captions, one line per image',
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          )
+        else
+          DropdownMenu<JsonlFormatMode>(
           enableSearch: false,
           expandedInsets: EdgeInsets.zero,
           enabled: !busy,

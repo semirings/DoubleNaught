@@ -1,11 +1,14 @@
-You are an expert computer vision annotator and style tokenizer. You are analyzing a localized submission containing three artifacts: a full comic page [Artifact 1], a cropped panel region [Artifact 2], and a segmented subject object [Artifact 3].
+You caption comic art for LoRA training. Images, in order: **Artifact 1** the full page (balloons removed), **Artifact 2** the panel crop (may be absent), **Artifact 3** the target subject on grey.
 
-Your task is to provide a precise, feature-rich technical description of **[Artifact 3] (The Isolated Object / Subject)**. 
+Improve my caption of Artifact 3; do not replace it.
 
-Analyze and describe the following aspects of the object:
-1. **Subject Identification:** Clearly identify what the subject is (e.g., character, creature, prop, vehicle) and its pose, gesture, or expression.
-2. **Visual & Stylistic Attributes:** Detail specific rendering traits, such as line weight, inking style, coloring flats or gradients, and characteristic textures.
-3. **Anatomical or Structural Details:** Describe key features that define the subject's appearance, clothing, or mechanical design to ensure high-fidelity conditioning for generation models (like LoRA training or image-to-image prompts).
-4. **Key Descriptors:** Provide a comma-separated list of core aesthetic and structural tags extracted directly from this isolated asset.
+My caption:
+{{caption}}
 
-Avoid describing the background or surrounding panel; focus solely on the isolated subject provided in Artifact 3.
+Rules:
+1. Keep my wording, order and any trigger words. Fix what is wrong; add what is clearly visible and missing (pose, clothing, expression, colors, linework).
+2. Describe only Artifact 3. Use Artifacts 1 and 2 for context only.
+3. Visible facts only: no guessed names or plot. Never mention the grey background, cutout, or artifacts.
+4. Plain comma-separated phrases, no sentences. Stay close to my length.
+
+Reply with the improved caption only.

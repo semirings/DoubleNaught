@@ -281,4 +281,57 @@ void main() {
       expect(phases.last, RemotePhase.done);
     });
   });
+  group('RemoteRequest images', () {
+    const img = RemoteImage(mimeType: 'image/jpeg', base64Data: 'QUJD');
+
+    test('with no images every provider body is unchanged', () {
+      for (final p in AuthProvider.values) {
+        expect(
+          RemoteRequest.bodyFor(p, 'm', 'hi', images: const []),
+          RemoteRequest.bodyFor(p, 'm', 'hi'),
+        );
+      }
+      final a = RemoteRequest.bodyFor(AuthProvider.anthropic, 'm', 'hi');
+      expect((a['messages'] as List).first['content'], 'hi');
+    });
+
+    test('Anthropic: image blocks first, then the text block', () {
+      final b = RemoteRequest.bodyFor(AuthProvider.anthropic, 'm', 'hi',
+          images: [img, img]);
+      final c = (b['messages'] as List).first['content'] as List;
+      expect(c.length, 3);
+      expect(c[0], {
+        'type': 'image',
+        'source': {'type': 'base64', 'media_type': 'image/jpeg', 'data': 'QUJD'},
+      });
+      expect(c.last, {'type': 'text', 'text': 'hi'});
+    });
+
+    test('OpenAI-compatible: text part, then data-URL image parts', () {
+      final b = RemoteRequest.bodyFor(AuthProvider.openAiCompatible, 'm', 'hi',
+          images: [img]);
+      final c = (b['messages'] as List).first['content'] as List;
+      expect(c.first, {'type': 'text', 'text': 'hi'});
+      expect(c.last, {
+        'type': 'image_url',
+        'image_url': {'url': 'data:image/jpeg;base64,QUJD'},
+      });
+    });
+
+    test('Gemini: inline_data parts before the text part', () {
+      final b = RemoteRequest.bodyFor(AuthProvider.googleGemini, 'm', 'hi',
+          images: [img]);
+      final parts = ((b['contents'] as List).first['parts']) as List;
+      expect(parts.first,
+          {'inline_data': {'mime_type': 'image/jpeg', 'data': 'QUJD'}});
+      expect(parts.last, {'text': 'hi'});
+    });
+
+    test('Ollama: top-level images array of raw base64', () {
+      final b = RemoteRequest.bodyFor(AuthProvider.ollamaLocal, 'm', 'hi',
+          images: [img]);
+      expect(b['images'], ['QUJD']);
+      expect(b['prompt'], 'hi');
+    });
+  });
 }

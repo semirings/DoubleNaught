@@ -36,7 +36,9 @@ class JsonlFormatterApi {
       final response = await transport.post(
         Uri.parse('$baseUrl/jsonl/format/aa'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'aa': aa.toJson(), 'formatMode': formatMode}),
+        // The backend's request field is `astIndex` (JsonlFormatRequest.ast_index,
+        // camelised). Sending it as `aa` made every call a 422 "Field required".
+        body: jsonEncode({'astIndex': aa.toJson(), 'formatMode': formatMode}),
       );
 
       if (response.statusCode != 200) {
@@ -85,8 +87,11 @@ class JsonlFormatResult {
 
   factory JsonlFormatResult.fromJson(Map<String, dynamic> json) =>
       JsonlFormatResult(
+        // The backend names the result `jsonlLines`; `aa` is accepted too.
         aa: AaPayload.fromJson(
-          (json['aa'] as Map<String, dynamic>?) ?? const {},
+          (json['jsonlLines'] ?? json['jsonl_lines'] ?? json['aa'])
+                  as Map<String, dynamic>? ??
+              const {},
         ),
         formatMode:
             (json['formatMode'] ?? json['format_mode'] ?? 'chatml') as String,

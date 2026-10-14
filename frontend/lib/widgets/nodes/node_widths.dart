@@ -26,6 +26,8 @@ double getNodeWidth(String type) {
       return 320;
     case 'jsonlFormatterNode':
       return 320;
+    case 'saveLorasetNode':
+      return 320;
     case 'functionExtractionNode':
       return 320;
     case 'llmDocumenterNode':

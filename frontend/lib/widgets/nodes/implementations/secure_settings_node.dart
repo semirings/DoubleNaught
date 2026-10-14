@@ -69,7 +69,13 @@ class _SecureSettingsNodeState extends BaseNodeState<SecureSettingsNode> {
     super.initState();
     _vault = widget.vault ?? KeyVault();
     initOutputPort(_out);
-    _load(select: widget.initialParams?['selectedProfileId']);
+    // Emit once the saved profile is loaded and checked. Without this a
+    // reopened workflow shows the credential selected and green while nothing
+    // has been sent downstream — the connected node keeps saying "connect a
+    // credential" until the user re-picks the same profile by hand.
+    _load(select: widget.initialParams?['selectedProfileId']).then((_) {
+      if (mounted) _emit();
+    });
   }
 
   @override

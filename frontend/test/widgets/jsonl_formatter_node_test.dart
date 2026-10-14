@@ -136,14 +136,14 @@ Future<void> _pickMode(WidgetTester tester, String label) async {
 
 void main() {
   group('catalog registration', () {
-    test('the dropdown offers exactly the three public modes', () {
+    test('the dropdown offers exactly the four public modes', () {
       expect(
         JsonlFormatMode.values.map((m) => m.label),
-        ['ChatML Doc', 'Instruction / Task', 'Passthrough'],
+        ['ChatML Doc', 'Instruction / Task', 'Passthrough', 'Image caption'],
       );
       expect(
         JsonlFormatMode.values.map((m) => m.wire),
-        ['chatml', 'prompt_completion', 'passthrough'],
+        ['chatml', 'prompt_completion', 'passthrough', 'image_caption'],
       );
     });
 
@@ -405,6 +405,28 @@ void main() {
       await _send(tester, h.input, _index(rows: 4, documented: 1));
       expect(find.text('First line'), findsOneWidget,
           reason: 'reactive by default — the new payload fires fresh');
+    });
+  });
+
+  group('caption data', () {
+    testWidgets('is detected and sent as image_caption, with no mode pick',
+        (tester) async {
+      final backend = _api(mode: 'image_caption');
+      final h = await _pump(tester, api: backend.api, inputConnected: true);
+      await _send(
+        tester,
+        h.input,
+        AaPayload(
+          rows: ['seg:1', 'seg:1', 'seg:1'],
+          cols: ['improved_caption', 'caption', 'file_name'],
+          vals: ['better', 'mine', 'images/s_1.png'],
+        ),
+      );
+
+      expect(backend.requests.last['formatMode'], 'image_caption');
+      expect(find.byKey(const ValueKey('jsonl-detected-captions')),
+          findsOneWidget);
+      expect(find.text('Format Mode'), findsNothing);
     });
   });
 

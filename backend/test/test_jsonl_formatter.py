@@ -694,3 +694,26 @@ def test_the_unified_column_wins_when_both_are_present(tmp_path, monkeypatch):
 
     out = save_aa_jsonl(aa, "both")
     assert out.read_text() == '{"new":true}\n'
+
+
+def test_image_caption_is_one_line_per_image():
+    table = pa.table(
+        {
+            "kind": ["page", "panel", "segment", "segment", "segment"],
+            "file_name": [None, None, "images/s_a_1.png", "images/s_a_2.png", "images/s_a_3.png"],
+            "caption": ["", "p", "mine", "plain", "x"],
+            "improved_caption": [None, None, "better", None, ""],
+        }
+    )
+    result = JsonlFormatterNode(format_mode="image_caption").format_table(table)
+    lines = [json.loads(line) for line in result.as_text().splitlines()]
+    assert lines == [
+        {"file_name": "images/s_a_1.png", "text": "better"},
+        {"file_name": "images/s_a_2.png", "text": "plain"},
+        {"file_name": "images/s_a_3.png", "text": "x"},
+    ]
+
+
+def test_image_caption_needs_file_name_column():
+    with pytest.raises(JsonlFormatError):
+        JsonlFormatterNode(format_mode="image_caption").validate(pa.table({"caption": ["a"]}))

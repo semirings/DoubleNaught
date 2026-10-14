@@ -184,6 +184,17 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
   late TextEditingController _urlController;
   AaPayload? _aa;
 
+  /// The URL as of the last successful Execute — what downstream actually
+  /// holds. The field can differ from it (a Browse pick or an edit sends
+  /// nothing until Execute), and that gap is how a stale page reaches the
+  /// next node while this one reads "idle".
+  String? _lastSentUrl;
+
+  bool get _unsent {
+    final now = _urlController.text.trim();
+    return now.isNotEmpty && now != _lastSentUrl;
+  }
+
   /// File name of a pick rejected by [LoadFileNode.isAllowedPath] — drives the
   /// inline badge. Non-null only between a bad pick and the next good one.
   String? _rejectedFile;
@@ -341,6 +352,7 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
         setComplete(detail: '${response.message} · nothing to emit');
       }
 
+      setState(() => _lastSentUrl = url);
       saveParams({'filePath': url});
     } catch (e) {
       if (gen != _execGen || !mounted) return; // discard a cancelled run's error
@@ -438,6 +450,17 @@ class _LoadFileNodeState extends BaseNodeState<LoadFileNode> {
           executing: busy,
           onPressed: busy ? _onCancelPressed : _onExecutePressed,
         ),
+        if (_unsent && !busy) ...[
+          const SizedBox(height: 6),
+          Text(
+            _lastSentUrl == null
+                ? 'Not sent yet — press Execute'
+                : 'Changed — downstream still has the previous file. Press Execute',
+            key: const ValueKey('load-file-unsent'),
+            style: theme.textTheme.labelSmall
+                ?.copyWith(color: theme.colorScheme.tertiary),
+          ),
+        ],
         if (_rejectedFile != null) ...[
           const SizedBox(height: 8),
           _buildRejectedBadge(theme),

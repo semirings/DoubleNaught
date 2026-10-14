@@ -248,6 +248,9 @@ abstract class BaseNodeState<T extends BaseNodeWidget> extends State<T> {
 
   // ── Status management ───────────────────────────────────────────────────
 
+  /// Whether the working spinner animates. Only tests turn this off.
+  static bool animateWorkingSpinner = true;
+
   NodeStatus _status = NodeStatus.idle;
   String? _statusDetail;
 
@@ -321,13 +324,30 @@ abstract class BaseNodeState<T extends BaseNodeWidget> extends State<T> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          margin: const EdgeInsets.only(top: 4),
-          width: 8,
-          height: 8,
-          decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-        ),
-        const SizedBox(width: 8),
+        // Working shows a spinner instead of the dot, so a long call (an LLM
+        // batch, a segmentation) is visibly alive rather than looking hung.
+        if (_status == NodeStatus.working)
+          Container(
+            key: const ValueKey('node-working-spinner'),
+            margin: const EdgeInsets.only(top: 2),
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: color,
+              // Null animates forever; tests freeze it (see
+              // `test/flutter_test_config.dart`) so pumpAndSettle can finish.
+              value: BaseNodeState.animateWorkingSpinner ? null : 0.3,
+            ),
+          )
+        else
+          Container(
+            margin: const EdgeInsets.only(top: 4),
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+        SizedBox(width: _status == NodeStatus.working ? 6 : 8),
         Expanded(
           child: Text(
             text,

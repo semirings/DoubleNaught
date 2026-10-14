@@ -292,6 +292,7 @@ class _PromptNodeWidgetState extends BaseNodeState<PromptNodeWidget> {
         MarkdownEditField(
           controller: _prompt,
           hintText: 'Compose a prompt…',
+          startInPreview: true,
         ),
       ],
     );

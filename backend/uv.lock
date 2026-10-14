@@ -461,7 +461,7 @@ nvtx = [
 [[package]]
 name = "d4m-juliacall-bridge"
 version = "0.1.0"
-source = { editable = "../../../d4m.Wk/d4m_juliacall_bridge" }
+source = { editable = "../../d4m_juliacall_bridge" }
 dependencies = [
     { name = "juliacall" },
 ]
@@ -546,7 +546,7 @@ text = [
 requires-dist = [
     { name = "accelerate", marker = "extra == 'finetune'", specifier = ">=1.14" },
     { name = "bitsandbytes", marker = "extra == 'finetune'", specifier = ">=0.50" },
-    { name = "d4m-juliacall-bridge", editable = "../../../d4m.Wk/d4m_juliacall_bridge" },
+    { name = "d4m-juliacall-bridge", editable = "../../d4m_juliacall_bridge" },
     { name = "datasets", marker = "extra == 'finetune'", specifier = ">=5.0" },
     { name = "fastapi", specifier = ">=0.110" },
     { name = "httpx", specifier = ">=0.27" },

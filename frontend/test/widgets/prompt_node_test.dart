@@ -164,6 +164,9 @@ void main() {
         onOutputPort: (p) => p.connect(emitted.add, emitCurrentState: false),
       ));
       await tester.pumpAndSettle();
+      // Seeded prompts open rendered; switch to the editor.
+      await tester.tap(find.text('Edit'));
+      await tester.pumpAndSettle();
       emitted.clear();
 
       await tester.enterText(find.byType(TextField).first, '');
@@ -181,6 +184,9 @@ void main() {
         onInputPort: (_) {},
         onOutputPort: (p) => p.connect(emitted.add, emitCurrentState: false),
       ));
+      await tester.pumpAndSettle();
+      // Seeded prompts open rendered; switch to the editor.
+      await tester.tap(find.text('Edit'));
       await tester.pumpAndSettle();
 
       expect(emitted, hasLength(1));
@@ -205,6 +211,9 @@ void main() {
         onOutputPort: (_) {},
       ));
       await tester.pumpAndSettle();
+      // Seeded prompts open rendered; switch to the editor.
+      await tester.tap(find.text('Edit'));
+      await tester.pumpAndSettle();
 
       final out = OutputPort('aa')..emit(file);
       input!.connect(out);
@@ -221,6 +230,9 @@ void main() {
         onInputPort: (p) => input = p,
         onOutputPort: (_) {},
       ));
+      await tester.pumpAndSettle();
+      // Seeded prompts open rendered; switch to the editor.
+      await tester.tap(find.text('Edit'));
       await tester.pumpAndSettle();
 
       input!.connect(OutputPort('aa')..emit(file));

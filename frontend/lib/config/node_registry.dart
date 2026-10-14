@@ -106,6 +106,13 @@ const List<NodeType> nodeTypes = [
     tags: ['export', 'write', 'parquet', 'csv', 'jsonl', 'sink', 'disk'],
   ),
   NodeType(
+    name: 'Save Loraset',
+    type: 'saveLorasetNode',
+    category: NodeCategory.data,
+    description: 'Write captioned segment images and metadata.jsonl as a LoRA training page.',
+    tags: ['lora', 'training', 'dataset', 'images', 'metadata', 'jsonl', 'export', 'sink'],
+  ),
+  NodeType(
     name: 'Fetch',
     type: 'fetch',
     category: NodeCategory.data,

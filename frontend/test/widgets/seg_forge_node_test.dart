@@ -691,14 +691,26 @@ void main() {
   });
 
   group('SegForgeNodeWidget', () {
-    testWidgets('Execute is disabled until a forge run has produced something',
+    testWidgets('Execute is disabled with no session and nothing held',
+        (tester) async {
+      final l = _launcher();
+      await _pump(tester,
+          api: _api(hasSavedSessions: false).api, launcher: l.launcher);
+
+      final execute = tester.widget<ExecuteButton>(find.byType(ExecuteButton));
+      expect(execute.enabled, isFalse);
+      expect(l.exes, isEmpty, reason: 'nothing launched without Open Forge');
+    });
+
+    testWidgets('Execute reads a selected session even with no forge run',
         (tester) async {
       final l = _launcher();
       await _pump(tester, api: _api().api, launcher: l.launcher);
 
       final execute = tester.widget<ExecuteButton>(find.byType(ExecuteButton));
-      expect(execute.enabled, isFalse);
-      expect(l.exes, isEmpty, reason: 'nothing launched without Open Forge');
+      expect(execute.enabled, isTrue,
+          reason: 'a session with saved work can be read without the forge');
+      expect(l.exes, isEmpty, reason: 'reading saved work never launches SF');
     });
 
     testWidgets('Open Forge is disabled with no image, enabled once one arrives',

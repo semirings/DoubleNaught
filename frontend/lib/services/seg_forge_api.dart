@@ -221,6 +221,25 @@ class SegForgeApi {
     }
   }
 
+  /// The read-only LLM payload (`sf.llm_payload/v1`): the balloon-scrubbed
+  /// page, panel crops, and every kept segment's tight crop with its caption.
+  /// Returns the decoded JSON; [SegForgeMapping.llmPayload] shapes it.
+  Future<Map<String, dynamic>> exportLlmPayload(String sessionId) async {
+    final own = client == null ? http.Client() : null;
+    final transport = client ?? own!;
+    try {
+      final response = await transport.post(
+        Uri.parse('$baseUrl/export/llm-payload'),
+        headers: const {'Content-Type': 'application/json'},
+        body: jsonEncode({'session_id': sessionId}),
+      );
+      if (response.statusCode != 200) _fail('Export LLM payload', response);
+      return jsonDecode(response.body) as Map<String, dynamic>;
+    } finally {
+      own?.close();
+    }
+  }
+
   /// Writes `masks/mask_NNN.png` for every mask in the session.
   ///
   /// Driven by the node rather than relying on the user having pressed Save in

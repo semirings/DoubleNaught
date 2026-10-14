@@ -121,6 +121,26 @@ void main() {
       expect(_pathField(tester), 'file:///tmp/picked/export.parquet');
     });
 
+    testWidgets('a picked file is flagged as not sent until Execute',
+        (tester) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: LoadFileNode(
+            node: const WorkflowNode(id: 1, type: 'load_file'),
+            pickFile: () async => XFile('/tmp/picked/export.parquet'),
+          ),
+        ),
+      ));
+      expect(find.byKey(const ValueKey('load-file-unsent')), findsNothing);
+
+      await tester.tapAt(tester.getCenter(find.byTooltip('Browse…')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Select File'));
+      await tester.pumpAndSettle();
+
+      expect(find.byKey(const ValueKey('load-file-unsent')), findsOneWidget);
+    });
+
     testWidgets('a cancelled dialog leaves the path untouched', (tester) async {
       await tester.pumpWidget(MaterialApp(
         home: Scaffold(

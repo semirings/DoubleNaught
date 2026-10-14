@@ -91,12 +91,14 @@ MODE_PROMPT_COMPLETION = "prompt_completion"
 MODE_PASSTHROUGH = "passthrough"
 MODE_INSTRUCTION_COMPLETION = "instruction_completion"
 MODE_CONTINUATION = "continuation"
+MODE_IMAGE_CAPTION = "image_caption"
 
 #: Modes offered on the canvas, in dropdown order.
 PUBLIC_MODES: tuple[str, ...] = (
     MODE_CHATML,
     MODE_PROMPT_COMPLETION,
     MODE_PASSTHROUGH,
+    MODE_IMAGE_CAPTION,
 )
 
 #: Every accepted spelling → canonical mode. Hyphens and camelCase are tolerated
@@ -112,6 +114,8 @@ MODE_ALIASES: dict[str, str] = {
     "instruction_completion": MODE_INSTRUCTION_COMPLETION,
     "instructioncompletion": MODE_INSTRUCTION_COMPLETION,
     "continuation": MODE_CONTINUATION,
+    "image_caption": MODE_IMAGE_CAPTION,
+    "imagecaption": MODE_IMAGE_CAPTION,
 }
 
 
@@ -302,6 +306,20 @@ class JsonlFormatterNode:
         }
         return (obj, "") if obj else (None, "incomplete")
 
+    def _image_caption_object(self, record: dict[str, Any]) -> tuple[Optional[Any], str]:
+        """One `{"file_name", "text"}` line per image (the HF imagefolder convention).
+
+        `text` is the improved caption, falling back to the user's own caption.
+        Rows without a `file_name` (page, panels) are skipped, never guessed.
+        """
+        name = _pick(record, ("file_name", "filename"))
+        text = _pick(record, ("improved_caption", "caption", "text"))
+        if not name.strip():
+            return None, "incomplete"
+        if not text.strip():
+            return None, "incomplete"
+        return {"file_name": name.strip(), "text": text.strip()}, ""
+
     def _object_for(self, record: dict[str, Any]) -> tuple[Optional[Any], str]:
         if self.mode == MODE_CHATML:
             return self._chatml_object(record)
@@ -309,6 +327,8 @@ class JsonlFormatterNode:
             return self._prompt_completion_object(record)
         if self.mode == MODE_CONTINUATION:
             return self._continuation_object(record)
+        if self.mode == MODE_IMAGE_CAPTION:
+            return self._image_caption_object(record)
         return self._passthrough_object(record)
 
     # ── Entry points ────────────────────────────────────────────────────────
@@ -337,6 +357,12 @@ class JsonlFormatterNode:
                 raise JsonlFormatError(
                     f"{self.mode} mode found no completion column; expected one of "
                     f"{list(COMPLETION_COLUMNS)}"
+                )
+        elif self.mode == MODE_IMAGE_CAPTION:
+            if not any(n in present for n in ("file_name", "filename")):
+                raise JsonlFormatError(
+                    "image_caption mode needs a file_name column (from the LLM "
+                    "caption output of a saved Seg Forge session)"
                 )
         elif not table.column_names:
             raise JsonlFormatError("passthrough mode needs at least one column")
