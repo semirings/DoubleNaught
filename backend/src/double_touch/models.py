@@ -757,6 +757,105 @@ class LorasetSaveResponse(CamelModel):
     path: str
 
 
+class LorasetPagesResponse(CamelModel):
+    loraset: str
+    pages: list[LorasetPage]
+
+
+class LorasetCollectRequest(CamelModel):
+    loraset: str = "mccay"
+    # Page folders held out of the collection (e.g. the evaluation page).
+    exclude: list[str] = []
+    # Folder name under storage/loraset/<set>/_collected/.
+    output: str = "train"
+
+
+class LorasetCollectResponse(CamelModel):
+    loraset: str
+    output: str
+    path: str
+    pages: list[str]
+    excluded: list[str]
+    images: int
+    skipped: int
+    problems: list[str]
+
+
+class VlmTrainRequest(CamelModel):
+    # Output folder of Collect Loraset (holds train.jsonl and images/).
+    dataset: str
+    model: str = "mlx-community/Qwen2-VL-2B-Instruct-bf16"
+    name: str = ""
+    epochs: int = 3
+    rank: int = 8
+    batch_size: int = 1
+    learning_rate: float = 1e-5
+
+
+class VlmTrainStarted(CamelModel):
+    run_id: str
+    adapter: str
+
+
+class VlmTrainStatus(CamelModel):
+    status: str
+    step: int
+    total: int
+    adapter: str
+    error: str | None = None
+    lines: list[str] = []
+
+
+class VlmCaptionRequest(CamelModel):
+    # Base64 PNG/JPEG bytes of the image to caption.
+    image_b64: str
+    model: str = "mlx-community/Qwen2-VL-2B-Instruct-bf16"
+    # Empty = plain base model (the "before" half of a before/after check).
+    adapter: str = ""
+    prompt: str = "Describe this image."
+    max_tokens: int = 200
+
+
+class VlmCaptionResponse(CamelModel):
+    text: str
+
+
+class GenerateRequest(CamelModel):
+    prompt: str
+    # Empty or the Qwen-Image-2.1 id = the default model.
+    model: str = ""
+    steps: int = 40
+    width: int = 1024
+    height: int = 1024
+    seed: int = 42
+    quantize: int = 8
+    # Optional LoRA .safetensors path and strength (0 = none ... 1 = full).
+    lora: str = ""
+    lora_scale: float = 1.0
+    # Optional init image (base64) and how strongly it steers the result.
+    image_b64: str = ""
+    image_strength: float = 0.6
+    # "img2img" repaints the init image (high strength keeps it); "edit" treats
+    # the prompt as an instruction about it (edit_strength 1 = full edit).
+    mode: str = "img2img"
+    edit_strength: float = 1.0
+
+
+class GenerateStarted(CamelModel):
+    run_id: str
+    path: str
+
+
+class GenerateStatus(CamelModel):
+    status: str
+    step: int
+    total: int
+    path: str
+    seconds: float | None = None
+    error: str | None = None
+    lines: list[str] = []
+
+
 class JsonlFormatRequest(CamelModel):
     # The source AA in wire (sparse triple) form: the documented index for
     # "chatml", passages for "prompt_completion", anything for "passthrough".

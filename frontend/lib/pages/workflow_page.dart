@@ -374,6 +374,20 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'jsonl_formatter': // tolerate a snake_case spelling in saved workflows
         // One input: `astIndex` (AA, idx 0).
         return const [0];
+      case 'collectLorasetNode':
+        // One optional input: `dir` (AA, idx 0) — e.g. Save Loraset's output.
+        return const [0];
+      case 'imageGenNode':
+        // Four optional inputs: `model` (AA, idx 0), `lora` (idx 1), `image`
+        // (idx 2), `prompt` (idx 3).
+        return const [0, 1, 2, 3];
+      case 'vlmTrainerNode':
+        // Two inputs: `dataset` (AA, idx 0), `model` (AA, idx 1, optional).
+        return const [0, 1];
+      case 'vlmCaptionNode':
+        // Three inputs: `image` (AA, idx 0), `model` (idx 1, optional),
+        // `lora` (idx 2, optional).
+        return const [0, 1, 2];
       case 'saveLorasetNode':
         // One input: `captions` (AA, idx 0) — the LLM caption output.
         return const [0];
@@ -2722,6 +2736,80 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
+      case 'imageGenNode':
+        return ImageGenNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `model` (AA, idx 0, optional) — a Load Model row; `lora` (idx 1) —
+          // a row with `path`; `image` (idx 2) — a row with `image_b64`.
+          modelConnected: _hasIncomingEdgeAt(node.id, 0),
+          onModelConnect: (source) => _connectAt(source, node.id, 0),
+          onModelInputPort: (port) => _registerAaInput(node.id, 0, port),
+          loraConnected: _hasIncomingEdgeAt(node.id, 1),
+          onLoraConnect: (source) => _connectAt(source, node.id, 1),
+          onLoraInputPort: (port) => _registerAaInput(node.id, 1, port),
+          imageConnected: _hasIncomingEdgeAt(node.id, 2),
+          onImageConnect: (source) => _connectAt(source, node.id, 2),
+          onImageInputPort: (port) => _registerAaInput(node.id, 2, port),
+          // `prompt` (AA, idx 3) — a row with `text` (Load File on a .txt).
+          promptConnected: _hasIncomingEdgeAt(node.id, 3),
+          onPromptConnect: (source) => _connectAt(source, node.id, 3),
+          onPromptInputPort: (port) => _registerAaInput(node.id, 3, port),
+          // `image` (AA, idx 0) — one row: image_b64, path.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'vlmTrainerNode':
+        return VlmTrainerNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `dataset` (AA, idx 0) — Collect Loraset's output folder.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `model` (AA, idx 1, optional) — overrides the base-model field.
+          modelConnected: _hasIncomingEdgeAt(node.id, 1),
+          onModelConnect: (source) => _connectAt(source, node.id, 1),
+          onModelInputPort: (port) => _registerAaInput(node.id, 1, port),
+          // `lora` (AA, idx 0) — the `adapter` row (path, model).
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'vlmCaptionNode':
+        return VlmCaptionNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `image` (AA, idx 0) — rows with image_b64 (Seg Forge llmPayload).
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          modelConnected: _hasIncomingEdgeAt(node.id, 1),
+          onModelConnect: (source) => _connectAt(source, node.id, 1),
+          onModelInputPort: (port) => _registerAaInput(node.id, 1, port),
+          loraConnected: _hasIncomingEdgeAt(node.id, 2),
+          onLoraConnect: (source) => _connectAt(source, node.id, 2),
+          onLoraInputPort: (port) => _registerAaInput(node.id, 2, port),
+          // `captions` (AA, idx 0) — per row: caption (+ file_name).
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'collectLorasetNode':
+        return CollectLorasetNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `dir` (AA, idx 0, optional) — a row with `loraset` or `path`.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `dataset` (AA, idx 0) — one `collected` row: path, images, pages.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          onAaOutputPort: (port) => (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
       case 'saveLorasetNode':
         return SaveLorasetNodeWidget(
           node: node,
@@ -2731,6 +2819,9 @@ class _WorkflowPageState extends State<WorkflowPage>
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `dir` (AA, idx 0) — the loraset folder, once saved.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
         );
       case 'polyglotExecNode':
       case 'polyglot_exec': // tolerate a snake_case spelling in saved workflows

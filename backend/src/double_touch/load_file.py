@@ -153,6 +153,12 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
                 
             cols_list = ["row", "file_path", "text", "extension", "file_size"]
             vals_list = [row_key, file_path_str, text, ext, size]
+            if resolved_path.is_dir():
+                # `file_path` is relative to the directory, so on its own the
+                # AA never says which directory it came from. Downstream nodes
+                # (Collect Loraset) name their work after it.
+                cols_list.append("source_dir")
+                vals_list.append(str(resolved_path))
             
             for c, v in zip(cols_list, vals_list):
                 rows.append(row_key)
@@ -165,6 +171,7 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
                 "text": text,
                 "extension": ext,
                 "file_size": size,
+                **({"source_dir": str(resolved_path)} if resolved_path.is_dir() else {}),
             })
             
         # Clean up temporary directory if we are done with it

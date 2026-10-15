@@ -437,3 +437,19 @@ def test_a_real_table_is_still_labelled_table(tmp_path):
     csv.write_text("a,b\n1,2\n")
     body = client.post("/load", json={"filePath": str(csv), "schemaMode": "raw_table"}).json()
     assert body["payloadType"] == "table"
+
+
+def test_directory_load_says_which_directory_it_came_from(tmp_path):
+    """`file_path` is relative, so each row also carries the directory itself."""
+    root = tmp_path / "mccay"
+    (root / "Page_002").mkdir(parents=True)
+    (root / "Page_002" / "metadata.jsonl").write_text("{}\n")
+    (root / "Page_003").mkdir()
+    (root / "Page_003" / "metadata.jsonl").write_text("{}\n")
+
+    aa, data = load_file(str(root), "auto")
+
+    cells = _cells(aa)
+    assert cells[("file:00000", "source_dir")] == str(root)
+    assert cells[("file:00001", "source_dir")] == str(root)
+    assert {r["source_dir"] for r in data["rows"]} == {str(root)}

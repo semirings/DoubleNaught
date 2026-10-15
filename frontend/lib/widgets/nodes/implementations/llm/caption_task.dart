@@ -180,7 +180,7 @@ class CaptionTask extends LLMTask {
     final run = await ctx.runJobs(jobs, key, minTokens: _minReplyTokens);
     if (run == null) return null;
     if (run.replies.isEmpty) {
-      throw LLMTaskError('All ${run.failed} remote call(s) failed');
+      throw LLMTaskError(allCallsFailed(run.failed, run.firstError));
     }
     return LLMResult(
       aa: _output(aa, run.replies),

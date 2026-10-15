@@ -12,8 +12,10 @@ import '../base/base_node_widget.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
 
-/// Where an ingested file's text lands relative to what is already composed.
-enum PromptInsert { append, prepend }
+/// What an ingested file's text does to what is already composed: [replace] it
+/// (the default — the file becomes the prompt), or land after ([append]) or
+/// before ([prepend]) it.
+enum PromptInsert { replace, append, prepend }
 
 /// A prompt-authoring processing node — see `DESIGN.md` → "Prompt".
 ///
@@ -89,7 +91,7 @@ class _PromptNodeWidgetState extends BaseNodeState<PromptNodeWidget> {
   final InputPort  _fileIn = InputPort('fileInput');
   final OutputPort _out    = OutputPort('promptOutput');
 
-  PromptInsert _insert = PromptInsert.append;
+  PromptInsert _insert = PromptInsert.replace;
   Timer? _debounce;
   int _ingested = 0;
 
@@ -110,7 +112,7 @@ class _PromptNodeWidgetState extends BaseNodeState<PromptNodeWidget> {
     if (saved != null) {
       _insert = PromptInsert.values.firstWhere(
         (m) => m.name == saved,
-        orElse: () => PromptInsert.append,
+        orElse: () => PromptInsert.replace,
       );
     }
 
@@ -190,6 +192,7 @@ class _PromptNodeWidgetState extends BaseNodeState<PromptNodeWidget> {
     final merged = existing.isEmpty
         ? incoming
         : switch (_insert) {
+            PromptInsert.replace => incoming,
             PromptInsert.append  => '$existing\n\n$incoming',
             PromptInsert.prepend => '$incoming\n\n$existing',
           };
@@ -255,11 +258,15 @@ class _PromptNodeWidgetState extends BaseNodeState<PromptNodeWidget> {
               ),
             ),
             PopupMenuButton<PromptInsert>(
-              tooltip: 'Where ingested file text lands',
+              tooltip: 'What ingested file text does to the prompt',
               initialValue: _insert,
               onSelected: _setInsert,
               padding: EdgeInsets.zero,
               itemBuilder: (_) => const [
+                PopupMenuItem(
+                  value: PromptInsert.replace,
+                  child: Text('Ingest: replace'),
+                ),
                 PopupMenuItem(
                   value: PromptInsert.append,
                   child: Text('Ingest: append'),

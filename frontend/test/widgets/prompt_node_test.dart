@@ -203,7 +203,7 @@ void main() {
       vals: ['FILE BODY'],
     );
 
-    testWidgets('appends into the editable state by default', (tester) async {
+    testWidgets('replaces the prompt by default', (tester) async {
       InputPort? input;
       await tester.pumpWidget(_Harness(
         initialParams: const {'prompt': 'MY PROMPT'},
@@ -215,12 +215,29 @@ void main() {
       await tester.tap(find.text('Edit'));
       await tester.pumpAndSettle();
 
-      final out = OutputPort('aa')..emit(file);
-      input!.connect(out);
+      input!.connect(OutputPort('aa')..emit(file));
+      await tester.pumpAndSettle();
+
+      expect(_inlineField(tester).controller!.text, 'FILE BODY');
+      expect(find.textContaining('1 ingested'), findsWidgets);
+      expect(find.text('replace'), findsOneWidget);
+    });
+
+    testWidgets('appends when the insert mode says so', (tester) async {
+      InputPort? input;
+      await tester.pumpWidget(_Harness(
+        initialParams: const {'prompt': 'MY PROMPT', 'insert': 'append'},
+        onInputPort: (p) => input = p,
+        onOutputPort: (_) {},
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Edit'));
+      await tester.pumpAndSettle();
+
+      input!.connect(OutputPort('aa')..emit(file));
       await tester.pumpAndSettle();
 
       expect(_inlineField(tester).controller!.text, 'MY PROMPT\n\nFILE BODY');
-      expect(find.textContaining('1 ingested'), findsWidgets);
     });
 
     testWidgets('prepends when the insert mode says so', (tester) async {

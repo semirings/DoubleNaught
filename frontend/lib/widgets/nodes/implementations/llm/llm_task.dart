@@ -145,7 +145,7 @@ class LLMRunContext {
   /// [minTokens] raises the reply cap to at least that many. A reasoning model
   /// spends its output budget on thinking before it writes a word, so a small
   /// cap that suits a short answer can cut the answer itself off mid-phrase.
-  Future<({Map<String, String> replies, int failed})?> runJobs(
+  Future<({Map<String, String> replies, int failed, String? firstError})?> runJobs(
     List<LLMJob> jobs,
     String? key, {
     int minTokens = 0,
@@ -156,6 +156,7 @@ class LLMRunContext {
     final remote = RemoteRequest(client: client);
     final replies = <String, String>{};
     var failed = 0;
+    String? firstError;
     onProgress?.call(0, jobs.length);
     for (final job in jobs) {
       if (isCancelled()) return null; // cancelled mid-loop
@@ -173,9 +174,21 @@ class LLMRunContext {
         replies[job.key] = result.text;
       } else {
         failed++;
+        // Keep the first reason: when every call fails it is the same one, and
+        // it is the only thing that says whether to fix a key, a model or a quota.
+        firstError ??= result.ok
+            ? 'the model returned no text'
+            : (result.errorMsg.isEmpty ? result.status : result.errorMsg);
       }
       onProgress?.call(replies.length + failed, jobs.length);
     }
-    return (replies: replies, failed: failed);
+    return (replies: replies, failed: failed, firstError: firstError);
   }
+}
+
+/// "All N remote call(s) failed: <reason>" — the reason trimmed to one line.
+String allCallsFailed(int count, String? reason, {String suffix = ''}) {
+  final why = (reason ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
+  final short = why.length > 240 ? '${why.substring(0, 237)}...' : why;
+  return 'All $count remote call(s) failed${short.isEmpty ? '' : ': $short'}$suffix';
 }

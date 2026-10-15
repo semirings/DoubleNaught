@@ -28,6 +28,11 @@ double getNodeWidth(String type) {
       return 320;
     case 'saveLorasetNode':
       return 320;
+    case 'collectLorasetNode':
+    case 'vlmTrainerNode':
+    case 'imageGenNode':
+    case 'vlmCaptionNode':
+      return 320;
     case 'functionExtractionNode':
       return 320;
     case 'llmDocumenterNode':

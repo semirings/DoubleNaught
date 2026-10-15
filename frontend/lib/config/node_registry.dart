@@ -113,6 +113,13 @@ const List<NodeType> nodeTypes = [
     tags: ['lora', 'training', 'dataset', 'images', 'metadata', 'jsonl', 'export', 'sink'],
   ),
   NodeType(
+    name: 'Collect Loraset',
+    type: 'collectLorasetNode',
+    category: NodeCategory.data,
+    description: 'Merge saved loraset pages into one flat training folder, holding pages out for evaluation.',
+    tags: ['lora', 'training', 'dataset', 'collect', 'consolidate', 'merge', 'holdout', 'evaluation'],
+  ),
+  NodeType(
     name: 'Fetch',
     type: 'fetch',
     category: NodeCategory.data,
@@ -298,6 +305,27 @@ const List<NodeType> nodeTypes = [
     category: NodeCategory.training,
     description: 'Define and build a GPT-style transformer.',
     tags: ['transformer', 'gpt', 'architecture', 'train', 'slm'],
+  ),
+  NodeType(
+    name: 'Generate',
+    type: 'imageGenNode',
+    category: NodeCategory.training,
+    description: 'Text/image to image with Qwen-Image-2.1 (mflux), optionally with a LoRA.',
+    tags: ['image', 'generate', 'qwen', 'diffusion', 'inference', 'text-to-image', 'lora', 'mlx'],
+  ),
+  NodeType(
+    name: 'LoRA Trainer',
+    type: 'vlmTrainerNode',
+    category: NodeCategory.training,
+    description: 'Fine-tune a Qwen-VL vision-language model with LoRA on a collected loraset.',
+    tags: ['lora', 'qwen', 'vlm', 'vision', 'fine-tune', 'train', 'mlx', 'adapter'],
+  ),
+  NodeType(
+    name: 'Caption',
+    type: 'vlmCaptionNode',
+    category: NodeCategory.training,
+    description: 'Caption images with a vision-language model, optionally with a trained LoRA.',
+    tags: ['lora', 'qwen', 'vlm', 'vision', 'caption', 'apply', 'inference', 'mlx'],
   ),
   NodeType(
     name: 'Load Model',

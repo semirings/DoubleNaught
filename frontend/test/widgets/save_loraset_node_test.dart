@@ -17,12 +17,13 @@ AaPayload _captions() => AaPayload(
       vals: ['images/s_1.png', 'better', 'nemo_1', 'AAAA'],
     );
 
-Future<({InputPort input, List<Map<String, dynamic>> requests})> _pump(
+Future<({InputPort input, OutputPort Function() output, List<Map<String, dynamic>> requests})> _pump(
   WidgetTester tester, {
   int status = 200,
   Map<String, String>? initialParams,
 }) async {
   InputPort? port;
+  OutputPort? outPort;
   final requests = <Map<String, dynamic>>[];
   final api = LorasetApi(
     client: MockClient((r) async {
@@ -52,12 +53,13 @@ Future<({InputPort input, List<Map<String, dynamic>> requests})> _pump(
           initialParams: initialParams,
           inputConnected: true,
           onInputPort: (p) => port = p,
+          onOutputPort: (p) => outPort = p,
         ),
       ),
     ),
   ));
   await tester.pumpAndSettle();
-  return (input: port!, requests: requests);
+  return (input: port!, output: () => outPort!, requests: requests);
 }
 
 Future<void> _send(WidgetTester tester, InputPort port, AaPayload aa) async {
@@ -99,5 +101,20 @@ void main() {
 
     expect(h.requests, isEmpty);
     expect(find.textContaining('Just a name'), findsOneWidget);
+  });
+
+  testWidgets('a saved loraset is announced on the dir port', (tester) async {
+    final h = await _pump(tester);
+    final probe = InputPort('probe');
+    final got = <AaPayload>[];
+    probe.onDataArrived.listen(got.add);
+    await _send(tester, h.input, _captions());
+    probe.connect(h.output());
+    await tester.pumpAndSettle();
+
+    expect(got, isNotEmpty);
+    final aa = got.last;
+    expect(aa.cols, containsAll(['loraset', 'path']));
+    expect(aa.vals, containsAll(['mccay', '/s/loraset/mccay']));
   });
 }

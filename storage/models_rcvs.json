@@ -19,9 +19,29 @@
     "model:modernbert-zeroshot",
     "model:modernbert-zeroshot",
     "model:modernbert-zeroshot",
-    "model:modernbert-zeroshot"
+    "model:modernbert-zeroshot",
+    "model:qwen-image-2.1",
+    "model:qwen-image-2.1",
+    "model:qwen-image-2.1",
+    "model:qwen-image-2.1",
+    "model:qwen-image-2.1",
+    "model:qwen2-vl-2b-mlx",
+    "model:qwen2-vl-2b-mlx",
+    "model:qwen2-vl-2b-mlx",
+    "model:qwen2-vl-2b-mlx",
+    "model:qwen2-vl-2b-mlx"
   ],
   "cols": [
+    "displayName",
+    "sourceType",
+    "pathOrUrl",
+    "format",
+    "task",
+    "displayName",
+    "sourceType",
+    "pathOrUrl",
+    "format",
+    "task",
     "displayName",
     "sourceType",
     "pathOrUrl",
@@ -63,6 +83,16 @@
     "huggingface",
     "MoritzLaurer/ModernBERT-large-zeroshot-v2.0",
     "safetensors",
-    "zero-shot-classification"
+    "zero-shot-classification",
+    "Qwen-Image-2.1",
+    "huggingface",
+    "Qwen/Qwen-Image-2.1",
+    "safetensors",
+    "text-to-image",
+    "Qwen2-VL 2B (MLX)",
+    "huggingface",
+    "mlx-community/Qwen2-VL-2B-Instruct-bf16",
+    "mlx",
+    "image-text-to-text"
   ]
 }

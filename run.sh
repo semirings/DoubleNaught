@@ -43,14 +43,16 @@ usage() {
   print -u2 "  all [flutter run args...]  Free the BE port, start BE, wait for"
   print -u2 "                             /health, then run FE"
   print -u2 ""
-  print -u2 "  up [--cold] [--no-sf] [--no-fe] [flutter run args...]"
+  print -u2 "  up [--cold] [--no-sf] [--no-fe] [--fg] [flutter run args...]"
   print -u2 "                             Start both backends as launchd user"
-  print -u2 "                             agents, then run the DN frontend in the"
-  print -u2 "                             foreground (--no-fe starts backends only)"
-  print -u2 "  dn                         Stop both BACKENDS, never the app"
-  print -u2 "                             (alias: down)"
+  print -u2 "                             agents, then build and launch the DN app"
+  print -u2 "                             IN THE BACKGROUND and return (--no-fe:"
+  print -u2 "                             backends only; --fg: run the app in the"
+  print -u2 "                             foreground with hot reload, as before)"
+  print -u2 "  dn                         Stop DN: the app it launched and both"
+  print -u2 "                             backends (alias: down)"
   print -u2 "  status                     Per-service loaded/pid/port/health report"
-  print -u2 "  logs [dn|sf]               tail -F the service logs (default: both)"
+  print -u2 "  logs [dn|sf|fe]            tail -F the logs (default: backends)"
   exit 1
 }
 
@@ -395,6 +397,102 @@ log_tail() {
   fi
 }
 
+# ── DN frontend (background) ─────────────────────────────────────────────────
+#
+# `up` launches the app with `flutter run --no-resident`: Flutter builds it,
+# starts it, and the tool exits, leaving only the app process behind. There is
+# no resident tool, so nothing holds the terminal and there is no pidfile to go
+# stale. The cost is no hot reload; `up --fg` (or `FE`) still gives that.
+#
+# The app is found by WHERE IT RUNS FROM, not by a recorded pid — the same
+# lesson as the backends' lsof sweeps. Anything executing out of this repo's
+# frontend/build/macos tree is DN's app. SegForge's app lives under SegForge/, so
+# it cannot match.
+
+FE_LOG="$LOG_DIR/dn-frontend.log"
+FE_BUILD="$ROOT/frontend/build/macos/Build/Products"
+
+# Running app processes only (the bundle's executable).
+fe_app_pids() { pgrep -f "$FE_BUILD/.*[.]app/Contents/MacOS/" 2>/dev/null || true }
+# Anything from the build tree, build tools included — what `dn` must stop.
+fe_all_pids() { pgrep -f "$FE_BUILD" 2>/dev/null || true }
+
+fe_up() {
+  local -a fe_args; fe_args=("$@")
+  local pids; pids="$(fe_app_pids)"
+
+  print ""
+  print -r -- "── DN app — flutter run --no-resident (background)"
+  if [[ -n "$pids" ]]; then
+    print -r -- "  already running (pid ${pids//$'\n'/ }) — leaving it"
+    return 0
+  fi
+  if ! command -v flutter >/dev/null 2>&1; then
+    print -u2 "  FAILED: flutter not found on PATH."
+    print -u2 "  The backends are up and staying up (./run.sh dn stops them)."
+    return 1
+  fi
+
+  mkdir -p "$LOG_DIR"
+  print -r -- "  log: $FE_LOG"
+  print -r -- "  first build can take minutes; the app opens when it is ready"
+  print -r -- "=== $(date '+%Y-%m-%d %H:%M:%S') up ===" >> "$FE_LOG"
+  local tool
+  (
+    cd "$ROOT/frontend" \
+      && exec nohup flutter run -d macos --no-resident \
+           --dart-define=DN_STORAGE_DIR="$ROOT/storage" "${fe_args[@]}" \
+           >> "$FE_LOG" 2>&1 < /dev/null
+  ) &!
+  tool=$!
+
+  # Ready = the app process exists and is still there a few seconds after the
+  # launching tool is gone. Seeing it appear alone is not enough: if the app
+  # only lived as long as the tool, it would show up and then vanish.
+  local n=0 limit=360   # 360 x 0.5s = 3 minutes of watching
+  print -n "  waiting for the app"
+  while (( n < limit )); do
+    if ! kill -0 "$tool" 2>/dev/null; then
+      sleep 3
+      if [[ -n "$(fe_app_pids)" ]]; then
+        print " up (pid $(fe_app_pids | tr '\n' ' '))"
+        return 0
+      fi
+      print " FAILED"
+      print -u2 "  flutter exited and no app is running."
+      print -u2 ""
+      print -u2 "── last 30 lines of $FE_LOG ──"
+      tail -n 30 "$FE_LOG" >&2 || true
+      return 1
+    fi
+    (( n % 10 == 0 )) && print -n "."
+    sleep 0.5
+    (( n += 1 ))
+  done
+  print " still building"
+  print -r -- "  not an error: follow it with ./run.sh logs fe"
+  return 0
+}
+
+fe_down() {
+  local pids pid waited=0
+  pids="$(fe_all_pids)"
+  [[ -z "$pids" ]] && return 0
+  for pid in ${(f)pids}; do
+    print -r -- "app: stopping pid $pid: $(ps -o command= -p "$pid" 2>/dev/null | cut -c1-96)"
+  done
+  print -r -- "$pids" | xargs kill 2>/dev/null || true
+  while (( waited < 50 )) && [[ -n "$(fe_all_pids)" ]]; do
+    sleep 0.1; (( waited += 1 ))
+  done
+  pids="$(fe_all_pids)"
+  if [[ -n "$pids" ]]; then
+    print -r -- "app: ignored SIGTERM; sending SIGKILL to ${pids//$'\n'/ }"
+    print -r -- "$pids" | xargs kill -9 2>/dev/null || true
+    sleep 0.5
+  fi
+}
+
 # ── up ──────────────────────────────────────────────────────────────────────
 
 svc_up() {
@@ -453,7 +551,7 @@ svc_up() {
 }
 
 cmd_up() {
-  local cold=0 want_sf=1 want_fe=1 a
+  local cold=0 want_sf=1 want_fe=1 fg=0 a
   # Anything not a recognised flag is passed through to `flutter run`, the same
   # way `all [flutter run args...]` does. Flutter rejects what it does not know,
   # so a mistyped flag still surfaces rather than being swallowed.
@@ -463,6 +561,7 @@ cmd_up() {
       --cold)  cold=1 ;;
       --no-sf) want_sf=0 ;;
       --no-fe) want_fe=0 ;;
+      --fg)    fg=1 ;;
       *) fe_args+=("$a") ;;
     esac
   done
@@ -504,7 +603,17 @@ cmd_up() {
 
   (( want_fe )) || return 0
 
-  # ── frontend, in the foreground ───────────────────────────────────────────
+  # Default: the app starts in the background and `up` returns.
+  if (( ! fg )); then
+    fe_up "${fe_args[@]}" || exit 1
+    print ""
+    print "up: DN is running in the background."
+    print "up:   ./run.sh dn        stops it (app and backends)"
+    print "up:   ./run.sh status    health;  ./run.sh logs fe|dn|sf    logs"
+    return 0
+  fi
+
+  # ── frontend, in the foreground (up --fg) ───────────────────────────────────────────
   #
   # Same invocation as `all` and `FE`: flutter run -d macos from frontend/,
   # with DN_STORAGE_DIR pointed at the repo's storage/. Foreground on purpose,
@@ -568,11 +677,8 @@ cmd_down() {
   # Then the ports, for anything launchd never owned — a pre-launchd orphan, or
   # a backend the Seg Forge node widget spawned detached (it does; see report).
   #
-  # BACKENDS ONLY. Flutter apps are never touched, by construction: the only
-  # things considered here are the two labels above and whatever holds 8400 or
-  # 8401. A running DN or SegForge frontend binds neither, so `dn` leaves a
-  # foregrounded `up` frontend alive and talking to backends that are gone —
-  # which is the intended split, not an oversight.
+  # Backends: the two labels above, plus whatever holds 8400 or 8401. The DN
+  # app is stopped separately below. SegForge's app is never touched.
   for port in "$BE_PORT" "$SF_PORT"; do
     pids="$(port_pids "$port")"
     [[ -z "$pids" ]] && continue
@@ -598,6 +704,13 @@ cmd_down() {
   done
   sleep 0.5
 
+  # The DN app, found by where it runs from (see fe_all_pids). This includes an
+  # app started by `FE` or `up --fg`: it is DN's app all the same.
+  if [[ -n "$(fe_all_pids)" ]]; then
+    stopped+=("DN app (pids $(fe_all_pids | tr '\n' ' '))")
+    fe_down
+  fi
+
   print ""
   if (( ${#stopped[@]} )); then
     print "Stopped:"
@@ -617,6 +730,12 @@ cmd_down() {
       print -r -- "port $port: free"
     fi
   done
+  if [[ -n "$(fe_all_pids)" ]]; then
+    print -u2 "DN app is STILL running: $(fe_all_pids | tr '\n' ' ')"
+    rc=1
+  else
+    print -r -- "DN app: stopped"
+  fi
   (( rc )) && exit 1
   return 0
 }
@@ -677,6 +796,14 @@ cmd_status() {
     print -r -- "  log:     $(svc_log "$svc")"
   done
   print ""
+  print -r -- "── DN app"
+  if [[ -n "$(fe_app_pids)" ]]; then
+    print -r -- "  running, pid $(fe_app_pids | tr '\n' ' ')"
+  else
+    print -r -- "  not running"
+  fi
+  print -r -- "  log:     $FE_LOG"
+  print ""
 }
 
 # ── logs ────────────────────────────────────────────────────────────────────
@@ -686,8 +813,9 @@ cmd_logs() {
   case "${1:-both}" in
     dn) files=("$(svc_log dn)") ;;
     sf) files=("$(svc_log sf)") ;;
+    fe) files=("$FE_LOG") ;;
     both) files=("$(svc_log dn)" "$(svc_log sf)") ;;
-    *) print -u2 "logs: expected dn, sf, or nothing"; exit 1 ;;
+    *) print -u2 "logs: expected dn, sf, fe, or nothing"; exit 1 ;;
   esac
   mkdir -p "$LOG_DIR"
   local f; for f in "${files[@]}"; do [[ -e "$f" ]] || : > "$f"; done

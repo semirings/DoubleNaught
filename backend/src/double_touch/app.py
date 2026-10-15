@@ -56,6 +56,17 @@ from . import review as review_logic
 from .inventory import InventoryStore, select_aa
 import d4m_juliacall_bridge
 from .models import (
+    GenerateRequest,
+    GenerateStarted,
+    GenerateStatus,
+    VlmCaptionRequest,
+    VlmCaptionResponse,
+    VlmTrainRequest,
+    VlmTrainStarted,
+    VlmTrainStatus,
+    LorasetCollectRequest,
+    LorasetCollectResponse,
+    LorasetPagesResponse,
     LorasetSaveRequest,
     LorasetSaveResponse,
     D4mExecRequest,
@@ -130,7 +141,8 @@ from .sessions import PromptRecord, Session, SessionStore
 from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
 from .save_file import delete_output, execute_save
-from .loraset import LorasetError, save_loraset
+from . import image_gen, vlm_jobs
+from .loraset import LorasetError, collect_loraset, list_pages, save_loraset
 from .load_file import load_file
 from .ast_extract import (
     AstExtractError,
@@ -1222,6 +1234,113 @@ async def loraset_save(request: LorasetSaveRequest) -> LorasetSaveResponse:
         return LorasetSaveResponse(**save_loraset(request.captions, request.loraset))
     except LorasetError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/loraset/pages", response_model=LorasetPagesResponse)
+async def loraset_pages(loraset: str = "mccay") -> LorasetPagesResponse:
+    """The saved pages of a loraset, for the Collect node's checklist."""
+    from .loraset import safe_name
+
+    return LorasetPagesResponse(
+        loraset=safe_name(loraset, "mccay"), pages=list_pages(loraset)
+    )
+
+
+@app.post("/loraset/collect", response_model=LorasetCollectResponse)
+async def loraset_collect(request: LorasetCollectRequest) -> LorasetCollectResponse:
+    """Merge saved pages (minus held-out ones) into one flat, trainer-ready folder."""
+    try:
+        return LorasetCollectResponse(
+            **collect_loraset(request.loraset, request.exclude, request.output)
+        )
+    except LorasetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/generate", response_model=GenerateStarted)
+async def generate_start(request: GenerateRequest) -> GenerateStarted:
+    """Start a Qwen-Image-2.1 generation (mflux); poll /generate/{id}."""
+    try:
+        return GenerateStarted(**image_gen.start_generate(**request.model_dump()))
+    except image_gen.GenerateError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/generate/{run_id}", response_model=GenerateStatus)
+async def generate_status(run_id: str) -> GenerateStatus:
+    try:
+        return GenerateStatus(**image_gen.generate_status(run_id))
+    except image_gen.GenerateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/generate/{run_id}/cancel", response_model=GenerateStatus)
+async def generate_cancel(run_id: str) -> GenerateStatus:
+    try:
+        return GenerateStatus(**image_gen.cancel_generate(run_id))
+    except image_gen.GenerateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/generate/{run_id}/image")
+async def generate_image(run_id: str):
+    """The finished PNG."""
+    from fastapi.responses import Response
+
+    try:
+        return Response(content=image_gen.generate_result(run_id), media_type="image/png")
+    except image_gen.GenerateError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/vlm/train", response_model=VlmTrainStarted)
+async def vlm_train(request: VlmTrainRequest) -> VlmTrainStarted:
+    """Start a LoRA fine-tune of a vision-language model; poll /vlm/train/{id}."""
+    try:
+        return VlmTrainStarted(**vlm_jobs.start_train(**request.model_dump()))
+    except vlm_jobs.VlmError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/vlm/train/{run_id}", response_model=VlmTrainStatus)
+async def vlm_train_status(run_id: str) -> VlmTrainStatus:
+    try:
+        return VlmTrainStatus(**vlm_jobs.train_status(run_id))
+    except vlm_jobs.VlmError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/vlm/train/{run_id}/cancel", response_model=VlmTrainStatus)
+async def vlm_train_cancel(run_id: str) -> VlmTrainStatus:
+    try:
+        return VlmTrainStatus(**vlm_jobs.cancel_train(run_id))
+    except vlm_jobs.VlmError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/vlm/caption", response_model=VlmCaptionResponse)
+async def vlm_caption(request: VlmCaptionRequest) -> VlmCaptionResponse:
+    """Caption one image with a (LoRA-adapted) vision-language model."""
+    import asyncio
+    import base64
+    import binascii
+    import tempfile
+
+    try:
+        raw = base64.b64decode(request.image_b64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="imageB64 is not valid base64")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "image.png"
+        path.write_bytes(raw)
+        try:
+            text = await asyncio.to_thread(
+                vlm_jobs.caption_image,
+                str(path), request.model, request.adapter, request.prompt, request.max_tokens,
+            )
+        except vlm_jobs.VlmError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    return VlmCaptionResponse(text=text)
 
 
 @app.post("/jsonl/format/aa", response_model=JsonlFormatResponse)

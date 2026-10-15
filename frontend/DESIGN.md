@@ -206,8 +206,8 @@ an upstream file.
 | Output port (right edge, idx 0) | **`promptOutput`** — an AA carrying the composed prompt |
 
 - **`fileInput` ingest.** An arriving AA is flattened to text and merged into the
-  prompt state — **appended** by default, **prepended** when the node's insert
-  mode says so. Preference order for which cells supply the text: a `text`,
+  prompt state — it **replaces** the prompt by default, and is **appended** or
+  **prepended** when the node's insert mode says so. Preference order for which cells supply the text: a `text`,
   `prompt`, `content`, or `val` column if the AA has one; otherwise every string
   value, joined by newline. Ingest mutates the same editable state the user
   types into, so an ingested file is immediately editable.

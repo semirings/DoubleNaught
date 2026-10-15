@@ -2,10 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:aa_preview_table/aa_preview_table.dart';
+import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
+import '../../../services/infobus/output_port.dart';
 import '../../../services/loraset_api.dart';
 import '../base/base_node_widget.dart';
 import '../base/execute_button.dart';
+import '../base/output_connector.dart';
 import '../base/wait_checkbox.dart';
 import '../base/wait_gated_execution.dart';
 
@@ -27,6 +30,8 @@ class SaveLorasetNodeWidget extends BaseNodeWidget {
     super.onInputPort,
     super.inputConnected,
     super.onInputConnect,
+    super.onOutputPort,
+    super.connectedOutputs,
     this.api,
   });
 
@@ -45,6 +50,7 @@ class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
 
   late final LorasetApi _api;
   late final InputPort _in;
+  final OutputPort _out = OutputPort('dir');
   late final TextEditingController _set;
 
   AaPayload? _incoming;
@@ -76,6 +82,7 @@ class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
         saveParams({'loraset': _set.text.trim()});
         if (mounted) setState(() {});
       });
+    initOutputPort(_out);
     _in = InputPort('captions');
     initInputPort(_in, _onIngress);
     _in.onDisconnected.listen((_) => _dropIncoming());
@@ -84,6 +91,7 @@ class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
   @override
   void dispose() {
     _in.dispose();
+    _out.dispose();
     _set.dispose();
     _execClient?.close();
     super.dispose();
@@ -129,6 +137,12 @@ class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
       setComplete(
         detail: '${result.images} images · $pages page${pages == 1 ? '' : 's'}',
       );
+      // The loraset folder, for Collect Loraset's `dir` port.
+      _out.emit(AaPayload(
+        rows: const ['loraset', 'loraset'],
+        cols: const ['loraset', 'path'],
+        vals: [result.loraset, result.path],
+      ));
     } catch (e) {
       if (gen != _execGen || !mounted) return;
       setError(e);
@@ -152,7 +166,14 @@ class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
       [singleInputConnector(label: 'captions')];
 
   @override
-  List<Widget> buildOutputConnectors(BuildContext context) => const [];
+  List<Widget> buildOutputConnectors(BuildContext context) => [
+        OutputConnector(
+          label: 'dir',
+          idx: 0,
+          active: _result != null || widget.connectedOutputs.contains(0),
+          dragData: PortRef(nodeId: widget.node.id, idx: 0),
+        ),
+      ];
 
   @override
   Widget buildNodeBody(BuildContext context) {

@@ -88,7 +88,7 @@ class CodeDocTask extends LLMTask {
 
     if (run.replies.isEmpty) {
       throw LLMTaskError(
-        'All ${run.failed} remote call(s) failed — nothing to merge',
+        allCallsFailed(run.failed, run.firstError, suffix: ' — nothing to merge'),
       );
     }
 
