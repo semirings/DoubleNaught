@@ -945,6 +945,53 @@ void main() {
       expect(l.exes, hasLength(1), reason: 'Execute must not relaunch');
     });
 
+    testWidgets('picking another session drops the held results, so Execute reads that session',
+        (tester) async {
+      final l = _launcher();
+      final a = _api(imageBytes: _bytes);
+      final ports = await _pump(
+        tester,
+        api: a.api,
+        launcher: l.launcher,
+        idGenerator: () => 'sess_02',
+      );
+
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+      expect(ports.segments, hasLength(1));
+
+      // A different session is now selected. Its Execute must read IT, not
+      // forward the first session's output (the bug: every downstream save
+      // landed on the first session's page).
+      await _createSession(tester, name: 'Other');
+      a.calls.clear();
+      await tester.tap(find.byType(ExecuteButton));
+      await tester.pumpAndSettle();
+
+      expect(a.calls, contains('GET /loadSession/sess_02'),
+          reason: 'Execute read the newly selected session');
+      expect(l.exes, hasLength(1), reason: 'reading saved work never relaunches the app');
+    });
+
+    testWidgets('Execute still forwards held results when the session has not changed',
+        (tester) async {
+      final l = _launcher();
+      final a = _api(imageBytes: _bytes);
+      final ports = await _pump(tester, api: a.api, launcher: l.launcher);
+
+      await _send(tester, ports.image, _imageAa(_bytes));
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Open Forge'));
+      await tester.pumpAndSettle();
+      a.calls.clear();
+      await tester.tap(find.byType(ExecuteButton));
+      await tester.pumpAndSettle();
+
+      expect(ports.segments, hasLength(2));
+      expect(a.calls.where((c) => c.startsWith('GET /loadSession/')), isEmpty,
+          reason: 'same session: forward what is held, read nothing');
+    });
+
     testWidgets('Open Forge is the button that turns, not Execute',
         (tester) async {
       final l = _launcher(autoExit: false);
@@ -1179,6 +1226,37 @@ void _modeTests() {
       expect(ports.segments.last.cols, contains('mode'));
       expect(ports.segments.last.value('mode'), 'comix');
       expect(ports.linkage.last.value('mode'), 'comix');
+    });
+  });
+
+  group('session pick list order', () {
+    Map<String, dynamic> s(String id, String? name) => {'session_id': id, 'name': name};
+    List<String> ids(List<Map<String, dynamic>> l) => [for (final x in l) x['session_id'] as String];
+
+    test('sorts by name, ignoring case', () {
+      final out = sortedSessions([s('3', 'zebra'), s('1', 'Apple'), s('2', 'banana')]);
+      expect(ids(out), ['1', '2', '3']);
+    });
+
+    test('numbers inside names compare as numbers', () {
+      final out = sortedSessions([s('a', 'Page 10'), s('b', 'Page 2'), s('c', 'Page 000'), s('d', 'Page 001')]);
+      expect(ids(out), ['c', 'd', 'b', 'a']);
+    });
+
+    test('unnamed sessions go last, ordered by id', () {
+      final out = sortedSessions([s('z', ''), s('b', 'Beta'), s('y', null), s('a', 'Alpha')]);
+      expect(ids(out), ['a', 'b', 'y', 'z']);
+    });
+
+    test('equal names fall back to id so the order is stable', () {
+      final out = sortedSessions([s('2', 'Page'), s('1', 'Page')]);
+      expect(ids(out), ['1', '2']);
+    });
+
+    test('does not mutate its input', () {
+      final input = [s('2', 'b'), s('1', 'a')];
+      sortedSessions(input);
+      expect(ids(input), ['2', '1']);
     });
   });
 }

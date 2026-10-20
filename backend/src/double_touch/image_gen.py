@@ -41,12 +41,20 @@ from .loraset import loraset_root
 
 COMMAND = "mflux-generate-qwen-2.1"
 EDIT_COMMAND = "mflux-generate-qwen-2.1-edit"
+ZIMAGE_COMMAND = "mflux-generate-z-image-turbo"
 MODES = ("img2img", "edit")
+# A LoRA only works on the model family it was trained on.
+FAMILIES = ("qwen", "z-image")
 DEFAULT_MODEL_IDS = {"qwen/qwen-image-2.1", "qwen-image-2.1"}
 INSTALL_HINT = (
     f"{COMMAND} was not found. Install mflux 0.22+ in its own environment "
     '(pip install -U mflux) and put it on PATH, or set DOUBLE_TOUCH_MFLUX_QWEN21 '
     "to the command's full path."
+)
+
+ZIMAGE_INSTALL_HINT = (
+    f"{ZIMAGE_COMMAND} was not found. It ships with mflux 0.22+; put it on PATH, "
+    "or set DOUBLE_TOUCH_MFLUX_ZIMAGE to the command's full path."
 )
 
 EDIT_INSTALL_HINT = (
@@ -69,6 +77,21 @@ def output_root() -> Path:
 def find_command() -> Optional[str]:
     explicit = os.environ.get("DOUBLE_TOUCH_MFLUX_QWEN21", "").strip()
     return explicit or shutil.which(COMMAND)
+
+
+def find_zimage_command() -> Optional[str]:
+    explicit = os.environ.get("DOUBLE_TOUCH_MFLUX_ZIMAGE", "").strip()
+    if explicit:
+        return explicit
+    found = shutil.which(ZIMAGE_COMMAND)
+    if found:
+        return found
+    base = find_command()
+    if base:
+        beside = Path(base).with_name(ZIMAGE_COMMAND)
+        if beside.is_file():
+            return str(beside)
+    return None
 
 
 def find_edit_command() -> Optional[str]:
@@ -162,11 +185,17 @@ def start_generate(
     image_strength: float = 0.6,
     mode: str = "img2img",
     edit_strength: float = 1.0,
+    family: str = "qwen",
     command: Optional[str] = None,
 ) -> dict[str, Any]:
+    if family not in FAMILIES:
+        raise GenerateError(f"family must be one of {', '.join(FAMILIES)}")
+    zimage = family == "z-image"
     if mode not in MODES:
         raise GenerateError(f"mode must be one of {', '.join(MODES)}")
     edit = mode == "edit"
+    if zimage and edit:
+        raise GenerateError("Z-Image has no edit mode - use img2img or no start image")
     if not prompt.strip():
         raise GenerateError("enter a prompt")
     if steps < 1:
@@ -184,17 +213,24 @@ def start_generate(
         raise GenerateError("quantize must be 0 (none), 4 or 8")
     if lora and not Path(lora).is_file():
         raise GenerateError(f"LoRA not found: {lora}")
-    exe = command or (find_edit_command() if edit else find_command())
+    if zimage:
+        exe, hint = command or find_zimage_command(), ZIMAGE_INSTALL_HINT
+    elif edit:
+        exe, hint = command or find_edit_command(), EDIT_INSTALL_HINT
+    else:
+        exe, hint = command or find_command(), INSTALL_HINT
     if not exe:
-        raise GenerateError(EDIT_INSTALL_HINT if edit else INSTALL_HINT)
+        raise GenerateError(hint)
 
     tmp: Optional[Path] = None
     cmd = [
         exe, "--prompt", prompt.strip(), "--steps", str(steps),
         "--width", str(width), "--height", str(height), "--seed", str(seed),
     ]
-    if model.strip() and model.strip().lower() not in DEFAULT_MODEL_IDS:
-        cmd += ["--model", model.strip()]
+    wanted = model.strip()
+    # Z-Image's command only accepts its own model names; the Qwen default must not leak in.
+    if wanted and wanted.lower() not in DEFAULT_MODEL_IDS and (not zimage or "z-image" in wanted.lower()):
+        cmd += ["--model", wanted]
     if quantize:
         cmd += ["-q", str(quantize)]
     if lora:
@@ -218,7 +254,7 @@ def start_generate(
     output = out_dir / f"gen_{int(time.time() * 1000)}_{seed}.png"
     cmd += ["--output", str(output)]
 
-    job = _Job(output, steps, tmp, EDIT_COMMAND if edit else COMMAND)
+    job = _Job(output, steps, tmp, ZIMAGE_COMMAND if zimage else EDIT_COMMAND if edit else COMMAND)
     try:
         job.proc = _popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     except OSError as exc:

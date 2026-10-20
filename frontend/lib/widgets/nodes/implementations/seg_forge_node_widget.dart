@@ -58,6 +58,46 @@ Future<SegForgeProcess> launchSegForgeProcess({
   return _RealSegForgeProcess(process);
 }
 
+/// Orders session names for the pick list: case-insensitive, with runs of
+/// digits compared as numbers, so "Page 2" comes before "Page 10" and "Page 000"
+/// before "Page 001".
+int compareSessionNames(String a, String b) {
+  final token = RegExp(r'\d+|\D+');
+  final pa = token.allMatches(a.toLowerCase()).map((m) => m.group(0)!).toList();
+  final pb = token.allMatches(b.toLowerCase()).map((m) => m.group(0)!).toList();
+  bool isNum(String s) => s.codeUnitAt(0) >= 0x30 && s.codeUnitAt(0) <= 0x39;
+  for (var i = 0; i < pa.length && i < pb.length; i++) {
+    final x = pa[i], y = pb[i];
+    int c;
+    if (isNum(x) && isNum(y)) {
+      // Compare as numbers without parsing (no overflow on long digit runs).
+      final sx = x.replaceFirst(RegExp(r'^0+(?=\d)'), '');
+      final sy = y.replaceFirst(RegExp(r'^0+(?=\d)'), '');
+      c = sx.length != sy.length ? sx.length.compareTo(sy.length) : sx.compareTo(sy);
+      if (c == 0) c = x.length.compareTo(y.length); // "000" vs "0": keep a fixed order
+    } else {
+      c = x.compareTo(y);
+    }
+    if (c != 0) return c;
+  }
+  return pa.length.compareTo(pb.length);
+}
+
+/// The session pick list in display order: by name (see [compareSessionNames]),
+/// unnamed sessions last, ties broken by id so the order never flickers. Returns
+/// a new list; the entries are the same maps.
+List<Map<String, dynamic>> sortedSessions(Iterable<Map<String, dynamic>> sessions) {
+  String nameOf(Map<String, dynamic> s) => ((s['name'] as String?) ?? '').trim();
+  final out = sessions.toList();
+  out.sort((a, b) {
+    final na = nameOf(a), nb = nameOf(b);
+    if (na.isEmpty != nb.isEmpty) return na.isEmpty ? 1 : -1;
+    final c = compareSessionNames(na, nb);
+    return c != 0 ? c : ((a['session_id'] as String?) ?? '').compareTo((b['session_id'] as String?) ?? '');
+  });
+  return out;
+}
+
 class _RealSegForgeProcess implements SegForgeProcess {
   final Process _process;
   _RealSegForgeProcess(this._process);
@@ -284,6 +324,11 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
   /// Currently selected session ID from the picklist.
   String? _selectedSessionId;
 
+  /// The session the held output AAs came from. Execute forwards whatever is
+  /// held, so without this a different session picked afterwards would send the
+  /// previous session's results downstream under the new session's name.
+  String? _heldSessionId;
+
   /// Which toolset to launch SegForge with. Node-local: the mode is chosen
   /// HERE, so it does not arrive over the `image` port and is not read back
   /// out of an incoming AA. It is persisted in the node's own params and
@@ -481,13 +526,33 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       final sessions = await _api.listSessions();
       if (!mounted) return;
       setState(() {
-        _sessionsList = sessions;
-        _selectedSessionId = sessions.isNotEmpty ? sessions[0]['session_id'] as String : null;
+        _sessionsList = sortedSessions(sessions);
+        _selectedSessionId = _sessionsList.isNotEmpty ? _sessionsList[0]['session_id'] as String : null;
       });
     } catch (e) {
       debugPrint('Warning: Failed to load sessions from backend: $e');
       // Continue with empty list if load fails.
     }
+  }
+
+  /// Picks [id] in the session list. Results held from a different session are
+  /// dropped, so Execute reads the session now shown instead of forwarding the
+  /// old session's output (which made every downstream save land on the first
+  /// session's page).
+  void _selectSession(String id) {
+    if (id == _selectedSessionId) return;
+    final dropsHeld = isReady && _heldSessionId != id;
+    setState(() {
+      _selectedSessionId = id;
+      if (dropsHeld) {
+        _segmentAa = null;
+        _linkageAa = null;
+        _llmAa = null;
+        _summaryText = null;
+        _heldSessionId = null;
+      }
+    });
+    if (dropsHeld) setIdle();
   }
 
   /// Real UUIDv4 — matches SF's own `uuid.uuid4()` id scheme, so a session
@@ -560,9 +625,11 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     };
 
     setState(() {
-      _sessionsList.insert(0, newSession);
-      _selectedSessionId = sessionId;
+      // Sorted like the rest, not pinned to the top: where a session sits
+      // should not depend on whether it was created this run or loaded.
+      _sessionsList = sortedSessions([..._sessionsList, newSession]);
     });
+    _selectSession(sessionId);
     // `showDialog`'s Future resolves as soon as `Navigator.pop` is called —
     // before the dialog's closing transition has actually finished rendering
     // the TextFields still attached to these controllers. Disposing them
@@ -720,6 +787,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       _linkageAa = null;
       _llmAa = null;
       _summaryText = null;
+      _heldSessionId = null;
     });
 
     try {
@@ -805,6 +873,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       setState(() => _running = process);
 
       await process.exitCode;
+      debugPrint('[SEG-FORGE] SegForge app exited; collecting results');
       if (gen != _execGen || !mounted) return;
       setState(() => _running = null);
 
@@ -818,7 +887,10 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
 
   /// Pulls a finished session's results and maps them onto the two outputs.
   Future<void> _collect(String sessionId, String filename, int gen) async {
+    final watch = Stopwatch()..start();
+    void step(String what) => debugPrint('[SEG-FORGE] collect: $what at ${watch.elapsedMilliseconds} ms');
     final session = await _api.loadSession(sessionId);
+    step('loadSession done');
     if (gen != _execGen || !mounted) return;
 
     if (session.isEmpty) {
@@ -856,11 +928,14 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     String? imagesWhy;
     try {
       await _api.saveMasks(sessionId);
+      step('saveMasks done');
       if (gen != _execGen || !mounted) return;
       await _api.createSegments(sessionId);
+      step('createSegments done');
       if (gen != _execGen || !mounted) return;
 
       final cutoutUrls = await _api.showSegments(sessionId);
+      step('showSegments done');
       if (gen != _execGen || !mounted) return;
 
       for (var i = 0; i < count; i++) {
@@ -911,6 +986,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     String? llmWhy;
     try {
       final export = Map<String, dynamic>.of(await _api.exportLlmPayload(sessionId));
+      step('exportLlmPayload done');
       // The name in this node's session picker is the one the user chose, so it
       // labels the loraset page; SF's own copy is only the fallback.
       final picked = _sessionsList
@@ -947,10 +1023,12 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       _segmentAa = _withMode(segmentAa);
       _linkageAa = _withMode(linkageAa);
       _llmAa = llmAa;
+      _heldSessionId = sessionId;
       _summaryText = '$count segment${count == 1 ? '' : 's'} · '
           '${session.prompts.length} prompt${session.prompts.length == 1 ? '' : 's'}'
           '$imgShort$whyShort';
     });
+    step('complete');
     setComplete(detail: _summaryText);
     maybeAutoFire();
   }
@@ -970,10 +1048,13 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     if (process == null) return;
     final gen = _execGen;
 
+    final closeWatch = Stopwatch()..start();
+    debugPrint('[SEG-FORGE] Close Forge: begin, saving session');
     final sessionId = _selectedSessionId;
     if (sessionId != null) {
       try {
         await _api.saveSessionToDisk(sessionId);
+        debugPrint('[SEG-FORGE] Close Forge: session saved in ${closeWatch.elapsedMilliseconds} ms');
       } catch (e) {
         // A failed flush is not worth abandoning the close over — SegForge
         // writes state.json after every inference anyway, so the disk copy is
@@ -983,6 +1064,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
     }
     if (gen != _execGen || !mounted) return;
 
+    debugPrint('[SEG-FORGE] Close Forge: killing the SegForge app (${closeWatch.elapsedMilliseconds} ms since click)');
     process.kill();
   }
 
@@ -1190,9 +1272,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
                         onChanged: busy || _sessionsList.isEmpty
                             ? null
                             : (v) {
-                                if (v != null) {
-                                  setState(() => _selectedSessionId = v);
-                                }
+                                if (v != null) _selectSession(v);
                               },
                       ),
                     ),

@@ -297,5 +297,94 @@ void main() {
     await t.pumpAndSettle();
     expect(find.text('×32'), findsOneWidget);
   });
-}
 
+  testWidgets('Generate: a Z-Image LoRA sets the family, 9 steps and no Edit mode',
+      (t) async {
+    final posts = <Map<String, dynamic>>[];
+    final api = GenerateApi(
+      client: MockClient((r) async {
+        if (r.method == 'POST') {
+          posts.add(jsonDecode(r.body) as Map<String, dynamic>);
+          return http.Response(jsonEncode({'runId': 'g4', 'path': '/g/d.png'}), 200);
+        }
+        if (r.url.path.endsWith('/image')) return http.Response.bytes(_png, 200);
+        return http.Response(
+            jsonEncode({
+              'status': 'done', 'step': 9, 'total': 9, 'path': '/g/d.png',
+              'seconds': 1.0, 'error': null, 'lines': [],
+            }),
+            200);
+      }),
+    );
+    InputPort? lora;
+    await t.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(
+          child: ImageGenNodeWidget(
+            node: const WorkflowNode(id: 3, type: 'imageGenNode'),
+            initialParams: const {'prompt': 'mccaystyle, a boy asleep', 'mode': 'edit'},
+            api: api,
+            poll: const Duration(milliseconds: 20),
+            onLoraInputPort: (p) => lora = p,
+          ),
+        ),
+      ),
+    ));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('gen-mode')), findsOneWidget);
+
+    lora!.connect(OutputPort('l')
+      ..emit(AaPayload(
+        rows: const ['adapter', 'adapter', 'adapter'],
+        cols: const ['path', 'model', 'family'],
+        vals: const ['/lora/z.safetensors', 'z-image-turbo', 'z-image'],
+      )));
+    await t.pumpAndSettle();
+
+    // The LoRA decided: family note shown, Edit gone, steps now 9.
+    expect(find.byKey(const ValueKey('gen-family-note')), findsOneWidget);
+    expect(find.byKey(const ValueKey('gen-mode')), findsNothing);
+    expect(find.text('Z-Image-Turbo'), findsOneWidget);
+    final steps = t.widget<TextField>(find.byKey(const ValueKey('gen-steps')));
+    expect(steps.controller!.text, '9');
+
+    await t.tap(find.text('Execute'));
+    for (var i = 0; i < 6; i++) {
+      await t.pump(const Duration(milliseconds: 30));
+    }
+    final body = posts.single;
+    expect(body['family'], 'z-image');
+    expect(body['steps'], 9);
+    expect(body['lora'], '/lora/z.safetensors');
+    // A saved 'edit' mode must not reach the backend for Z-Image.
+    expect(body['mode'], 'img2img');
+  });
+
+  testWidgets('Generate: the family selector works without a LoRA and keeps hand-set steps',
+      (t) async {
+    await t.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(
+          child: ImageGenNodeWidget(
+            node: const WorkflowNode(id: 3, type: 'imageGenNode'),
+            initialParams: const {'steps': '12'},
+            api: GenerateApi(client: MockClient((r) async => http.Response('{}', 200))),
+          ),
+        ),
+      ),
+    ));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('gen-family-note')), findsNothing);
+
+    await t.tap(find.text('Z-Image'));
+    await t.pumpAndSettle();
+    expect(find.text('Z-Image-Turbo'), findsOneWidget);
+    expect(find.byKey(const ValueKey('gen-mode')), findsNothing);
+    // 12 was typed by hand, not the Qwen default (40), so it stays.
+    expect(t.widget<TextField>(find.byKey(const ValueKey('gen-steps'))).controller!.text, '12');
+
+    await t.tap(find.text('Qwen-Image'));
+    await t.pumpAndSettle();
+    expect(find.byKey(const ValueKey('gen-mode')), findsOneWidget);
+  });
+}

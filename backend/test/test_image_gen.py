@@ -176,3 +176,27 @@ def test_edit_failures_name_the_edit_command(monkeypatch):
     st = _wait(r["run_id"])
     assert st["status"] == "failed" and "mflux-generate-qwen-2.1-edit exited" in st["error"]
 
+
+
+def test_z_image_family_uses_its_own_command_and_refuses_edit(monkeypatch, tmp_path):
+    lora = tmp_path / "z.safetensors"; lora.write_bytes(b"x")
+    seen = {}
+    _fake(monkeypatch, OK, seen)
+    monkeypatch.setattr(image_gen, "find_zimage_command", lambda: "mflux-generate-z-image-turbo")
+    r = image_gen.start_generate("a bed", steps=9, width=512, height=512, lora=str(lora),
+                                 family="z-image")
+    st = _wait(r["run_id"])
+    c = seen["cmd"]
+    assert st["status"] == "done" and c[0] == "mflux-generate-z-image-turbo"
+    assert c[c.index("--lora") + 1] == str(lora) and "--model" not in c
+    with pytest.raises(GenerateError, match="no edit mode"):
+        image_gen.start_generate("p", family="z-image", mode="edit", image_b64="eA==")
+    with pytest.raises(GenerateError, match="family"):
+        image_gen.start_generate("p", family="sdxl")
+
+
+def test_z_image_command_missing_names_the_right_command(monkeypatch):
+    monkeypatch.delenv("DOUBLE_TOUCH_MFLUX_ZIMAGE", raising=False)
+    monkeypatch.setattr(image_gen.shutil, "which", lambda _c: None)
+    with pytest.raises(GenerateError, match="mflux-generate-z-image-turbo was not found"):
+        image_gen.start_generate("p", family="z-image")

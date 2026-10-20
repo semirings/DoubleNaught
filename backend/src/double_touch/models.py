@@ -839,6 +839,61 @@ class GenerateRequest(CamelModel):
     # the prompt as an instruction about it (edit_strength 1 = full edit).
     mode: str = "img2img"
     edit_strength: float = 1.0
+    # Which model the LoRA was trained for: "qwen" (Qwen-Image-2.1) or "z-image".
+    family: str = "qwen"
+
+
+class ImageTrainRequest(CamelModel):
+    # Collect Loraset's output folder (what its port carries). When empty, the
+    # folder is found from the set and output names below.
+    dataset: str = ""
+    loraset: str = "mccay"
+    output: str = "train"
+    name: str = ""
+    epochs: int = 20
+    rank: int = 16
+    learning_rate: float = 1e-4
+    resolution: int = 768
+    # Word put in front of every caption; use it in prompts to switch the style on.
+    trigger: str = ""
+    quantize: int = 0
+
+
+class ImageTrainStarted(CamelModel):
+    run_id: str
+    adapter: str
+    images: int
+    total: int
+    run_dir: str
+
+
+class ImageTrainStatus(CamelModel):
+    status: str
+    step: int
+    total: int
+    adapter: str
+    iteration: int
+    checkpoints: int
+    error: str | None = None
+    lines: list[str] = []
+
+
+class LoraInspectRequest(CamelModel):
+    path: str
+
+
+class LoraInspectResponse(CamelModel):
+    path: str
+    name: str
+    tensors: int
+    matched: int
+    rank: int | None = None
+    # "yes" fits Qwen-Image-2.1, "partial" only some layers do, "no" none do.
+    compatible: str
+    # Short id of what the file looks like: qwen-image-2.1, flux1, sdxl, sd15, ...
+    family: str = "unknown"
+    message: str
+    base_model: str | None = None
 
 
 class GenerateStarted(CamelModel):

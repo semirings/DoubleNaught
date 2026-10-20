@@ -45,6 +45,7 @@ class GenerateApi {
     double imageStrength = 0.6,
     String mode = 'img2img',
     double editStrength = 1.0,
+    String family = 'qwen',
   }) =>
       _with((c) async {
         final r = await c.post(
@@ -63,6 +64,7 @@ class GenerateApi {
             'imageStrength': imageStrength,
             'mode': mode,
             'editStrength': editStrength,
+            'family': family,
           }),
         );
         if (r.statusCode != 200) _fail('Generate', r);

@@ -381,6 +381,9 @@ class _WorkflowPageState extends State<WorkflowPage>
         // Four optional inputs: `model` (AA, idx 0), `lora` (idx 1), `image`
         // (idx 2), `prompt` (idx 3).
         return const [0, 1, 2, 3];
+      case 'imageTrainNode':
+        // One input: `dataset` (AA, idx 0) — Collect Loraset's output.
+        return const [0];
       case 'vlmTrainerNode':
         // Two inputs: `dataset` (AA, idx 0), `model` (AA, idx 1, optional).
         return const [0, 1];
@@ -2757,6 +2760,19 @@ class _WorkflowPageState extends State<WorkflowPage>
           onPromptConnect: (source) => _connectAt(source, node.id, 3),
           onPromptInputPort: (port) => _registerAaInput(node.id, 3, port),
           // `image` (AA, idx 0) — one row: image_b64, path.
+          onOutputPort: (port) => _aaOutputPorts[node.id] = port,
+          connectedOutputs: _connectedOutputs(node.id),
+        );
+      case 'imageTrainNode':
+        return ImageTrainNodeWidget(
+          node: node,
+          initialParams: _nodeParams[node.id],
+          onParams: (p) => _nodeParams[node.id] = p,
+          // `dataset` (AA, idx 0) — Collect Loraset's output folder.
+          inputConnected: _hasIncomingEdgeAt(node.id, 0),
+          onInputConnect: (source) => _connectAt(source, node.id, 0),
+          onInputPort: (port) => _registerAaInput(node.id, 0, port),
+          // `lora` (AA, idx 0) — the `adapter` row (path, model, family).
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );

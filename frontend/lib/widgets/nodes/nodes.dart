@@ -49,5 +49,6 @@ export 'implementations/collect_loraset_node_widget.dart';
 export 'implementations/vlm_trainer_node_widget.dart';
 export 'implementations/vlm_caption_node_widget.dart';
 export 'implementations/image_gen_node_widget.dart';
+export 'implementations/image_train_node_widget.dart';
 export 'implementations/function_extraction_node_widget.dart';
 export 'implementations/seg_forge_node_widget.dart';

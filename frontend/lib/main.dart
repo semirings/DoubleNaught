@@ -9,8 +9,21 @@ import 'package:vyuh_plugin_content_provider_sanity/vyuh_plugin_content_provider
 import 'config/root_feature.dart';
 import 'config/sanity_config.dart';
 
+/// Prefixes every `debugPrint` with the wall-clock time (HH:MM:SS.mmm), so the
+/// frontend log can be lined up with the backends' logs.
+void _stampDebugPrint() {
+  final original = debugPrint;
+  debugPrint = (String? message, {int? wrapWidth}) {
+    final t = DateTime.now();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final stamp = '${two(t.hour)}:${two(t.minute)}:${two(t.second)}.${t.millisecond.toString().padLeft(3, '0')}';
+    original('$stamp $message', wrapWidth: wrapWidth);
+  };
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _stampDebugPrint();
   try {
     await dotenv.load(fileName: ".env");
   } catch (e) {

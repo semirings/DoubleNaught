@@ -27,6 +27,13 @@ import 'vlm_trainer_node_widget.dart' show firstValue;
 /// `prompt` (idx 3, optional) — a row with `text` (Load File on a .txt) or
 /// `prompt`, which replaces the Prompt field.
 ///
+/// Model family: **Qwen-Image-2.1** or **Z-Image-Turbo**. A LoRA only works on
+/// the family it was trained for, so a wired LoRA row's `family` column (the
+/// Image LoRA Trainer writes `z-image`) decides it; with none, the selector does.
+/// Switching family also swaps the default step count (40 for Qwen, 9 for the
+/// distilled Z-Image-Turbo) unless the field was changed by hand. Z-Image has
+/// no Edit mode.
+///
 /// Mode, when a start image is wired: **Img2img** repaints the picture (Image
 /// strength: higher keeps more of it) and **Edit** treats the prompt as an
 /// instruction about it (Edit strength: 1 = full edit, lower = subtler).
@@ -101,6 +108,8 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
   late final TextEditingController _imgStrength;
   late final TextEditingController _editStrength;
   String _mode = 'img2img';
+  String _familyChoice = 'qwen';
+  String _lastFamily = 'qwen';
 
   AaPayload? _modelRow;
   AaPayload? _loraRow;
@@ -134,7 +143,35 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
     return (v != null && v > 0 && v <= 1) ? v : null;
   }
 
-  bool get _edit => _mode == 'edit';
+  /// `qwen` or `z-image`: the wired LoRA's `family` if it names one we know,
+  /// else the selector.
+  String get _family {
+    final f = firstValue(_loraRow, 'family');
+    return (f == 'qwen' || f == 'z-image') ? f! : _familyChoice;
+  }
+
+  bool get _familyFromLora {
+    final f = firstValue(_loraRow, 'family');
+    return f == 'qwen' || f == 'z-image';
+  }
+
+  bool get _zimage => _family == 'z-image';
+
+  static String _defaultSteps(String family) => family == 'z-image' ? '9' : '40';
+
+  /// After anything that can change [_family]: swap the step count when it is
+  /// still the old family's default, so a Z-Image run is not 40 turbo steps.
+  void _familyMoved() {
+    final now = _family;
+    if (now == _lastFamily) return;
+    if (_steps.text.trim() == _defaultSteps(_lastFamily)) {
+      _steps.text = _defaultSteps(now);
+    }
+    _lastFamily = now;
+    _persist();
+  }
+
+  bool get _edit => !_zimage && _mode == 'edit';
 
   /// Edit wants multiples of 32; plain generation, 16.
   int get _grid => _edit ? 32 : 16;
@@ -190,6 +227,8 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
     _imgStrength = TextEditingController(text: p?['imageStrength'] ?? '0.6');
     _editStrength = TextEditingController(text: p?['editStrength'] ?? '1.0');
     _mode = p?['mode'] == 'edit' ? 'edit' : 'img2img';
+    _familyChoice = p?['family'] == 'z-image' ? 'z-image' : 'qwen';
+    _lastFamily = _familyChoice;
 
     _modelIn = InputPort('model');
     widget.onModelInputPort?.call(_modelIn);
@@ -203,10 +242,18 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
     _loraIn = InputPort('lora');
     widget.onLoraInputPort?.call(_loraIn);
     _loraIn.onDataArrived.listen((aa) {
-      if (mounted) setState(() => _loraRow = aa);
+      if (!mounted) return;
+      setState(() {
+        _loraRow = aa;
+        _familyMoved();
+      });
     });
     _loraIn.onDisconnected.listen((_) {
-      if (mounted) setState(() => _loraRow = null);
+      if (!mounted) return;
+      setState(() {
+        _loraRow = null;
+        _familyMoved();
+      });
     });
 
     _imageIn = InputPort('image');
@@ -258,6 +305,7 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
         'imageStrength': _imgStrength.text.trim(),
         'editStrength': _editStrength.text.trim(),
         'mode': _mode,
+        'family': _familyChoice,
       });
 
   @override
@@ -284,8 +332,9 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
         loraScale: _strengthValue!,
         imageB64: _init,
         imageStrength: _imgStrengthValue!,
-        mode: _mode,
+        mode: _edit ? 'edit' : 'img2img',
         editStrength: _editStrengthValue!,
+        family: _family,
       );
       if (gen != _gen || !mounted) return;
       _runId = id;
@@ -433,12 +482,42 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
             labelText: 'Prompt',
             helperText: _wiredPrompt != null
                 ? 'from the prompt port'
-                : (_model.isEmpty ? 'Qwen-Image-2.1' : _model),
+                : (_zimage
+                    ? 'Z-Image-Turbo'
+                    : (_model.isEmpty ? 'Qwen-Image-2.1' : _model)),
             isDense: true,
             border: const OutlineInputBorder(),
           ),
         ),
         const SizedBox(height: 8),
+        SegmentedButton<String>(
+          key: const ValueKey('gen-family'),
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(value: 'qwen', label: Text('Qwen-Image')),
+            ButtonSegment(value: 'z-image', label: Text('Z-Image')),
+          ],
+          selected: {_family},
+          onSelectionChanged: (busy || _familyFromLora)
+              ? null
+              : (v) {
+                  setState(() {
+                    _familyChoice = v.first;
+                    _familyMoved();
+                  });
+                  _persist();
+                },
+        ),
+        if (_familyFromLora)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text('set by the LoRA',
+                key: const ValueKey('gen-family-note'),
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+          ),
+        const SizedBox(height: 8),
+        if (!_zimage)
         SegmentedButton<String>(
           key: const ValueKey('gen-mode'),
           showSelectedIcon: false,
@@ -454,7 +533,7 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
                   _persist();
                 },
         ),
-        const SizedBox(height: 8),
+        if (!_zimage) const SizedBox(height: 8),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
