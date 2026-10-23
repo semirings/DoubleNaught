@@ -1,1 +1,0 @@
-[subject], [action], [clothing], [colors]

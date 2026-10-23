@@ -1,1 +1,0 @@
-eight year old boy, red shirt, blue jeans, white shoes, black hair
