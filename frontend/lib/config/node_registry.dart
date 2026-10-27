@@ -314,6 +314,20 @@ const List<NodeType> nodeTypes = [
     tags: ['image', 'generate', 'qwen', 'diffusion', 'inference', 'text-to-image', 'lora', 'mlx'],
   ),
   NodeType(
+    name: 'Image LoRA Trainer',
+    type: 'imageTrainNode',
+    category: NodeCategory.training,
+    description: 'Train an image LoRA (Z-Image-Turbo, mflux) on a collected loraset; wire the result to Generate.',
+    tags: ['lora', 'image', 'diffusion', 'z-image', 'train', 'style', 'mflux', 'mlx', 'adapter'],
+  ),
+  NodeType(
+    name: 'Image LoRA Cloud Trainer',
+    type: 'vertexTrainerNode',
+    category: NodeCategory.training,
+    description: 'Train an image LoRA (Z-Image-Turbo, ai-toolkit) on Vertex AI; wire the result to Generate.',
+    tags: ['lora', 'image', 'diffusion', 'z-image', 'train', 'style', 'cloud', 'vertex', 'gcp', 'adapter'],
+  ),
+  NodeType(
     name: 'LoRA Trainer',
     type: 'vlmTrainerNode',
     category: NodeCategory.training,

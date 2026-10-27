@@ -11,6 +11,7 @@ export 'base/double_naught_node_wrapper.dart';
 export 'base/execute_button.dart';
 export 'base/input_connector.dart';
 export 'base/output_connector.dart';
+export 'base/training_fields_mixin.dart';
 export 'base/wait_checkbox.dart';
 export 'base/wait_gated_execution.dart';
 
@@ -49,5 +50,7 @@ export 'implementations/collect_loraset_node_widget.dart';
 export 'implementations/vlm_trainer_node_widget.dart';
 export 'implementations/vlm_caption_node_widget.dart';
 export 'implementations/image_gen_node_widget.dart';
+export 'implementations/image_train_node_widget.dart';
+export 'implementations/vertex_trainer_node_widget.dart';
 export 'implementations/function_extraction_node_widget.dart';
 export 'implementations/seg_forge_node_widget.dart';

@@ -10,6 +10,16 @@ import 'package:flutter/material.dart';
 /// States: `disabled` (![enabled]), `enabled` (idle, interactive), `lit`
 /// (enabled and currently pressed — the "pressed/active" visual feedback from
 /// the contract), and `executing` (see [executing]).
+///
+/// Idle (enabled/disabled/lit) renders as a green outline — the same
+/// `0xFF43A047` as the toolbar's "Go" button in `workflow_page.dart`, so a
+/// node's own primary action reads as the same color as the global run
+/// trigger, just scoped to one node instead of the whole graph. Disabled
+/// dims that green toward black (identical recipe to Go's own disabled
+/// state) rather than switching to an unrelated gray. [executing] is
+/// unchanged — solid orange, labeled "Cancel" — and the button reverts to
+/// the green outline the instant [executing] goes false again, no separate
+/// handling needed.
 class ExecuteButton extends StatefulWidget {
   /// Whether the button accepts taps. Per the contract, this becomes true
   /// the moment the node's required inputs are satisfied (and valid, where a
@@ -49,24 +59,32 @@ class _ExecuteButtonState extends State<ExecuteButton> {
     if (_pressed != value) setState(() => _pressed = value);
   }
 
-  // Fixed literal colors matching `UX_UI/_template.py`'s
-  // BUTTON_DISABLED_COL / BUTTON_NORMAL_COL / BUTTON_LIT_COL /
-  // BUTTON_CANCEL_COL / TEXT_COL / TEXT_DIM_COL — not theme-derived,
-  // identical across every node.
-  static const _disabledFill = Color.fromRGBO(33, 33, 38, 1);
-  static const _normalFill = Color.fromRGBO(51, 48, 69, 1);
-  static const _litFill = Color.fromRGBO(148, 87, 250, 1);
+  // `_runGreen` is literally `_SelectionBar._runColor` in workflow_page.dart
+  // (the toolbar's "Go" button) — kept as its own literal here rather than
+  // imported, since this is a leaf widget with no dependency on that page,
+  // but it must stay equal to it by eye. `_cancelFill` / `_textBright` are
+  // unchanged from the original palette (`UX_UI/_template.py`'s
+  // BUTTON_CANCEL_COL / TEXT_COL) — the executing/Cancel state was already
+  // solid orange and stays that way.
+  static const _runGreen = Color(0xFF43A047);
   static const _cancelFill = Color.fromRGBO(242, 140, 51, 1);
   static const _textBright = Color.fromRGBO(224, 222, 235, 1);
-  static const _textDim = Color.fromRGBO(140, 138, 153, 1);
+
+  /// Same dimming recipe as `_SelectionBar._outlined()`'s disabled state:
+  /// blend toward black rather than switching to a separate gray, so the
+  /// border and the label/icon always agree on one muted hue instead of
+  /// looking like two different disabled treatments fighting each other.
+  Color _dim(Color c) => Color.lerp(c, Colors.black, 0.55)!;
 
   @override
   Widget build(BuildContext context) {
     if (widget.executing) {
       // Cancel is deliberately not the arrowhead's tap-flash treatment —
-      // there is no "lit" sub-state for Cancel, just tappable.
+      // there is no "lit" sub-state for Cancel, just tappable. Solid fill,
+      // no outline — unchanged from before.
       return _shell(
         fill: _cancelFill,
+        border: null,
         textColor: _textBright,
         label: 'Cancel',
         icon: Icons.stop_rounded,
@@ -75,12 +93,14 @@ class _ExecuteButtonState extends State<ExecuteButton> {
     }
 
     final lit = widget.enabled && _pressed;
-    final fill =
-        !widget.enabled ? _disabledFill : (lit ? _litFill : _normalFill);
-    final textColor = widget.enabled ? _textBright : _textDim;
+    final accent = widget.enabled ? _runGreen : _dim(_runGreen);
+    // Idle is an outline, not a fill — transparent at rest, a faint tint of
+    // the same green while pressed-and-enabled ("lit"), never a solid block.
+    final fill = lit ? accent.withValues(alpha: 0.16) : Colors.transparent;
     return _shell(
       fill: fill,
-      textColor: textColor,
+      border: accent,
+      textColor: accent,
       label: 'Execute',
       icon: Icons.arrow_forward_rounded,
       onTap: widget.enabled ? widget.onPressed : null,
@@ -92,6 +112,7 @@ class _ExecuteButtonState extends State<ExecuteButton> {
 
   Widget _shell({
     required Color fill,
+    required Color? border,
     required Color textColor,
     required String label,
     required IconData icon,
@@ -105,7 +126,12 @@ class _ExecuteButtonState extends State<ExecuteButton> {
       width: double.infinity,
       child: Material(
         color: fill,
-        borderRadius: BorderRadius.circular(8),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+          side: border == null
+              ? BorderSide.none
+              : BorderSide(color: border, width: 1.5),
+        ),
         child: InkWell(
           borderRadius: BorderRadius.circular(8),
           onTap: onTap,

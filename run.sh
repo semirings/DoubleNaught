@@ -51,6 +51,7 @@ usage() {
   print -u2 "                             foreground with hot reload, as before)"
   print -u2 "  dn                         Stop DN: the app it launched and both"
   print -u2 "                             backends (alias: down)"
+  print -u2 "  re [up args...]            Restart: dn, then up (same args as up)"
   print -u2 "  status                     Per-service loaded/pid/port/health report"
   print -u2 "  logs [dn|sf|fe]            tail -F the logs (default: backends)"
   exit 1
@@ -740,6 +741,18 @@ cmd_down() {
   return 0
 }
 
+# ── re (restart) ─────────────────────────────────────────────────────────────
+#
+# Just dn followed by up: stop everything, then bring it back. Exists because
+# `up` alone leaves a stale app/backend running in place (see svc_up/fe_up —
+# both treat "already running" as done, not as something to refresh), so
+# picking up new frontend or backend code needs an explicit stop first.
+
+cmd_re() {
+  cmd_down
+  cmd_up "$@"
+}
+
 # ── status ──────────────────────────────────────────────────────────────────
 
 cmd_status() {
@@ -904,6 +917,7 @@ case "$cmd" in
     flutter run -d macos --dart-define=DN_STORAGE_DIR="$ROOT/storage" "$@"
     ;;
   up)     cmd_up "$@" ;;
+  re)     cmd_re "$@" ;;
   dn|down) cmd_down ;;
   status) cmd_status ;;
   logs)   cmd_logs "$@" ;;

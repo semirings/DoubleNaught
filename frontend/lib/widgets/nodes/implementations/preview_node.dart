@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
 import 'package:aa_preview_table/aa_preview_table.dart';
@@ -104,12 +106,29 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode>
   }
 
   FocusContent? _buildContent() {
-    if (_aa != null) {
-      final rows = _aa!.distinctRows().length;
-      final cols = _distinctColCount(_aa!);
-      return FocusContent.aa(_aa!, subtitle: '$rows rows × $cols cols');
+    final aa = _aa;
+    if (aa == null) return null;
+
+    // Same convention Generate's own `_init` getter reads for a start image:
+    // an `image_b64` (or `bytes`) column means this AA *is* a picture, not a
+    // table to browse — show it as one instead of dumping the base64 string
+    // as a cell's raw text.
+    final imageB64 = aa.value('image_b64') ?? aa.value('bytes');
+    if (imageB64 != null && imageB64.isNotEmpty) {
+      try {
+        return FocusContent.image(
+          bytes: base64Decode(imageB64),
+          subtitle: aa.value('path'),
+        );
+      } catch (_) {
+        // Not actually valid base64 — fall through to the generic AA view,
+        // where seeing the raw value is more useful than a decode crash.
+      }
     }
-    return null;
+
+    final rows = aa.distinctRows().length;
+    final cols = _distinctColCount(aa);
+    return FocusContent.aa(aa, subtitle: '$rows rows × $cols cols');
   }
 
   int _distinctColCount(AaPayload aa) {

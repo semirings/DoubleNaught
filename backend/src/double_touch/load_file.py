@@ -29,6 +29,7 @@ import urllib.request
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import yaml
 
 from .io_support import IOSupport
 from .models import AssocArray
@@ -103,6 +104,35 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
     files = []
     # If the user passed a glob string pattern (or if resolved_path is a directory)
     if resolved_path.is_dir():
+        # A LoRA run's own output directory (one `*.safetensors` beside its
+        # `train.json` — see image_train.py's export()) is a special case: load
+        # it as the single adapter row Image LoRA Trainer's own `lora` output
+        # emits (`path` / `model` / `family`), not as one row per file. Without
+        # this, the walk below would try to decode the (large, binary)
+        # .safetensors as UTF-8 text, and the adapter would arrive with no
+        # `family`, so Generate could never auto-pick Qwen vs Z-Image for it.
+        adapter = _lora_adapter_in_dir(resolved_path)
+        if adapter is not None:
+            aa, data = _load_lora_adapter_dir(resolved_path, adapter)
+            if temp_dir:
+                temp_dir.cleanup()
+            return aa, data
+
+        # Likewise, a Collect Loraset output directory (a `metadata.jsonl`
+        # beside the images - see image_train.py's read_captions()) is loaded
+        # as the single summary row Collect Loraset's own `dataset` output
+        # already emits (`path` / `images` / `pages`), not one row per file.
+        # The trainer nodes' dataset port only ever reads a `path` column off
+        # the first row (see firstValue() in vlm_trainer_node_widget.dart), so
+        # without this special case Load File's generic per-file walk below -
+        # one row per image/caption file, no `path` column at all - leaves
+        # the dataset port looking empty and Execute stays disabled.
+        if _collected_loraset_in_dir(resolved_path):
+            aa, data = _load_collected_loraset_dir(resolved_path)
+            if temp_dir:
+                temp_dir.cleanup()
+            return aa, data
+
         for p in resolved_path.rglob("*"):
             if p.is_file():
                 # Filter out hidden or skipped directories
@@ -211,6 +241,127 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
             temp_dir.cleanup()
 
     return aa, data
+
+
+def _lora_adapter_in_dir(dir_path: Path) -> Optional[Path]:
+    """The one ``*.safetensors`` file at the top of [dir_path], if it sits
+    beside a ``train.json`` (local mflux runs — see ``image_train.py``'s
+    ``export()``) or a ``config.yaml`` (Vertex AI / ai-toolkit cloud runs —
+    see ``cloud_train.py``'s ``_CONFIG_TEMPLATE``) — the two shapes a LoRA
+    run's output directory can take. ``None`` for anything else, including a
+    directory with more than one ``.safetensors`` (ambiguous — we would not
+    know which one the caller means) or none at all (not a run directory,
+    just an ordinary one Load File should walk as usual).
+    """
+    if not (dir_path / "train.json").is_file() and not (dir_path / "config.yaml").is_file():
+        return None
+    candidates = [
+        p for p in dir_path.iterdir()
+        if p.is_file() and p.suffix.lower() == ".safetensors"
+    ]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _lora_model_from_run_config(dir_path: Path) -> str:
+    """The trained-on model name out of whichever config this run directory
+    has: ``train.json``'s flat ``model`` string (local mflux runs), or
+    ``config.yaml``'s nested ai-toolkit shape, ``config.process[0].model``
+    (``name_or_path``, falling back to ``arch`` — e.g. ``zimage`` for
+    Tongyi-MAI/Z-Image-Turbo) for Vertex cloud runs. Empty string if neither
+    file parses or has a model to report.
+    """
+    train_json = dir_path / "train.json"
+    if train_json.is_file():
+        try:
+            config = json.loads(train_json.read_text())
+        except Exception:
+            return ""
+        return str(config.get("model", ""))
+
+    config_yaml = dir_path / "config.yaml"
+    if config_yaml.is_file():
+        try:
+            doc = yaml.safe_load(config_yaml.read_text()) or {}
+        except Exception:
+            return ""
+        try:
+            process = doc["config"]["process"][0]
+            model = process.get("model", {})
+        except (KeyError, IndexError, TypeError, AttributeError):
+            return ""
+        return str(model.get("name_or_path") or model.get("arch") or "")
+
+    return ""
+
+
+def _load_lora_adapter_dir(dir_path: Path, safetensors_path: Path) -> tuple[AssocArray, dict]:
+    """A LoRA run directory as the one-row adapter AA Image LoRA Trainer's own
+    ``lora`` output already emits: ``path`` (the ``.safetensors``), ``model``
+    (from the run's ``train.json`` or ``config.yaml``, whichever is present —
+    see ``_lora_model_from_run_config``), ``family`` (``z-image`` or ``qwen``,
+    inferred from ``model`` — empty when neither matches, so Generate falls
+    back to its own toggle rather than guessing wrong).
+    """
+    model = _lora_model_from_run_config(dir_path)
+    lower = model.lower()
+    if "z-image" in lower or "zimage" in lower:
+        family = "z-image"
+    elif "qwen" in lower:
+        family = "qwen"
+    else:
+        family = ""
+
+    raw = {"path": str(safetensors_path), "model": model, "family": family}
+    return (
+        AssocArray(
+            rows=["0", "0", "0"],
+            cols=["path", "model", "family"],
+            vals=[str(safetensors_path), model, family],
+        ),
+        raw,
+    )
+
+
+def _collected_loraset_in_dir(dir_path: Path) -> bool:
+    """True for a Collect Loraset output directory: it always writes a
+    ``metadata.jsonl`` alongside the images (one JSON row per image, with
+    ``file_name``/``text`` - see ``image_train.py``'s ``read_captions()``).
+    No other directory Load File is pointed at is expected to have one, so
+    this alone is enough to tell the two cases apart.
+    """
+    return (dir_path / "metadata.jsonl").is_file()
+
+
+def _load_collected_loraset_dir(dir_path: Path) -> tuple[AssocArray, dict]:
+    """A Collect Loraset output directory as the one-row summary AA Collect
+    Loraset's own ``dataset`` output already emits: ``path`` (the folder),
+    ``images`` (captioned images that will actually be trained on - same
+    count ``read_captions()`` would return), ``pages`` (left empty - the
+    source scrape's page list isn't recoverable once only the collected
+    folder is left; nothing downstream reads it off this path).
+    """
+    images = 0
+    meta = dir_path / "metadata.jsonl"
+    for line in meta.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        name, text = row.get("file_name"), str(row.get("text") or "").strip()
+        if name and text and (dir_path / str(name)).is_file():
+            images += 1
+
+    raw = {"path": str(dir_path), "images": images, "pages": ""}
+    return (
+        AssocArray(
+            rows=["collected", "collected", "collected"],
+            cols=["path", "images", "pages"],
+            vals=[str(dir_path), str(images), ""],
+        ),
+        raw,
+    )
 
 
 def _load_text(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Optional[dict]]:

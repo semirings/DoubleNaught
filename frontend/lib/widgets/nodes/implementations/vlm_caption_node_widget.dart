@@ -6,10 +6,9 @@ import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/vlm_api.dart';
 import '../base/base_node_widget.dart';
-import '../base/execute_button.dart';
+import '../base/gated_node_state.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
-import '../base/wait_gated_execution.dart';
 import 'vlm_trainer_node_widget.dart' show firstValue;
 
 /// Captions images with a vision-language model, optionally with a LoRA on top.
@@ -55,8 +54,7 @@ class VlmCaptionNodeWidget extends BaseNodeWidget {
   State<VlmCaptionNodeWidget> createState() => _VlmCaptionNodeWidgetState();
 }
 
-class _VlmCaptionNodeWidgetState extends BaseNodeState<VlmCaptionNodeWidget>
-    with WaitGatedExecution<VlmCaptionNodeWidget> {
+class _VlmCaptionNodeWidgetState extends GatedNodeState<VlmCaptionNodeWidget> {
   @override String   get nodeTitle    => 'Caption';
   @override IconData get nodeIcon     => Icons.image_search_outlined;
   @override double   get nodeWidth    => 320;
@@ -300,11 +298,7 @@ class _VlmCaptionNodeWidgetState extends BaseNodeState<VlmCaptionNodeWidget>
               ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
         ),
         const SizedBox(height: 10),
-        ExecuteButton(
-          enabled: isReady && !busy,
-          executing: busy,
-          onPressed: busy ? _cancel : onExecutePressed,
-        ),
+        ...buildWaitAndExecute(busy: busy, onCancel: _cancel),
         const SizedBox(height: 8),
         statusRow(),
       ],

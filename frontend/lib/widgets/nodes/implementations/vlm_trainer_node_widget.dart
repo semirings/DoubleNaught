@@ -8,10 +8,9 @@ import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../../../services/vlm_api.dart';
 import '../base/base_node_widget.dart';
-import '../base/execute_button.dart';
+import '../base/gated_node_state.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
-import '../base/wait_gated_execution.dart';
 
 /// First value in [aa] for column [col], or null.
 String? firstValue(AaPayload? aa, String col) {
@@ -61,8 +60,7 @@ class VlmTrainerNodeWidget extends BaseNodeWidget {
   State<VlmTrainerNodeWidget> createState() => _VlmTrainerNodeWidgetState();
 }
 
-class _VlmTrainerNodeWidgetState extends BaseNodeState<VlmTrainerNodeWidget>
-    with WaitGatedExecution<VlmTrainerNodeWidget> {
+class _VlmTrainerNodeWidgetState extends GatedNodeState<VlmTrainerNodeWidget> {
   @override String   get nodeTitle    => 'LoRA Trainer';
   @override IconData get nodeIcon     => Icons.tune;
   @override double   get nodeWidth    => 320;
@@ -303,11 +301,7 @@ class _VlmTrainerNodeWidgetState extends BaseNodeState<VlmTrainerNodeWidget>
           ],
         ),
         const SizedBox(height: 10),
-        ExecuteButton(
-          enabled: isReady && !busy,
-          executing: busy,
-          onPressed: busy ? _cancel : onExecutePressed,
-        ),
+        ...buildWaitAndExecute(busy: busy, onCancel: _cancel),
         const SizedBox(height: 8),
         statusRow(),
         if (_adapter != null) ...[

@@ -143,6 +143,35 @@ def test_edit_mode_full_strength_sends_no_strength_flag(monkeypatch):
     assert "--strength" not in seen["cmd"]
 
 
+def test_img2img_needs_an_image(monkeypatch):
+    seen = {}
+    _fake(monkeypatch, OK, seen)
+    with pytest.raises(GenerateError, match="img2img needs a start image"):
+        image_gen.start_generate("p", mode="img2img", command="x")
+    # With one, it is the same img2img flow as the (now implicit) default case.
+    r = image_gen.start_generate(
+        "p", mode="img2img", image_b64=base64.b64encode(b"png").decode(), command="x")
+    _wait(r["run_id"])
+    assert "--image" in seen["cmd"]
+
+
+def test_text2img_is_the_default_and_never_requires_a_picture(monkeypatch):
+    seen = {}
+    _fake(monkeypatch, OK, seen)
+    # Explicit text2img, nothing wired: fine, no --image flag — the same shape
+    # test_generate_builds_the_documented_flags_and_returns_the_image already
+    # covers via the (now text2img) default, with the mode named this time.
+    r = image_gen.start_generate("p", mode="text2img", command="x")
+    _wait(r["run_id"])
+    assert "--image" not in seen["cmd"]
+    # text2img does not strip a picture that is wired in anyway — same
+    # pass-through the implicit default always had, before this mode existed.
+    r = image_gen.start_generate(
+        "p", mode="text2img", image_b64=base64.b64encode(b"png").decode(), command="x")
+    _wait(r["run_id"])
+    assert "--image" in seen["cmd"]
+
+
 def test_edit_mode_needs_an_image_and_32_multiple_sizes_and_a_valid_strength():
     png = base64.b64encode(b"png").decode()
     with pytest.raises(GenerateError, match="start image"):
@@ -176,3 +205,27 @@ def test_edit_failures_name_the_edit_command(monkeypatch):
     st = _wait(r["run_id"])
     assert st["status"] == "failed" and "mflux-generate-qwen-2.1-edit exited" in st["error"]
 
+
+
+def test_z_image_family_uses_its_own_command_and_refuses_edit(monkeypatch, tmp_path):
+    lora = tmp_path / "z.safetensors"; lora.write_bytes(b"x")
+    seen = {}
+    _fake(monkeypatch, OK, seen)
+    monkeypatch.setattr(image_gen, "find_zimage_command", lambda: "mflux-generate-z-image-turbo")
+    r = image_gen.start_generate("a bed", steps=9, width=512, height=512, lora=str(lora),
+                                 family="z-image")
+    st = _wait(r["run_id"])
+    c = seen["cmd"]
+    assert st["status"] == "done" and c[0] == "mflux-generate-z-image-turbo"
+    assert c[c.index("--lora") + 1] == str(lora) and "--model" not in c
+    with pytest.raises(GenerateError, match="no edit mode"):
+        image_gen.start_generate("p", family="z-image", mode="edit", image_b64="eA==")
+    with pytest.raises(GenerateError, match="family"):
+        image_gen.start_generate("p", family="sdxl")
+
+
+def test_z_image_command_missing_names_the_right_command(monkeypatch):
+    monkeypatch.delenv("DOUBLE_TOUCH_MFLUX_ZIMAGE", raising=False)
+    monkeypatch.setattr(image_gen.shutil, "which", lambda _c: None)
+    with pytest.raises(GenerateError, match="mflux-generate-z-image-turbo was not found"):
+        image_gen.start_generate("p", family="z-image")

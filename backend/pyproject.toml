@@ -51,6 +51,14 @@ finetune = [
     "datasets>=5.0",
     "accelerate>=1.14",
 ]
+# Cloud-backed LoRA training (Image LoRA Cloud Trainer node): submits jobs to
+# and moves data/results through GCS. Install with:
+#   pip install -e '.[cloud]'
+cloud = [
+    "google-cloud-aiplatform>=1.70",
+    "google-cloud-storage>=2.18",
+    "pyyaml>=6.0",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

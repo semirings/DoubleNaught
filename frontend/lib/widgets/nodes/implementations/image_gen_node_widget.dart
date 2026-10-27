@@ -10,10 +10,9 @@ import '../../../services/generate_api.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
 import '../base/base_node_widget.dart';
-import '../base/execute_button.dart';
+import '../base/gated_node_state.dart';
 import '../base/input_connector.dart';
 import '../base/output_connector.dart';
-import '../base/wait_gated_execution.dart';
 import 'vlm_trainer_node_widget.dart' show firstValue;
 
 /// Text (and optionally image) to image with Qwen-Image-2.1, run by mflux on
@@ -26,6 +25,13 @@ import 'vlm_trainer_node_widget.dart' show firstValue;
 /// Load File emits for a picture) as the starting image;
 /// `prompt` (idx 3, optional) — a row with `text` (Load File on a .txt) or
 /// `prompt`, which replaces the Prompt field.
+///
+/// Model family: **Qwen-Image-2.1** or **Z-Image-Turbo**. A LoRA only works on
+/// the family it was trained for, so a wired LoRA row's `family` column (the
+/// Image LoRA Trainer writes `z-image`) decides it; with none, the selector does.
+/// Switching family also swaps the default step count (40 for Qwen, 9 for the
+/// distilled Z-Image-Turbo) unless the field was changed by hand. Z-Image has
+/// no Edit mode.
 ///
 /// Mode, when a start image is wired: **Img2img** repaints the picture (Image
 /// strength: higher keeps more of it) and **Edit** treats the prompt as an
@@ -78,8 +84,7 @@ class ImageGenNodeWidget extends BaseNodeWidget {
   State<ImageGenNodeWidget> createState() => _ImageGenNodeWidgetState();
 }
 
-class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
-    with WaitGatedExecution<ImageGenNodeWidget> {
+class _ImageGenNodeWidgetState extends GatedNodeState<ImageGenNodeWidget> {
   @override String   get nodeTitle    => 'Generate';
   @override IconData get nodeIcon     => Icons.image_outlined;
   @override double   get nodeWidth    => 320;
@@ -93,14 +98,15 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
   late final InputPort _promptIn;
   final OutputPort _out = OutputPort('image');
   late final TextEditingController _prompt;
-  final TextEditingController _wiredCtl = TextEditingController();
   late final TextEditingController _steps;
   late final TextEditingController _size;
   late final TextEditingController _seed;
   late final TextEditingController _strength;
   late final TextEditingController _imgStrength;
   late final TextEditingController _editStrength;
-  String _mode = 'img2img';
+  String _mode = 'text2img';
+  String _familyChoice = 'qwen';
+  String _lastFamily = 'qwen';
 
   AaPayload? _modelRow;
   AaPayload? _loraRow;
@@ -112,7 +118,6 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
   int _step = 0;
   int _total = 0;
   Uint8List? _png;
-  double? _seconds;
 
   int? _int(TextEditingController c, {int min = 1}) {
     final n = int.tryParse(c.text.trim());
@@ -134,7 +139,40 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
     return (v != null && v > 0 && v <= 1) ? v : null;
   }
 
-  bool get _edit => _mode == 'edit';
+  /// `qwen` or `z-image`: the wired LoRA's `family` if it names one we know,
+  /// else the selector.
+  String get _family {
+    final f = firstValue(_loraRow, 'family');
+    return (f == 'qwen' || f == 'z-image') ? f! : _familyChoice;
+  }
+
+  bool get _familyFromLora {
+    final f = firstValue(_loraRow, 'family');
+    return f == 'qwen' || f == 'z-image';
+  }
+
+  bool get _zimage => _family == 'z-image';
+
+  static String _defaultSteps(String family) => family == 'z-image' ? '9' : '40';
+
+  /// After anything that can change [_family]: swap the step count when it is
+  /// still the old family's default, so a Z-Image run is not 40 turbo steps.
+  void _familyMoved() {
+    final now = _family;
+    if (now == _lastFamily) return;
+    if (_steps.text.trim() == _defaultSteps(_lastFamily)) {
+      _steps.text = _defaultSteps(now);
+    }
+    // Z-Image has no edit mode (see `_edit`) — stranding `_mode` on it would
+    // leave the segmented control with nothing selected.
+    if (now == 'z-image' && _mode == 'edit') {
+      _mode = 'text2img';
+    }
+    _lastFamily = now;
+    _persist();
+  }
+
+  bool get _edit => !_zimage && _mode == 'edit';
 
   /// Edit wants multiples of 32; plain generation, 16.
   int get _grid => _edit ? 32 : 16;
@@ -175,7 +213,8 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
       _imgStrengthValue != null &&
       _editStrengthValue != null &&
       !_imageProblem &&
-      !(_edit && _init.isEmpty);
+      !(_edit && _init.isEmpty) &&
+      !(_mode == 'img2img' && _init.isEmpty);
 
   @override
   void initState() {
@@ -189,7 +228,11 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
     _strength = TextEditingController(text: p?['loraStrength'] ?? '1.0');
     _imgStrength = TextEditingController(text: p?['imageStrength'] ?? '0.6');
     _editStrength = TextEditingController(text: p?['editStrength'] ?? '1.0');
-    _mode = p?['mode'] == 'edit' ? 'edit' : 'img2img';
+    _mode = const {'text2img', 'img2img', 'edit'}.contains(p?['mode'])
+        ? p!['mode']!
+        : 'text2img';
+    _familyChoice = p?['family'] == 'z-image' ? 'z-image' : 'qwen';
+    _lastFamily = _familyChoice;
 
     _modelIn = InputPort('model');
     widget.onModelInputPort?.call(_modelIn);
@@ -203,10 +246,18 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
     _loraIn = InputPort('lora');
     widget.onLoraInputPort?.call(_loraIn);
     _loraIn.onDataArrived.listen((aa) {
-      if (mounted) setState(() => _loraRow = aa);
+      if (!mounted) return;
+      setState(() {
+        _loraRow = aa;
+        _familyMoved();
+      });
     });
     _loraIn.onDisconnected.listen((_) {
-      if (mounted) setState(() => _loraRow = null);
+      if (!mounted) return;
+      setState(() {
+        _loraRow = null;
+        _familyMoved();
+      });
     });
 
     _imageIn = InputPort('image');
@@ -222,10 +273,7 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
     widget.onPromptInputPort?.call(_promptIn);
     _promptIn.onDataArrived.listen((aa) {
       if (!mounted) return;
-      setState(() {
-        _promptRow = aa;
-        _wiredCtl.text = _wiredPrompt ?? '';
-      });
+      setState(() => _promptRow = aa);
     });
     _promptIn.onDisconnected.listen((_) {
       if (mounted) setState(() => _promptRow = null);
@@ -241,7 +289,6 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
     _loraIn.dispose();
     _imageIn.dispose();
     _promptIn.dispose();
-    _wiredCtl.dispose();
     _out.dispose();
     for (final c in [_prompt, _steps, _size, _seed, _strength, _imgStrength, _editStrength]) {
       c.dispose();
@@ -258,6 +305,7 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
         'imageStrength': _imgStrength.text.trim(),
         'editStrength': _editStrength.text.trim(),
         'mode': _mode,
+        'family': _familyChoice,
       });
 
   @override
@@ -270,7 +318,6 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
       _step = 0;
       _total = _int(_steps)!;
       _png = null;
-      _seconds = null;
     });
     setWorking();
     try {
@@ -286,6 +333,7 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
         imageStrength: _imgStrengthValue!,
         mode: _mode,
         editStrength: _editStrengthValue!,
+        family: _family,
       );
       if (gen != _gen || !mounted) return;
       _runId = id;
@@ -312,10 +360,7 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
           _timer?.cancel();
           final bytes = await _api.image(id);
           if (gen != _gen || !mounted) return;
-          setState(() {
-            _png = bytes;
-            _seconds = st.seconds;
-          });
+          setState(() => _png = bytes);
           setComplete(
             detail: st.seconds == null ? 'image ready' : 'done in ${st.seconds!.round()}s',
           );
@@ -418,33 +463,43 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SizedBox(height: BaseNodeState.portLaneClearance(4)),
-        TextField(
-          key: ValueKey(_wiredPrompt == null ? 'gen-prompt' : 'gen-prompt-wired'),
-          controller: _wiredPrompt == null ? _prompt : _wiredCtl,
-          enabled: !busy && _wiredPrompt == null,
-          readOnly: _wiredPrompt != null,
-          minLines: 3,
-          maxLines: 6,
-          onChanged: (_) {
-            _persist();
-            setState(() {});
-          },
-          decoration: InputDecoration(
-            labelText: 'Prompt',
-            helperText: _wiredPrompt != null
-                ? 'from the prompt port'
-                : (_model.isEmpty ? 'Qwen-Image-2.1' : _model),
-            isDense: true,
-            border: const OutlineInputBorder(),
-          ),
+        SegmentedButton<String>(
+          key: const ValueKey('gen-family'),
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(value: 'qwen', label: Text('Qwen-Image')),
+            ButtonSegment(value: 'z-image', label: Text('Z-Image')),
+          ],
+          selected: {_family},
+          onSelectionChanged: (busy || _familyFromLora)
+              ? null
+              : (v) {
+                  setState(() {
+                    _familyChoice = v.first;
+                    _familyMoved();
+                  });
+                  _persist();
+                },
         ),
+        if (_familyFromLora)
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Text('set by the LoRA',
+                key: const ValueKey('gen-family-note'),
+                style: theme.textTheme.labelSmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+          ),
         const SizedBox(height: 8),
         SegmentedButton<String>(
           key: const ValueKey('gen-mode'),
           showSelectedIcon: false,
-          segments: const [
-            ButtonSegment(value: 'img2img', label: Text('Img2img')),
-            ButtonSegment(value: 'edit', label: Text('Edit')),
+          segments: [
+            const ButtonSegment(value: 'text2img', label: Text('Text2img')),
+            const ButtonSegment(value: 'img2img', label: Text('Img2img')),
+            // Z-Image has no edit command (see `_edit`) — the segment simply
+            // isn't offered, rather than being shown and rejected on Execute.
+            if (!_zimage)
+              const ButtonSegment(value: 'edit', label: Text('Edit')),
           ],
           selected: {_mode},
           onSelectionChanged: busy
@@ -489,7 +544,9 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
               ? 'The image input has no picture (needs a `bytes` or `image_b64` column).'
               : (_edit && _init.isEmpty)
                   ? 'Edit needs a start image on the image input.'
-                  : [
+                  : (_mode == 'img2img' && _init.isEmpty)
+                      ? 'Img2img needs a start image on the image input.'
+                      : [
                   _lora.isEmpty ? 'no LoRA' : 'LoRA: $_lora',
                   _init.isEmpty ? 'no start image' : 'start image',
                 ].join(' · '),
@@ -497,31 +554,16 @@ class _ImageGenNodeWidgetState extends BaseNodeState<ImageGenNodeWidget>
           maxLines: 3,
           overflow: TextOverflow.ellipsis,
           style: theme.textTheme.labelSmall?.copyWith(
-              color: (_imageProblem || (_edit && _init.isEmpty))
+              color: (_imageProblem ||
+                      (_edit && _init.isEmpty) ||
+                      (_mode == 'img2img' && _init.isEmpty))
                   ? theme.colorScheme.error
                   : theme.colorScheme.onSurfaceVariant),
         ),
         const SizedBox(height: 10),
-        ExecuteButton(
-          enabled: isReady && !busy,
-          executing: busy,
-          onPressed: busy ? _cancel : onExecutePressed,
-        ),
+        ...buildWaitAndExecute(busy: busy, onCancel: _cancel),
         const SizedBox(height: 8),
         statusRow(),
-        if (_png != null) ...[
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: Image.memory(_png!, key: const ValueKey('gen-image'), fit: BoxFit.contain),
-          ),
-          if (_seconds != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text('${_seconds!.round()} s',
-                  style: theme.textTheme.labelSmall),
-            ),
-        ],
       ],
     );
   }

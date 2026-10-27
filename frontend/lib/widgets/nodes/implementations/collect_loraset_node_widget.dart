@@ -7,9 +7,8 @@ import '../../../services/infobus/output_port.dart';
 import '../../../services/loraset_api.dart';
 import '../base/base_node_widget.dart';
 import '../../../models/workflow.dart';
-import '../base/execute_button.dart';
+import '../base/gated_node_state.dart';
 import '../base/output_connector.dart';
-import '../base/wait_gated_execution.dart';
 import 'vlm_trainer_node_widget.dart' show firstValue;
 
 /// Gathers the saved loraset pages into one flat, trainer-ready folder:
@@ -47,8 +46,7 @@ class CollectLorasetNodeWidget extends BaseNodeWidget {
 }
 
 class _CollectLorasetNodeWidgetState
-    extends BaseNodeState<CollectLorasetNodeWidget>
-    with WaitGatedExecution<CollectLorasetNodeWidget> {
+    extends GatedNodeState<CollectLorasetNodeWidget> {
   @override String   get nodeTitle    => 'Collect Loraset';
   @override IconData get nodeIcon     => Icons.inventory_2_outlined;
   @override double   get nodeWidth    => 320;
@@ -353,11 +351,7 @@ class _CollectLorasetNodeWidgetState
           ),
         ),
         const SizedBox(height: 10),
-        ExecuteButton(
-          enabled: isReady && !busy,
-          executing: busy,
-          onPressed: busy ? _onCancelPressed : onExecutePressed,
-        ),
+        ...buildWaitAndExecute(busy: busy, onCancel: _onCancelPressed),
         const SizedBox(height: 8),
         statusRow(),
         if (result != null) ...[

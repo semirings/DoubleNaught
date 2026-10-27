@@ -453,3 +453,66 @@ def test_directory_load_says_which_directory_it_came_from(tmp_path):
     assert cells[("file:00000", "source_dir")] == str(root)
     assert cells[("file:00001", "source_dir")] == str(root)
     assert {r["source_dir"] for r in data["rows"]} == {str(root)}
+
+
+# ── Collect Loraset output directory ─────────────────────────────────────────
+
+def _write_collected_loraset(root, rows):
+    """`rows` is a list of (file_name, text); writes each image (a 1x1 PNG,
+    good enough since nothing here decodes pixels) plus metadata.jsonl."""
+    root.mkdir(parents=True, exist_ok=True)
+    png_1x1 = bytes.fromhex(
+        "89504e470d0a1a0a0000000d49484452000000010000000108020000009077"
+        "53de0000000a49444154789c6360000002000100ffff030000060005fa48b7"
+        "7a0000000049454e44ae426082"
+    )
+    lines = []
+    for name, text in rows:
+        (root / name).write_bytes(png_1x1)
+        lines.append(json.dumps({"file_name": name, "text": text}))
+    (root / "metadata.jsonl").write_text("\n".join(lines) + "\n")
+
+
+def test_collected_loraset_dir_loads_as_the_one_row_summary_collect_emits(tmp_path):
+    """A folder with a top-level metadata.jsonl - what Collect Loraset writes -
+    comes back as the same one-row path/images/pages AA Collect Loraset's own
+    `dataset` output emits, not one row per image/caption file."""
+    root = tmp_path / "_collected" / "train"
+    _write_collected_loraset(root, [("a.png", "a cat"), ("b.png", "a dog")])
+
+    aa, data = load_file(str(root), "auto")
+
+    cells = _cells(aa)
+    assert cells[("collected", "path")] == str(root)
+    assert cells[("collected", "images")] == "2"
+    assert cells[("collected", "pages")] == ""
+    assert set(aa.cols) == {"path", "images", "pages"}
+    assert data == {"path": str(root), "images": 2, "pages": ""}
+
+
+def test_collected_loraset_dir_only_counts_images_with_a_caption_and_a_file(tmp_path):
+    """Mirrors read_captions(): a row missing its caption, or whose image was
+    never written, isn't trainable, so it isn't counted either."""
+    root = tmp_path / "_collected" / "train"
+    _write_collected_loraset(root, [("a.png", "a cat"), ("b.png", "")])
+    # A third row whose image file doesn't exist on disk.
+    with (root / "metadata.jsonl").open("a") as f:
+        f.write(json.dumps({"file_name": "missing.png", "text": "a bird"}) + "\n")
+
+    aa, _ = load_file(str(root), "auto")
+
+    assert _cells(aa)[("collected", "images")] == "1"
+
+
+def test_a_subdirectorys_metadata_jsonl_does_not_trigger_the_collected_special_case(tmp_path):
+    """Only a metadata.jsonl at the TOP of the loaded directory counts - one
+    buried in a subdirectory (as in the scrape-pages test above) still means
+    an ordinary per-file walk."""
+    root = tmp_path / "mccay"
+    (root / "Page_002").mkdir(parents=True)
+    (root / "Page_002" / "metadata.jsonl").write_text("{}\n")
+
+    aa, data = load_file(str(root), "auto")
+
+    assert "path" not in aa.cols
+    assert len(data["rows"]) == 1

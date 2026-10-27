@@ -31,6 +31,8 @@ double getNodeWidth(String type) {
     case 'collectLorasetNode':
     case 'vlmTrainerNode':
     case 'imageGenNode':
+    case 'imageTrainNode':
+    case 'vertexTrainerNode':
     case 'vlmCaptionNode':
       return 320;
     case 'functionExtractionNode':

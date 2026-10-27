@@ -57,6 +57,14 @@ from .inventory import InventoryStore, select_aa
 import d4m_juliacall_bridge
 from .models import (
     GenerateRequest,
+    CloudTrainRequest,
+    CloudTrainStarted,
+    CloudTrainStatus,
+    ImageTrainRequest,
+    ImageTrainStarted,
+    ImageTrainStatus,
+    LoraInspectRequest,
+    LoraInspectResponse,
     GenerateStarted,
     GenerateStatus,
     VlmCaptionRequest,
@@ -141,7 +149,7 @@ from .sessions import PromptRecord, Session, SessionStore
 from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
 from .save_file import delete_output, execute_save
-from . import image_gen, vlm_jobs
+from . import cloud_train, image_gen, image_train, lora_files, vlm_jobs
 from .loraset import LorasetError, collect_loraset, list_pages, save_loraset
 from .load_file import load_file
 from .ast_extract import (
@@ -170,6 +178,45 @@ from .workflows_router import router as workflows_router
 DEFAULT_WIDTH = 1024
 DEFAULT_HEIGHT = 1024
 
+# ── Timestamped diagnostics ──────────────────────────────────────────────────
+# Same idea as SegForge's backend: line-buffered output, every message and every
+# uvicorn access line stamped, each request's duration logged, and any stretch
+# where the event loop was blocked reported (while it is, nothing else is served).
+import asyncio
+import logging
+import sys
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
+_PROCESS_START = time.monotonic()
+
+
+def tlog(message: str) -> None:
+    stamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    print(f"{stamp} [+{time.monotonic() - _PROCESS_START:7.1f}s] {message}", flush=True)
+
+
+def _stamp_uvicorn_logs() -> None:
+    for name in ("uvicorn.access", "uvicorn.error"):
+        for handler in logging.getLogger(name).handlers:
+            handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S"))
+
+
+async def _watch_event_loop(threshold: float = 0.5, interval: float = 0.25) -> None:
+    last = time.monotonic()
+    while True:
+        await asyncio.sleep(interval)
+        now = time.monotonic()
+        blocked = now - last - interval
+        if blocked > threshold:
+            tlog(f"EVENT LOOP BLOCKED for {blocked:.1f}s (every other request waited)")
+        last = now
+
+
 app = FastAPI(
     title="DoubleTouch — SAM3 Segmentation API",
     description="Text / box / point segmentation for DoubleNaught. camelCase JSON.",
@@ -187,7 +234,17 @@ def _startup_warm_julia() -> None:
     minutes waiting for JIT compilation. The warmup blocks the server startup,
     which is acceptable—better to delay startup than to hang mid-request.
     """
+    _stamp_uvicorn_logs()
+    tlog("startup: warming Julia (the port does not accept connections until this finishes)")
+    t0 = time.monotonic()
     _warm_julia()
+    tlog(f"startup: Julia warm in {time.monotonic() - t0:.1f}s")
+
+
+@app.on_event("startup")
+async def _startup_watch_loop() -> None:
+    app.state.loop_watcher = asyncio.create_task(_watch_event_loop())
+    tlog("startup: complete, accepting requests")
 
 
 @app.on_event("shutdown")
@@ -202,6 +259,16 @@ async def _shutdown_force_exit() -> None:
     """
     import os as _os
     _os._exit(0)
+
+@app.middleware("http")
+async def _log_request_time(request: Request, call_next):
+    t0 = time.monotonic()
+    response = await call_next(request)
+    took = time.monotonic() - t0
+    if request.url.path != "/health" and took >= 0.25:
+        tlog(f"{request.method} {request.url.path} -> {response.status_code} in {took:.2f}s")
+    return response
+
 
 # Allow the Flutter dev front-ends (web on :3000, plus any localhost port used
 # by `flutter run`). Tighten for production.
@@ -1257,6 +1324,15 @@ async def loraset_collect(request: LorasetCollectRequest) -> LorasetCollectRespo
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+@app.post("/lora/inspect", response_model=LoraInspectResponse)
+async def lora_inspect(request: LoraInspectRequest) -> LoraInspectResponse:
+    """Read a LoRA .safetensors header and say whether Generate can use it."""
+    try:
+        return LoraInspectResponse(**lora_files.inspect_lora(request.path))
+    except lora_files.LoraFileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
 @app.post("/generate", response_model=GenerateStarted)
 async def generate_start(request: GenerateRequest) -> GenerateStarted:
     """Start a Qwen-Image-2.1 generation (mflux); poll /generate/{id}."""
@@ -1293,6 +1369,31 @@ async def generate_image(run_id: str):
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@app.post("/cloud-train", response_model=CloudTrainStarted)
+async def cloud_train_start(request: CloudTrainRequest) -> CloudTrainStarted:
+    """Start training an image LoRA (Z-Image-Turbo) on Vertex AI; poll /cloud-train/{id}."""
+    try:
+        return CloudTrainStarted(**cloud_train.start_cloud_train(**request.model_dump()))
+    except cloud_train.TrainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/cloud-train/{run_id}", response_model=CloudTrainStatus)
+async def cloud_train_get_status(run_id: str) -> CloudTrainStatus:
+    try:
+        return CloudTrainStatus(**cloud_train.cloud_train_status(run_id))
+    except cloud_train.TrainError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/cloud-train/{run_id}/cancel", response_model=CloudTrainStatus)
+async def cloud_train_cancel(run_id: str) -> CloudTrainStatus:
+    try:
+        return CloudTrainStatus(**cloud_train.cancel_cloud_train(run_id))
+    except cloud_train.TrainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
 @app.post("/vlm/train", response_model=VlmTrainStarted)
 async def vlm_train(request: VlmTrainRequest) -> VlmTrainStarted:
     """Start a LoRA fine-tune of a vision-language model; poll /vlm/train/{id}."""
@@ -1315,6 +1416,40 @@ async def vlm_train_cancel(run_id: str) -> VlmTrainStatus:
     try:
         return VlmTrainStatus(**vlm_jobs.cancel_train(run_id))
     except vlm_jobs.VlmError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/image-train", response_model=ImageTrainStarted)
+async def image_train_start(request: ImageTrainRequest) -> ImageTrainStarted:
+    """Start training an image LoRA (Z-Image-Turbo) on a collected loraset; poll /image-train/{id}."""
+    try:
+        return ImageTrainStarted(**image_train.start_train(**request.model_dump()))
+    except image_train.TrainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/image-train/{run_id}", response_model=ImageTrainStatus)
+async def image_train_status(run_id: str) -> ImageTrainStatus:
+    try:
+        return ImageTrainStatus(**image_train.train_status(run_id))
+    except image_train.TrainError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.post("/image-train/{run_id}/export", response_model=ImageTrainStatus)
+async def image_train_export(run_id: str) -> ImageTrainStatus:
+    """Write the newest checkpoint's adapter out now, without waiting for the run to end."""
+    try:
+        return ImageTrainStatus(**image_train.export_now(run_id))
+    except image_train.TrainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/image-train/{run_id}/cancel", response_model=ImageTrainStatus)
+async def image_train_cancel(run_id: str) -> ImageTrainStatus:
+    try:
+        return ImageTrainStatus(**image_train.cancel_train(run_id))
+    except image_train.TrainError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 
