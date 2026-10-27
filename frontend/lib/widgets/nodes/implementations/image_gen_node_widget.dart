@@ -98,6 +98,7 @@ class _ImageGenNodeWidgetState extends GatedNodeState<ImageGenNodeWidget> {
   late final InputPort _promptIn;
   final OutputPort _out = OutputPort('image');
   late final TextEditingController _prompt;
+  final TextEditingController _wiredCtl = TextEditingController();
   late final TextEditingController _steps;
   late final TextEditingController _size;
   late final TextEditingController _seed;
@@ -273,7 +274,10 @@ class _ImageGenNodeWidgetState extends GatedNodeState<ImageGenNodeWidget> {
     widget.onPromptInputPort?.call(_promptIn);
     _promptIn.onDataArrived.listen((aa) {
       if (!mounted) return;
-      setState(() => _promptRow = aa);
+      setState(() {
+        _promptRow = aa;
+        _wiredCtl.text = _wiredPrompt ?? '';
+      });
     });
     _promptIn.onDisconnected.listen((_) {
       if (mounted) setState(() => _promptRow = null);
@@ -289,6 +293,7 @@ class _ImageGenNodeWidgetState extends GatedNodeState<ImageGenNodeWidget> {
     _loraIn.dispose();
     _imageIn.dispose();
     _promptIn.dispose();
+    _wiredCtl.dispose();
     _out.dispose();
     for (final c in [_prompt, _steps, _size, _seed, _strength, _imgStrength, _editStrength]) {
       c.dispose();
@@ -331,7 +336,7 @@ class _ImageGenNodeWidgetState extends GatedNodeState<ImageGenNodeWidget> {
         loraScale: _strengthValue!,
         imageB64: _init,
         imageStrength: _imgStrengthValue!,
-        mode: _mode,
+        mode: _edit ? 'edit' : 'img2img',
         editStrength: _editStrengthValue!,
         family: _family,
       );
@@ -463,6 +468,29 @@ class _ImageGenNodeWidgetState extends GatedNodeState<ImageGenNodeWidget> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SizedBox(height: BaseNodeState.portLaneClearance(4)),
+        TextField(
+          key: ValueKey(_wiredPrompt == null ? 'gen-prompt' : 'gen-prompt-wired'),
+          controller: _wiredPrompt == null ? _prompt : _wiredCtl,
+          enabled: !busy && _wiredPrompt == null,
+          readOnly: _wiredPrompt != null,
+          minLines: 3,
+          maxLines: 6,
+          onChanged: (_) {
+            _persist();
+            setState(() {});
+          },
+          decoration: InputDecoration(
+            labelText: 'Prompt',
+            helperText: _wiredPrompt != null
+                ? 'from the prompt port'
+                : (_zimage
+                    ? 'Z-Image-Turbo'
+                    : (_model.isEmpty ? 'Qwen-Image-2.1' : _model)),
+            isDense: true,
+            border: const OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 8),
         SegmentedButton<String>(
           key: const ValueKey('gen-family'),
           showSelectedIcon: false,
