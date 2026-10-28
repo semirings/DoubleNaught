@@ -118,17 +118,17 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
                 temp_dir.cleanup()
             return aa, data
 
-        # Likewise, a Collect Loraset output directory (a `metadata.jsonl`
+        # Likewise, a Collect Antelora output directory (a `metadata.jsonl`
         # beside the images - see image_train.py's read_captions()) is loaded
-        # as the single summary row Collect Loraset's own `dataset` output
+        # as the single summary row Collect Antelora's own `dataset` output
         # already emits (`path` / `images` / `pages`), not one row per file.
         # The trainer nodes' dataset port only ever reads a `path` column off
         # the first row (see firstValue() in vlm_trainer_node_widget.dart), so
         # without this special case Load File's generic per-file walk below -
         # one row per image/caption file, no `path` column at all - leaves
         # the dataset port looking empty and Execute stays disabled.
-        if _collected_loraset_in_dir(resolved_path):
-            aa, data = _load_collected_loraset_dir(resolved_path)
+        if _collected_antelora_in_dir(resolved_path):
+            aa, data = _load_collected_antelora_dir(resolved_path)
             if temp_dir:
                 temp_dir.cleanup()
             return aa, data
@@ -186,7 +186,7 @@ def load_file(file_path: str, schema_mode: str = "auto") -> tuple[Optional[Assoc
             if resolved_path.is_dir():
                 # `file_path` is relative to the directory, so on its own the
                 # AA never says which directory it came from. Downstream nodes
-                # (Collect Loraset) name their work after it.
+                # (Collect Antelora) name their work after it.
                 cols_list.append("source_dir")
                 vals_list.append(str(resolved_path))
             
@@ -322,8 +322,8 @@ def _load_lora_adapter_dir(dir_path: Path, safetensors_path: Path) -> tuple[Asso
     )
 
 
-def _collected_loraset_in_dir(dir_path: Path) -> bool:
-    """True for a Collect Loraset output directory: it always writes a
+def _collected_antelora_in_dir(dir_path: Path) -> bool:
+    """True for a Collect Antelora output directory: it always writes a
     ``metadata.jsonl`` alongside the images (one JSON row per image, with
     ``file_name``/``text`` - see ``image_train.py``'s ``read_captions()``).
     No other directory Load File is pointed at is expected to have one, so
@@ -332,9 +332,9 @@ def _collected_loraset_in_dir(dir_path: Path) -> bool:
     return (dir_path / "metadata.jsonl").is_file()
 
 
-def _load_collected_loraset_dir(dir_path: Path) -> tuple[AssocArray, dict]:
-    """A Collect Loraset output directory as the one-row summary AA Collect
-    Loraset's own ``dataset`` output already emits: ``path`` (the folder),
+def _load_collected_antelora_dir(dir_path: Path) -> tuple[AssocArray, dict]:
+    """A Collect Antelora output directory as the one-row summary AA Collect
+    Antelora's own ``dataset`` output already emits: ``path`` (the folder),
     ``images`` (captioned images that will actually be trained on - same
     count ``read_captions()`` would return), ``pages`` (left empty - the
     source scrape's page list isn't recoverable once only the collected

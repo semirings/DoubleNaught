@@ -1,4 +1,4 @@
-"""Save Loraset: pages land in storage/loraset/<set>/<page>/ with metadata.jsonl."""
+"""Save Antelora: pages land in storage/antelora/<set>/<page>/ with metadata.jsonl."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from double_touch.loraset import LorasetError, collect_loraset, list_pages, safe_name, save_loraset
+from double_touch.antelora import AnteloraError, collect_antelora, list_pages, safe_name, save_antelora
 from double_touch.models import AssocArray
 
 PNG = base64.b64encode(b"\x89PNG-fake").decode()
@@ -35,7 +35,7 @@ def _rec(n: int, page: str = "nemo_1", **extra) -> dict:
 
 
 def test_writes_one_folder_per_page(tmp_path):
-    result = save_loraset(_aa(_rec(1), _rec(2), _rec(3, page="nemo_2")), "mccay", tmp_path)
+    result = save_antelora(_aa(_rec(1), _rec(2), _rec(3, page="nemo_2")), "mccay", tmp_path)
     assert result["images"] == 3 and result["skipped"] == 0
     page1 = tmp_path / "mccay" / "nemo_1"
     lines = [json.loads(x) for x in (page1 / "metadata.jsonl").read_text().splitlines()]
@@ -48,8 +48,8 @@ def test_writes_one_folder_per_page(tmp_path):
 
 
 def test_resave_replaces_the_page(tmp_path):
-    save_loraset(_aa(_rec(1), _rec(2)), "mccay", tmp_path)
-    save_loraset(_aa(_rec(1)), "mccay", tmp_path)
+    save_antelora(_aa(_rec(1), _rec(2)), "mccay", tmp_path)
+    save_antelora(_aa(_rec(1)), "mccay", tmp_path)
     page = tmp_path / "mccay" / "nemo_1"
     assert not (page / "s_2.png").exists()
     assert len((page / "metadata.jsonl").read_text().splitlines()) == 1
@@ -58,20 +58,20 @@ def test_resave_replaces_the_page(tmp_path):
 
 def test_falls_back_to_user_caption_and_skips_unusable_rows(tmp_path):
     ok = {"file_name": "images/s_9.png", "caption": "mine", "page_name": "p", "image_b64": PNG}
-    result = save_loraset(_aa(ok, {"file_name": "x.png", "caption": "c"}, {"caption": "no file"}), "x", tmp_path)
+    result = save_antelora(_aa(ok, {"file_name": "x.png", "caption": "c"}, {"caption": "no file"}), "x", tmp_path)
     assert result["images"] == 1 and result["skipped"] == 2
 
 
 def test_nothing_writable_is_an_error(tmp_path):
-    with pytest.raises(LorasetError) as err:
-        save_loraset(_aa({"caption": "only"}), "x", tmp_path)
+    with pytest.raises(AnteloraError) as err:
+        save_antelora(_aa({"caption": "only"}), "x", tmp_path)
     assert "file_name" in str(err.value) and "caption" in str(err.value)
 
 
 def test_names_cannot_escape_the_root(tmp_path):
     assert safe_name("../../etc", "d") == "etc"
     assert safe_name("..", "d") == "d"
-    save_loraset(_aa(_rec(1, page="../evil")), "../up", tmp_path)
+    save_antelora(_aa(_rec(1, page="../evil")), "../up", tmp_path)
     assert not (tmp_path.parent / "evil").exists()
     assert (tmp_path / "up" / "evil" / "s_1.png").exists()
 
@@ -82,11 +82,11 @@ def test_route(tmp_path, monkeypatch):
     from double_touch.app import app
 
     monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path))
-    body = {"captions": _aa(_rec(1)).model_dump(), "loraset": "mccay"}
-    r = TestClient(app).post("/loraset/save", json=body)
+    body = {"captions": _aa(_rec(1)).model_dump(), "antelora": "mccay"}
+    r = TestClient(app).post("/antelora/save", json=body)
     assert r.status_code == 200, r.text
     assert r.json()["images"] == 1
-    r = TestClient(app).post("/loraset/save", json={"captions": {"rows": [], "cols": [], "vals": []}})
+    r = TestClient(app).post("/antelora/save", json={"captions": {"rows": [], "cols": [], "vals": []}})
     assert r.status_code == 422
 
 
@@ -95,8 +95,8 @@ def _seg(session: str, n: int, page: str) -> dict:
 
 
 def test_generic_page_names_do_not_collide(tmp_path):
-    save_loraset(_aa(_seg("aaaaaaaa1111", 1, "image")), "m", tmp_path)
-    save_loraset(_aa(_seg("bbbbbbbb2222", 2, "image")), "m", tmp_path)
+    save_antelora(_aa(_seg("aaaaaaaa1111", 1, "image")), "m", tmp_path)
+    save_antelora(_aa(_seg("bbbbbbbb2222", 2, "image")), "m", tmp_path)
     assert sorted(p.name for p in (tmp_path / "m").iterdir()) == [
         "page-aaaaaaaa",
         "page-bbbbbbbb",
@@ -104,8 +104,8 @@ def test_generic_page_names_do_not_collide(tmp_path):
 
 
 def test_same_name_different_session_keeps_both(tmp_path):
-    save_loraset(_aa(_seg("aaaaaaaa1111", 1, "nemo_1")), "m", tmp_path)
-    save_loraset(_aa(_seg("bbbbbbbb2222", 2, "nemo_1")), "m", tmp_path)
+    save_antelora(_aa(_seg("aaaaaaaa1111", 1, "nemo_1")), "m", tmp_path)
+    save_antelora(_aa(_seg("bbbbbbbb2222", 2, "nemo_1")), "m", tmp_path)
     assert sorted(p.name for p in (tmp_path / "m").iterdir()) == [
         "nemo_1",
         "nemo_1-bbbbbbbb",
@@ -113,8 +113,8 @@ def test_same_name_different_session_keeps_both(tmp_path):
 
 
 def test_same_session_resave_still_replaces(tmp_path):
-    save_loraset(_aa(_seg("aaaaaaaa1111", 1, "nemo_1"), _seg("aaaaaaaa1111", 2, "nemo_1")), "m", tmp_path)
-    save_loraset(_aa(_seg("aaaaaaaa1111", 1, "nemo_1")), "m", tmp_path)
+    save_antelora(_aa(_seg("aaaaaaaa1111", 1, "nemo_1"), _seg("aaaaaaaa1111", 2, "nemo_1")), "m", tmp_path)
+    save_antelora(_aa(_seg("aaaaaaaa1111", 1, "nemo_1")), "m", tmp_path)
     assert [p.name for p in (tmp_path / "m").iterdir()] == ["nemo_1"]
     assert len((tmp_path / "m" / "nemo_1" / "metadata.jsonl").read_text().splitlines()) == 1
 
@@ -123,8 +123,8 @@ def test_same_session_resave_still_replaces(tmp_path):
 
 
 def _two_pages(tmp_path):
-    save_loraset(_aa(_seg("aaaaaaaa1111", 1, "Page_000"), _seg("aaaaaaaa1111", 2, "Page_000")), "m", tmp_path)
-    save_loraset(_aa(_seg("bbbbbbbb2222", 3, "Page_001")), "m", tmp_path)
+    save_antelora(_aa(_seg("aaaaaaaa1111", 1, "Page_000"), _seg("aaaaaaaa1111", 2, "Page_000")), "m", tmp_path)
+    save_antelora(_aa(_seg("bbbbbbbb2222", 3, "Page_001")), "m", tmp_path)
 
 
 def test_list_pages(tmp_path):
@@ -139,7 +139,7 @@ def test_list_pages(tmp_path):
 
 def test_collect_makes_one_flat_trainer_ready_folder(tmp_path):
     _two_pages(tmp_path)
-    result = collect_loraset("m", output="train", root=tmp_path)
+    result = collect_antelora("m", output="train", root=tmp_path)
     out = tmp_path / "m" / "_collected" / "train"
     assert result["images"] == 3 and result["pages"] == ["Page_000", "Page_001"]
     lines = [json.loads(x) for x in (out / "metadata.jsonl").read_text().splitlines()]
@@ -155,7 +155,7 @@ def test_collect_makes_one_flat_trainer_ready_folder(tmp_path):
 
 def test_collect_also_writes_chat_pairs_for_vision_language_training(tmp_path):
     _two_pages(tmp_path)
-    collect_loraset("m", root=tmp_path, prompt="Caption this panel.")
+    collect_antelora("m", root=tmp_path, prompt="Caption this panel.")
     out = tmp_path / "m" / "_collected" / "train"
     meta = [json.loads(x) for x in (out / "metadata.jsonl").read_text().splitlines()]
     chat = [json.loads(x) for x in (out / "train.jsonl").read_text().splitlines()]
@@ -168,8 +168,8 @@ def test_collect_also_writes_chat_pairs_for_vision_language_training(tmp_path):
 
 def test_collect_holds_pages_out_and_rebuilds_clean(tmp_path):
     _two_pages(tmp_path)
-    collect_loraset("m", root=tmp_path)
-    result = collect_loraset("m", exclude=["Page_001"], root=tmp_path)
+    collect_antelora("m", root=tmp_path)
+    result = collect_antelora("m", exclude=["Page_001"], root=tmp_path)
     out = tmp_path / "m" / "_collected" / "train"
     assert result["images"] == 2 and result["excluded"] == ["Page_001"]
     assert not (out / "images" / "bbbbbbbb2222_0_u3.png").exists()  # no leftovers
@@ -186,7 +186,7 @@ def test_collect_skips_and_reports_broken_lines(tmp_path):
     with (page / "metadata.jsonl").open("a") as f:
         f.write("not json\n")
         f.write(json.dumps({"file_name": "x.png", "text": "  "}) + "\n")
-    result = collect_loraset("m", root=tmp_path)
+    result = collect_antelora("m", root=tmp_path)
     assert result["images"] == 2 and result["skipped"] == 3
     assert any("image missing" in p for p in result["problems"])
     assert any("not a valid" in p for p in result["problems"])
@@ -194,8 +194,8 @@ def test_collect_skips_and_reports_broken_lines(tmp_path):
 
 def test_collect_with_nothing_left_is_an_error(tmp_path):
     _two_pages(tmp_path)
-    with pytest.raises(LorasetError):
-        collect_loraset("m", exclude=["Page_000", "Page_001"], root=tmp_path)
+    with pytest.raises(AnteloraError):
+        collect_antelora("m", exclude=["Page_000", "Page_001"], root=tmp_path)
     assert not (tmp_path / "m" / "_collected" / "train").exists()
     assert list((tmp_path / "m" / "_collected").iterdir()) == []  # temp cleaned up
 
@@ -208,9 +208,9 @@ def test_collect_routes(tmp_path, monkeypatch):
     monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path))
     _two_pages(tmp_path)
     c = TestClient(app)
-    r = c.get("/loraset/pages", params={"loraset": "m"})
+    r = c.get("/antelora/pages", params={"antelora": "m"})
     assert r.status_code == 200 and [p["page"] for p in r.json()["pages"]] == ["Page_000", "Page_001"]
-    r = c.post("/loraset/collect", json={"loraset": "m", "exclude": ["Page_001"]})
+    r = c.post("/antelora/collect", json={"antelora": "m", "exclude": ["Page_001"]})
     assert r.status_code == 200 and r.json()["images"] == 2
-    r = c.post("/loraset/collect", json={"loraset": "m", "exclude": ["Page_000", "Page_001"]})
+    r = c.post("/antelora/collect", json={"antelora": "m", "exclude": ["Page_000", "Page_001"]})
     assert r.status_code == 422

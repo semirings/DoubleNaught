@@ -15,7 +15,7 @@ import 'vlm_trainer_node_widget.dart' show firstValue;
 
 /// Trains an **image** LoRA (Z-Image-Turbo, through mflux) on a collected set.
 ///
-/// Input `dataset` (idx 0, required) — Collect Loraset's output (`path`).
+/// Input `dataset` (idx 0, required) — Collect Antelora's output (`path`).
 /// Output `lora` (idx 0): one `adapter` row with `path` (the `.safetensors`),
 /// `model` and `family` (`z-image`, which Generate reads to pick its model).
 ///

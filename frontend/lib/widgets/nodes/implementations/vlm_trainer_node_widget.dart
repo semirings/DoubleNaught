@@ -24,7 +24,7 @@ String? firstValue(AaPayload? aa, String col) {
 
 /// Fine-tunes a vision-language model (Qwen-VL) with LoRA on a collected set.
 ///
-/// Inputs: `dataset` (idx 0, required) — Collect Loraset's output; `model`
+/// Inputs: `dataset` (idx 0, required) — Collect Antelora's output; `model`
 /// (idx 1, optional) — a Load Model row whose `pathOrUrl` replaces the field.
 /// Output `lora` (idx 0): one `adapter` row with `path` and `model`.
 ///

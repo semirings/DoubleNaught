@@ -4,7 +4,7 @@ import 'package:aa_preview_table/aa_preview_table.dart';
 import 'package:double_vision/models/workflow.dart';
 import 'package:double_vision/services/infobus/input_port.dart';
 import 'package:double_vision/services/infobus/output_port.dart';
-import 'package:double_vision/services/loraset_api.dart';
+import 'package:double_vision/services/antelora_api.dart';
 import 'package:double_vision/widgets/nodes/nodes.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -25,19 +25,19 @@ Future<({InputPort input, OutputPort Function() output, List<Map<String, dynamic
   InputPort? port;
   OutputPort? outPort;
   final requests = <Map<String, dynamic>>[];
-  final api = LorasetApi(
+  final api = AnteloraApi(
     client: MockClient((r) async {
       requests.add(jsonDecode(r.body) as Map<String, dynamic>);
       if (status != 200) return http.Response('{"detail":"nope"}', status);
       return http.Response(
         jsonEncode({
-          'loraset': 'mccay',
+          'antelora': 'mccay',
           'pages': [
-            {'page': 'nemo_1', 'images': 1, 'path': '/s/loraset/mccay/nemo_1'}
+            {'page': 'nemo_1', 'images': 1, 'path': '/s/antelora/mccay/nemo_1'}
           ],
           'images': 1,
           'skipped': 0,
-          'path': '/s/loraset/mccay',
+          'path': '/s/antelora/mccay',
         }),
         200,
         headers: {'content-type': 'application/json'},
@@ -47,8 +47,8 @@ Future<({InputPort input, OutputPort Function() output, List<Map<String, dynamic
   await tester.pumpWidget(MaterialApp(
     home: Scaffold(
       body: SingleChildScrollView(
-        child: SaveLorasetNodeWidget(
-          node: const WorkflowNode(id: 1, type: 'saveLorasetNode'),
+        child: SaveAnteloraNodeWidget(
+          node: const WorkflowNode(id: 1, type: 'saveAnteloraNode'),
           api: api,
           initialParams: initialParams,
           inputConnected: true,
@@ -68,21 +68,21 @@ Future<void> _send(WidgetTester tester, InputPort port, AaPayload aa) async {
 }
 
 void main() {
-  testWidgets('a caption payload is saved under the loraset name, reactively',
+  testWidgets('a caption payload is saved under the antelora name, reactively',
       (tester) async {
     final h = await _pump(tester);
     await _send(tester, h.input, _captions());
 
-    expect(h.requests.single['loraset'], 'mccay');
+    expect(h.requests.single['antelora'], 'mccay');
     expect(h.requests.single['captions'], isNotNull);
     expect(find.textContaining('1 images'), findsOneWidget);
-    expect(find.byKey(const ValueKey('loraset-result')), findsOneWidget);
+    expect(find.byKey(const ValueKey('antelora-result')), findsOneWidget);
   });
 
-  testWidgets('the saved loraset name is restored and sent', (tester) async {
-    final h = await _pump(tester, initialParams: {'loraset': 'nemo'});
+  testWidgets('the saved antelora name is restored and sent', (tester) async {
+    final h = await _pump(tester, initialParams: {'antelora': 'nemo'});
     await _send(tester, h.input, _captions());
-    expect(h.requests.single['loraset'], 'nemo');
+    expect(h.requests.single['antelora'], 'nemo');
   });
 
   testWidgets('a backend failure is reported, not swallowed', (tester) async {
@@ -95,7 +95,7 @@ void main() {
       (tester) async {
     final h = await _pump(
       tester,
-      initialParams: {'loraset': 'mccay/page_000/metadata.jsonl'},
+      initialParams: {'antelora': 'mccay/page_000/metadata.jsonl'},
     );
     await _send(tester, h.input, _captions());
 
@@ -103,7 +103,7 @@ void main() {
     expect(find.textContaining('Just a name'), findsOneWidget);
   });
 
-  testWidgets('a saved loraset is announced on the dir port', (tester) async {
+  testWidgets('a saved antelora is announced on the dir port', (tester) async {
     final h = await _pump(tester);
     final probe = InputPort('probe');
     final got = <AaPayload>[];
@@ -114,7 +114,7 @@ void main() {
 
     expect(got, isNotEmpty);
     final aa = got.last;
-    expect(aa.cols, containsAll(['loraset', 'path']));
-    expect(aa.vals, containsAll(['mccay', '/s/loraset/mccay']));
+    expect(aa.cols, containsAll(['antelora', 'path']));
+    expect(aa.vals, containsAll(['mccay', '/s/antelora/mccay']));
   });
 }

@@ -11,7 +11,7 @@ from double_touch.image_gen import GenerateError
 
 @pytest.fixture(autouse=True)
 def storage(tmp_path, monkeypatch):
-    monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path / "loraset"))
+    monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path / "antelora"))
 
 
 def _fake(monkeypatch, script, seen=None):

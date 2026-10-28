@@ -106,17 +106,17 @@ const List<NodeType> nodeTypes = [
     tags: ['export', 'write', 'parquet', 'csv', 'jsonl', 'sink', 'disk'],
   ),
   NodeType(
-    name: 'Save Loraset',
-    type: 'saveLorasetNode',
+    name: 'Save Antelora',
+    type: 'saveAnteloraNode',
     category: NodeCategory.data,
     description: 'Write captioned segment images and metadata.jsonl as a LoRA training page.',
     tags: ['lora', 'training', 'dataset', 'images', 'metadata', 'jsonl', 'export', 'sink'],
   ),
   NodeType(
-    name: 'Collect Loraset',
-    type: 'collectLorasetNode',
+    name: 'Collect Antelora',
+    type: 'collectAnteloraNode',
     category: NodeCategory.data,
-    description: 'Merge saved loraset pages into one flat training folder, holding pages out for evaluation.',
+    description: 'Merge saved antelora pages into one flat training folder, holding pages out for evaluation.',
     tags: ['lora', 'training', 'dataset', 'collect', 'consolidate', 'merge', 'holdout', 'evaluation'],
   ),
   NodeType(
@@ -317,7 +317,7 @@ const List<NodeType> nodeTypes = [
     name: 'Image LoRA Trainer',
     type: 'imageTrainNode',
     category: NodeCategory.training,
-    description: 'Train an image LoRA (Z-Image-Turbo, mflux) on a collected loraset; wire the result to Generate.',
+    description: 'Train an image LoRA (Z-Image-Turbo, mflux) on a collected antelora; wire the result to Generate.',
     tags: ['lora', 'image', 'diffusion', 'z-image', 'train', 'style', 'mflux', 'mlx', 'adapter'],
   ),
   NodeType(
@@ -331,7 +331,7 @@ const List<NodeType> nodeTypes = [
     name: 'LoRA Trainer',
     type: 'vlmTrainerNode',
     category: NodeCategory.training,
-    description: 'Fine-tune a Qwen-VL vision-language model with LoRA on a collected loraset.',
+    description: 'Fine-tune a Qwen-VL vision-language model with LoRA on a collected antelora.',
     tags: ['lora', 'qwen', 'vlm', 'vision', 'fine-tune', 'train', 'mlx', 'adapter'],
   ),
   NodeType(

@@ -736,42 +736,42 @@ class LlmMergeDocstringsResponse(CamelModel):
 # examples, one JSON object per line, and emits a 2-column AA.
 
 
-class LorasetSaveRequest(CamelModel):
+class AnteloraSaveRequest(CamelModel):
     # The LLM caption AA: segment rows with file_name, caption, page_name, image_b64.
     captions: AssocArray
-    # Folder name under storage/loraset/.
-    loraset: str = "mccay"
+    # Folder name under storage/antelora/.
+    antelora: str = "mccay"
 
 
-class LorasetPage(CamelModel):
+class AnteloraPage(CamelModel):
     page: str
     images: int
     path: str
 
 
-class LorasetSaveResponse(CamelModel):
-    loraset: str
-    pages: list[LorasetPage]
+class AnteloraSaveResponse(CamelModel):
+    antelora: str
+    pages: list[AnteloraPage]
     images: int
     skipped: int
     path: str
 
 
-class LorasetPagesResponse(CamelModel):
-    loraset: str
-    pages: list[LorasetPage]
+class AnteloraPagesResponse(CamelModel):
+    antelora: str
+    pages: list[AnteloraPage]
 
 
-class LorasetCollectRequest(CamelModel):
-    loraset: str = "mccay"
+class AnteloraCollectRequest(CamelModel):
+    antelora: str = "mccay"
     # Page folders held out of the collection (e.g. the evaluation page).
     exclude: list[str] = []
-    # Folder name under storage/loraset/<set>/_collected/.
+    # Folder name under storage/antelora/<set>/_collected/.
     output: str = "train"
 
 
-class LorasetCollectResponse(CamelModel):
-    loraset: str
+class AnteloraCollectResponse(CamelModel):
+    antelora: str
     output: str
     path: str
     pages: list[str]
@@ -782,7 +782,7 @@ class LorasetCollectResponse(CamelModel):
 
 
 class VlmTrainRequest(CamelModel):
-    # Output folder of Collect Loraset (holds train.jsonl and images/).
+    # Output folder of Collect Antelora (holds train.jsonl and images/).
     dataset: str
     model: str = "mlx-community/Qwen2-VL-2B-Instruct-bf16"
     name: str = ""
@@ -845,10 +845,10 @@ class GenerateRequest(CamelModel):
 
 
 class ImageTrainRequest(CamelModel):
-    # Collect Loraset's output folder (what its port carries). When empty, the
+    # Collect Antelora's output folder (what its port carries). When empty, the
     # folder is found from the set and output names below.
     dataset: str = ""
-    loraset: str = "mccay"
+    antelora: str = "mccay"
     output: str = "train"
     name: str = ""
     epochs: int = 20
@@ -880,10 +880,10 @@ class ImageTrainStatus(CamelModel):
 
 
 class CloudTrainRequest(CamelModel):
-    # Collect Loraset's output folder (what its port carries). When empty, the
+    # Collect Antelora's output folder (what its port carries). When empty, the
     # folder is found from the set and output names below.
     dataset: str = ""
-    loraset: str = "mccay"
+    antelora: str = "mccay"
     output: str = "train"
     name: str = ""
     epochs: int = 20

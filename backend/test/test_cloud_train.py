@@ -9,7 +9,7 @@ from double_touch.image_train import TrainError
 
 @pytest.fixture(autouse=True)
 def storage(tmp_path, monkeypatch):
-    monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path / "loraset"))
+    monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path / "antelora"))
     monkeypatch.setenv("GCP_PROJECT_ID", "proj")
     monkeypatch.setenv("GCP_GCS_BUCKET", "bucket")
     monkeypatch.setenv("GCP_VERTEX_TRAIN_IMAGE", "us-central1-docker.pkg.dev/proj/repo/img:latest")
@@ -20,8 +20,8 @@ def storage(tmp_path, monkeypatch):
     monkeypatch.setattr(cloud_train, "_upload_dir_single", lambda *a, **k: None)
 
 
-def _collected(tmp_path, rows=3, loraset="mccay", output="train"):
-    folder = tmp_path / "loraset" / loraset / "_collected" / output
+def _collected(tmp_path, rows=3, antelora="mccay", output="train"):
+    folder = tmp_path / "antelora" / antelora / "_collected" / output
     (folder / "images").mkdir(parents=True)
     lines = []
     for i in range(rows):
@@ -167,7 +167,7 @@ def test_only_one_cloud_run_at_a_time(monkeypatch, tmp_path):
 
 
 def test_dataset_path_from_the_collect_node_is_used_as_given(monkeypatch, tmp_path):
-    folder = _collected(tmp_path, loraset="other", output="v2")
+    folder = _collected(tmp_path, antelora="other", output="v2")
     monkeypatch.setattr(cloud_train, "_submit_job", lambda cfg, job: "name")
     monkeypatch.setattr(cloud_train, "_poll_state", lambda cfg, name: ("JOB_STATE_RUNNING", None))
     r = cloud_train.start_cloud_train(dataset=str(folder), epochs=2, rank=4)

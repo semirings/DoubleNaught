@@ -1,8 +1,8 @@
-"""Save Loraset: write LoRA training pages to ``storage/loraset/<set>/<page>/``.
+"""Save Antelora: write LoRA training pages to ``storage/antelora/<set>/<page>/``.
 
 Each page is a self-contained folder::
 
-    storage/loraset/<set>/<page>/
+    storage/antelora/<set>/<page>/
         metadata.jsonl                      one ``{"file_name", "text"}`` per image
         <session>_<pass>_<uuid>.png         one per segment
 
@@ -55,17 +55,17 @@ def _owner_session(folder: Path) -> str:
         return ""
 
 
-class LorasetError(ValueError):
-    """The input cannot be saved as a loraset."""
+class AnteloraError(ValueError):
+    """The input cannot be saved as a antelora."""
 
 
-def loraset_root() -> Path:
-    """`storage/loraset`, or `$DOUBLE_TOUCH_LORASET_DIR` when set (tests)."""
+def antelora_root() -> Path:
+    """`storage/antelora`, or `$DOUBLE_TOUCH_LORASET_DIR` when set (tests)."""
     override = os.environ.get("DOUBLE_TOUCH_LORASET_DIR")
     base = (
         Path(override)
         if override
-        else Path(__file__).parent.parent.parent.parent / "storage" / "loraset"
+        else Path(__file__).parent.parent.parent.parent / "storage" / "antelora"
     )
     base.mkdir(parents=True, exist_ok=True)
     return base
@@ -81,15 +81,15 @@ def _text(value: object) -> str:
     return "" if value is None else str(value).strip()
 
 
-def save_loraset(
+def save_antelora(
     aa: AssocArray, name: str = DEFAULT_SET, root: Optional[Path] = None
 ) -> dict[str, Any]:
     """Write every captioned segment row of [aa]; return what was written.
 
     Rows without a `file_name`, a caption or a decodable `image_b64` are skipped
-    and counted, never guessed. Raises [LorasetError] when nothing is writable.
+    and counted, never guessed. Raises [AnteloraError] when nothing is writable.
     """
-    base = (root or loraset_root()) / safe_name(name, DEFAULT_SET)
+    base = (root or antelora_root()) / safe_name(name, DEFAULT_SET)
     pages: dict[tuple[str, str], list[tuple[str, str, bytes]]] = {}
     skipped = 0
 
@@ -122,7 +122,7 @@ def save_loraset(
         need = [c for c in ("file_name", "image_b64") if c not in have]
         if "improved_caption" not in have and "caption" not in have:
             need.append("improved_caption")
-        raise LorasetError(
+        raise AnteloraError(
             "nothing to save: rows need file_name, a caption and image_b64. "
             + (f"Missing columns: {', '.join(need)}. " if need else "")
             + f"Received columns: {', '.join(have) or 'none'}. "
@@ -156,7 +156,7 @@ def save_loraset(
         written.append({"page": page, "images": len(items), "path": str(target)})
 
     return {
-        "loraset": base.name,
+        "antelora": base.name,
         "pages": written,
         "images": sum(p["images"] for p in written),
         "skipped": skipped,
@@ -183,8 +183,8 @@ def _is_page_dir(path: Path) -> bool:
 
 
 def list_pages(name: str = DEFAULT_SET, root: Optional[Path] = None) -> list[dict[str, Any]]:
-    """Saved pages of a loraset, alphabetical: `{page, images, path}`."""
-    base = (root or loraset_root()) / safe_name(name, DEFAULT_SET)
+    """Saved pages of a antelora, alphabetical: `{page, images, path}`."""
+    base = (root or antelora_root()) / safe_name(name, DEFAULT_SET)
     if not base.is_dir():
         return []
     pages = []
@@ -201,7 +201,7 @@ def list_pages(name: str = DEFAULT_SET, root: Optional[Path] = None) -> list[dic
     return pages
 
 
-def collect_loraset(
+def collect_antelora(
     name: str = DEFAULT_SET,
     exclude: Sequence[str] = (),
     output: str = "train",
@@ -210,7 +210,7 @@ def collect_loraset(
 ) -> dict[str, Any]:
     """Merge the saved pages (minus [exclude]) into one trainer-ready folder::
 
-        storage/loraset/<set>/_collected/<output>/
+        storage/antelora/<set>/_collected/<output>/
             metadata.jsonl      {"file_name": "images/<png>", "text": ...}
             train.jsonl         same lines as image+chat pairs, the split file
                                 `mlx_vlm.train --data <folder>` reads
@@ -220,9 +220,9 @@ def collect_loraset(
     Images are copied, so the folder stands alone (movable to a training
     machine). A line whose image is missing, whose JSON is broken or whose text
     is empty is skipped and reported, never written. The output folder is
-    rebuilt from scratch each time. Raises [LorasetError] when nothing remains.
+    rebuilt from scratch each time. Raises [AnteloraError] when nothing remains.
     """
-    base = (root or loraset_root()) / safe_name(name, DEFAULT_SET)
+    base = (root or antelora_root()) / safe_name(name, DEFAULT_SET)
     held = {safe_name(x, "") for x in exclude if x}
     out_name = safe_name(output, "train")
     included: list[str] = []
@@ -285,7 +285,7 @@ def collect_loraset(
                 included.append(folder.name)
 
         if not lines_out:
-            raise LorasetError(
+            raise AnteloraError(
                 "nothing to collect: no usable lines in the selected pages"
                 + (f" ({len(held)} held out)" if held else "")
             )
@@ -293,7 +293,7 @@ def collect_loraset(
         (tmp / METADATA_NAME).write_text("\n".join(lines_out) + "\n", encoding="utf-8")
         (tmp / CHAT_NAME).write_text("\n".join(chat_out) + "\n", encoding="utf-8")
         manifest = {
-            "loraset": base.name,
+            "antelora": base.name,
             "output": out_name,
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "pages": included,
@@ -313,7 +313,7 @@ def collect_loraset(
         raise
 
     return {
-        "loraset": base.name,
+        "antelora": base.name,
         "output": out_name,
         "path": str(collected_root / out_name),
         "pages": included,

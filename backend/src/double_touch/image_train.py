@@ -1,10 +1,10 @@
-"""Train an image LoRA with mflux (`mflux-train`) from a collected loraset.
+"""Train an image LoRA with mflux (`mflux-train`) from a collected antelora.
 
-The Collect Loraset node leaves `storage/loraset/<set>/_collected/<output>/` with
+The Collect Antelora node leaves `storage/antelora/<set>/_collected/<output>/` with
 `metadata.jsonl` (``file_name`` relative to that folder, ``text`` the caption) and
 the images. `mflux-train` wants a flat folder of images each with a same-named
 ``.txt`` caption, plus a JSON config. [prepare] builds that folder and the config
-inside the run folder `storage/lora/<set>/<name>/`; [start_train] then runs
+inside the run folder `storage/postlora/<set>/<name>/`; [start_train] then runs
 `mflux-train --config` as a subprocess (mflux lives in its own environment, like
 for generation; set $DOUBLE_TOUCH_MFLUX_TRAIN if it is not on PATH).
 
@@ -34,7 +34,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 
-from .loraset import loraset_root, safe_name
+from .antelora import antelora_root, safe_name
 
 COMMAND = "mflux-train"
 MODEL = "z-image-turbo"
@@ -65,8 +65,8 @@ class TrainError(Exception):
 
 
 def lora_root() -> Path:
-    """`storage/lora/` next to `storage/loraset/`."""
-    return loraset_root().parent / "lora"
+    """`storage/postlora/` next to `storage/antelora/`."""
+    return antelora_root().parent / "postlora"
 
 
 def find_command() -> Optional[str]:
@@ -86,8 +86,8 @@ def find_command() -> Optional[str]:
     return None
 
 
-def collected_dir(loraset: str, output: str, root: Optional[Path] = None) -> Path:
-    return (root or loraset_root()) / safe_name(loraset, "mccay") / "_collected" / safe_name(output, "train")
+def collected_dir(antelora: str, output: str, root: Optional[Path] = None) -> Path:
+    return (root or antelora_root()) / safe_name(antelora, "mccay") / "_collected" / safe_name(output, "train")
 
 
 def default_name(epochs: int, rank: int) -> str:
@@ -99,7 +99,7 @@ def read_captions(folder: Path) -> list[tuple[Path, str]]:
     meta = folder / "metadata.jsonl"
     if not meta.is_file():
         raise TrainError(
-            f"{folder} has no metadata.jsonl - run Collect Loraset for this set first"
+            f"{folder} has no metadata.jsonl - run Collect Antelora for this set first"
         )
     pairs: list[tuple[Path, str]] = []
     for line in meta.read_text(encoding="utf-8").splitlines():
@@ -260,7 +260,7 @@ def _pump(job: _Job) -> None:
 
 
 def start_train(
-    loraset: str = "mccay",
+    antelora: str = "mccay",
     output: str = "train",
     name: str = "",
     epochs: int = 20,
@@ -273,8 +273,8 @@ def start_train(
     command: Optional[str] = None,
     root: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """[dataset], when given, is the Collect Loraset output folder itself (what the
-    node receives on its port); otherwise it is found from [loraset] and [output]."""
+    """[dataset], when given, is the Collect Antelora output folder itself (what the
+    node receives on its port); otherwise it is found from [antelora] and [output]."""
     if epochs < 1:
         raise TrainError("epochs must be at least 1")
     if not 1 <= rank <= 128:
@@ -295,10 +295,10 @@ def start_train(
         folder = Path(dataset.strip()).expanduser()
         set_name = folder.parent.parent.name if folder.parent.name == "_collected" else folder.name
     else:
-        folder, set_name = collected_dir(loraset, output, root), loraset
+        folder, set_name = collected_dir(antelora, output, root), antelora
     pairs = read_captions(folder)
     name = safe_name(name, default_name(epochs, rank))
-    run_dir = (root.parent / "lora" if root else lora_root()) / safe_name(set_name, "mccay") / name
+    run_dir = (root.parent / "postlora" if root else lora_root()) / safe_name(set_name, "mccay") / name
     if run_dir.exists():
         stamp = time.strftime("%Y%m%d_%H%M%S")
         name = f"{name}_{stamp}"
@@ -361,9 +361,9 @@ def cancel_train(run_id: str) -> dict[str, Any]:
 def main(argv: Optional[list[str]] = None) -> int:
     import argparse
 
-    p = argparse.ArgumentParser(description="Train a Z-Image-Turbo LoRA from a collected loraset.")
-    p.add_argument("loraset", nargs="?", default="mccay")
-    p.add_argument("--output", default="train", help="Collect Loraset output folder name")
+    p = argparse.ArgumentParser(description="Train a Z-Image-Turbo LoRA from a collected antelora.")
+    p.add_argument("antelora", nargs="?", default="mccay")
+    p.add_argument("--output", default="train", help="Collect Antelora output folder name")
     p.add_argument("--name", default="")
     p.add_argument("--epochs", type=int, default=20)
     p.add_argument("--rank", type=int, default=16)
@@ -375,9 +375,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     a = p.parse_args(argv)
     try:
         if a.prepare_only:
-            pairs = read_captions(collected_dir(a.loraset, a.output))
+            pairs = read_captions(collected_dir(a.antelora, a.output))
             name = safe_name(a.name, default_name(a.epochs, a.rank))
-            run_dir = lora_root() / safe_name(a.loraset, "mccay") / name
+            run_dir = lora_root() / safe_name(a.antelora, "mccay") / name
             run_dir.mkdir(parents=True, exist_ok=True)
             cfg = prepare(
                 pairs, run_dir, epochs=a.epochs, rank=a.rank, learning_rate=a.lr,
@@ -386,7 +386,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"{len(pairs)} images; config {cfg}")
             return 0
         started = start_train(
-            a.loraset, a.output, a.name, a.epochs, a.rank, a.lr, a.resolution,
+            a.antelora, a.output, a.name, a.epochs, a.rank, a.lr, a.resolution,
             a.trigger, a.quantize,
         )
         job = _jobs[started["run_id"]]

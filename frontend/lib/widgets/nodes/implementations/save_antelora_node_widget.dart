@@ -5,24 +5,24 @@ import 'package:aa_preview_table/aa_preview_table.dart';
 import '../../../models/workflow.dart';
 import '../../../services/infobus/input_port.dart';
 import '../../../services/infobus/output_port.dart';
-import '../../../services/loraset_api.dart';
+import '../../../services/antelora_api.dart';
 import '../base/base_node_widget.dart';
 import '../base/execute_button.dart';
 import '../base/output_connector.dart';
 import '../base/wait_checkbox.dart';
 import '../base/wait_gated_execution.dart';
 
-/// Writes LoRA training pages: `storage/loraset/<set>/<page>/metadata.jsonl`
+/// Writes LoRA training pages: `storage/antelora/<set>/<page>/metadata.jsonl`
 /// plus one PNG per segment, from the LLM node's caption output.
 ///
 /// One input, `captions` (idx 0). There is nothing to choose: the page folder
 /// comes from the source image name, the lines from the improved captions.
 /// Saving a page replaces its folder, so a re-run never leaves stale files.
-class SaveLorasetNodeWidget extends BaseNodeWidget {
-  /// Backend seam; defaults to the local `/loraset/save` endpoint.
-  final LorasetApi? api;
+class SaveAnteloraNodeWidget extends BaseNodeWidget {
+  /// Backend seam; defaults to the local `/antelora/save` endpoint.
+  final AnteloraApi? api;
 
-  const SaveLorasetNodeWidget({
+  const SaveAnteloraNodeWidget({
     super.key,
     required super.node,
     super.initialParams,
@@ -36,25 +36,25 @@ class SaveLorasetNodeWidget extends BaseNodeWidget {
   });
 
   @override
-  State<SaveLorasetNodeWidget> createState() => _SaveLorasetNodeWidgetState();
+  State<SaveAnteloraNodeWidget> createState() => _SaveAnteloraNodeWidgetState();
 }
 
-class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
-    with WaitGatedExecution<SaveLorasetNodeWidget> {
-  @override String   get nodeTitle    => 'Save Loraset';
+class _SaveAnteloraNodeWidgetState extends BaseNodeState<SaveAnteloraNodeWidget>
+    with WaitGatedExecution<SaveAnteloraNodeWidget> {
+  @override String   get nodeTitle    => 'Save Antelora';
   @override IconData get nodeIcon     => Icons.photo_library_outlined;
   @override double   get nodeWidth    => 320;
   @override String   get workingLabel => 'saving';
 
   static const String _defaultSet = 'mccay';
 
-  late final LorasetApi _api;
+  late final AnteloraApi _api;
   late final InputPort _in;
   final OutputPort _out = OutputPort('dir');
   late final TextEditingController _set;
 
   AaPayload? _incoming;
-  LorasetSaveResult? _result;
+  AnteloraSaveResult? _result;
   http.Client? _execClient;
   int _execGen = 0;
 
@@ -75,11 +75,11 @@ class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
   @override
   void initState() {
     super.initState();
-    _api = widget.api ?? const LorasetApi();
+    _api = widget.api ?? const AnteloraApi();
     _set = TextEditingController(
-      text: widget.initialParams?['loraset'] ?? _defaultSet,
+      text: widget.initialParams?['antelora'] ?? _defaultSet,
     )..addListener(() {
-        saveParams({'loraset': _set.text.trim()});
+        saveParams({'antelora': _set.text.trim()});
         if (mounted) setState(() {});
       });
     initOutputPort(_out);
@@ -127,21 +127,21 @@ class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
     final owns = _api.client == null;
     final client = _api.client ?? http.Client();
     _execClient = client;
-    final api = owns ? LorasetApi(baseUrl: _api.baseUrl, client: client) : _api;
+    final api = owns ? AnteloraApi(baseUrl: _api.baseUrl, client: client) : _api;
 
     try {
-      final result = await api.save(payload, loraset: _set.text.trim());
+      final result = await api.save(payload, antelora: _set.text.trim());
       if (gen != _execGen || !mounted) return;
       setState(() => _result = result);
       final pages = result.pages.length;
       setComplete(
         detail: '${result.images} images · $pages page${pages == 1 ? '' : 's'}',
       );
-      // The loraset folder, for Collect Loraset's `dir` port.
+      // The antelora folder, for Collect Antelora's `dir` port.
       _out.emit(AaPayload(
-        rows: const ['loraset', 'loraset'],
-        cols: const ['loraset', 'path'],
-        vals: [result.loraset, result.path],
+        rows: const ['antelora', 'antelora'],
+        cols: const ['antelora', 'path'],
+        vals: [result.antelora, result.path],
       ));
     } catch (e) {
       if (gen != _execGen || !mounted) return;
@@ -188,12 +188,12 @@ class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
       children: [
         SizedBox(height: BaseNodeState.portLaneClearance(1)),
         TextField(
-          key: const ValueKey('loraset-name'),
+          key: const ValueKey('antelora-name'),
           controller: _set,
           enabled: !busy,
           decoration: InputDecoration(
-            labelText: 'Loraset',
-            helperText: 'storage/loraset/<name>/<page>/',
+            labelText: 'Antelora',
+            helperText: 'storage/antelora/<name>/<page>/',
             errorText: _nameError,
             errorMaxLines: 3,
             isDense: true,
@@ -213,7 +213,7 @@ class _SaveLorasetNodeWidgetState extends BaseNodeState<SaveLorasetNodeWidget>
         if (result != null) ...[
           const SizedBox(height: 8),
           SelectableText(
-            key: const ValueKey('loraset-result'),
+            key: const ValueKey('antelora-result'),
             '${result.pages.join(', ')}\n${result.path}'
             '${result.skipped > 0 ? '\n${result.skipped} rows skipped' : ''}',
             style: theme.textTheme.labelSmall?.copyWith(

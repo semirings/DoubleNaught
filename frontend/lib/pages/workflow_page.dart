@@ -374,18 +374,18 @@ class _WorkflowPageState extends State<WorkflowPage>
       case 'jsonl_formatter': // tolerate a snake_case spelling in saved workflows
         // One input: `astIndex` (AA, idx 0).
         return const [0];
-      case 'collectLorasetNode':
-        // One optional input: `dir` (AA, idx 0) — e.g. Save Loraset's output.
+      case 'collectAnteloraNode':
+        // One optional input: `dir` (AA, idx 0) — e.g. Save Antelora's output.
         return const [0];
       case 'imageGenNode':
         // Four optional inputs: `model` (AA, idx 0), `lora` (idx 1), `image`
         // (idx 2), `prompt` (idx 3).
         return const [0, 1, 2, 3];
       case 'imageTrainNode':
-        // One input: `dataset` (AA, idx 0) — Collect Loraset's output.
+        // One input: `dataset` (AA, idx 0) — Collect Antelora's output.
         return const [0];
       case 'vertexTrainerNode':
-        // One input: `dataset` (AA, idx 0) — Collect Loraset's output.
+        // One input: `dataset` (AA, idx 0) — Collect Antelora's output.
         return const [0];
       case 'vlmTrainerNode':
         // Two inputs: `dataset` (AA, idx 0), `model` (AA, idx 1, optional).
@@ -394,7 +394,7 @@ class _WorkflowPageState extends State<WorkflowPage>
         // Three inputs: `image` (AA, idx 0), `model` (idx 1, optional),
         // `lora` (idx 2, optional).
         return const [0, 1, 2];
-      case 'saveLorasetNode':
+      case 'saveAnteloraNode':
         // One input: `captions` (AA, idx 0) — the LLM caption output.
         return const [0];
       case 'functionExtractionNode':
@@ -2771,7 +2771,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // `dataset` (AA, idx 0) — Collect Loraset's output folder.
+          // `dataset` (AA, idx 0) — Collect Antelora's output folder.
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
@@ -2784,7 +2784,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // `dataset` (AA, idx 0) — Collect Loraset's output folder.
+          // `dataset` (AA, idx 0) — Collect Antelora's output folder.
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
@@ -2797,7 +2797,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // `dataset` (AA, idx 0) — Collect Loraset's output folder.
+          // `dataset` (AA, idx 0) — Collect Antelora's output folder.
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
@@ -2828,12 +2828,12 @@ class _WorkflowPageState extends State<WorkflowPage>
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
-      case 'collectLorasetNode':
-        return CollectLorasetNodeWidget(
+      case 'collectAnteloraNode':
+        return CollectAnteloraNodeWidget(
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
-          // `dir` (AA, idx 0, optional) — a row with `loraset` or `path`.
+          // `dir` (AA, idx 0, optional) — a row with `antelora` or `path`.
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
@@ -2842,8 +2842,8 @@ class _WorkflowPageState extends State<WorkflowPage>
           onAaOutputPort: (port) => (_aaMultiOutputPorts[node.id] ??= {})[0] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );
-      case 'saveLorasetNode':
-        return SaveLorasetNodeWidget(
+      case 'saveAnteloraNode':
+        return SaveAnteloraNodeWidget(
           node: node,
           initialParams: _nodeParams[node.id],
           onParams: (p) => _nodeParams[node.id] = p,
@@ -2851,7 +2851,7 @@ class _WorkflowPageState extends State<WorkflowPage>
           inputConnected: _hasIncomingEdgeAt(node.id, 0),
           onInputConnect: (source) => _connectAt(source, node.id, 0),
           onInputPort: (port) => _registerAaInput(node.id, 0, port),
-          // `dir` (AA, idx 0) — the loraset folder, once saved.
+          // `dir` (AA, idx 0) — the antelora folder, once saved.
           onOutputPort: (port) => _aaOutputPorts[node.id] = port,
           connectedOutputs: _connectedOutputs(node.id),
         );

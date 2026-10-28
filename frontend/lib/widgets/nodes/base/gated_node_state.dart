@@ -16,7 +16,7 @@ import 'wait_gated_execution.dart';
 /// behavior and [WaitCheckbox] is a separate, ordinary widget that has to
 /// be placed in `buildNodeBody` by hand, the same way [ExecuteButton] and
 /// [BaseNodeState.statusRow] are. That split let the checkbox go missing
-/// three different ways in this codebase (Collect Loraset, Generate,
+/// three different ways in this codebase (Collect Antelora, Generate,
 /// Caption all had the mixin but never built the widget) while two other
 /// nodes (the VLM and Image LoRA trainers) had it mixed in but briefly
 /// missing too before being patched by hand.

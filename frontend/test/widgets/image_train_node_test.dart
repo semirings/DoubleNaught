@@ -65,7 +65,7 @@ void main() {
       ..emit(AaPayload(
         rows: const ['collection', 'collection', 'collection'],
         cols: const ['path', 'images', 'pages'],
-        vals: const ['/s/loraset/mccay/_collected/train', '27', '6'],
+        vals: const ['/s/antelora/mccay/_collected/train', '27', '6'],
       )));
     await t.pumpAndSettle();
     await t.enterText(find.byKey(const ValueKey('imgtrain-epochs')), '10');
@@ -77,7 +77,7 @@ void main() {
       await t.pump(const Duration(milliseconds: 30));
     }
     final body = posts.single;
-    expect(body['dataset'], '/s/loraset/mccay/_collected/train');
+    expect(body['dataset'], '/s/antelora/mccay/_collected/train');
     expect(body['epochs'], 10);
     expect(body['rank'], 16);
     expect(body['resolution'], 768);

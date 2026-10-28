@@ -11,8 +11,8 @@ from double_touch.vlm_jobs import VlmError
 
 @pytest.fixture
 def collected(tmp_path, monkeypatch):
-    monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path / "loraset"))
-    folder = tmp_path / "loraset" / "mccay" / "_collected" / "train"
+    monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path / "antelora"))
+    folder = tmp_path / "antelora" / "mccay" / "_collected" / "train"
     folder.mkdir(parents=True)
     (folder / "train.jsonl").write_text("{}\n")
     return folder

@@ -1,7 +1,7 @@
 """Fine-tune and run a vision-language model (Qwen-VL) through mlx-vlm.
 
 Training is `python -m mlx_vlm.train --data <folder>` on a folder the Collect
-Loraset node wrote (it reads `<folder>/train.jsonl`, images relative to the
+Antelora node wrote (it reads `<folder>/train.jsonl`, images relative to the
 folder). Captioning is `python -m mlx_vlm generate --adapter-path <adapter>`.
 Both run as subprocesses of the interpreter this backend runs in, so mlx-vlm
 must be installed there: `pip install "mlx-vlm[train]"`.
@@ -23,7 +23,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 
-from .loraset import loraset_root, safe_name
+from .antelora import antelora_root, safe_name
 
 DEFAULT_MODEL = "mlx-community/Qwen2-VL-2B-Instruct-bf16"
 INSTALL_HINT = 'mlx-vlm is not installed in the backend environment: pip install "mlx-vlm[train]"'
@@ -38,8 +38,8 @@ class VlmError(Exception):
 
 
 def lora_root() -> Path:
-    """`storage/lora/` next to `storage/loraset/`."""
-    return loraset_root().parent / "lora"
+    """`storage/postlora/` next to `storage/antelora/`."""
+    return antelora_root().parent / "postlora"
 
 
 def mlx_vlm_installed() -> bool:
@@ -113,7 +113,7 @@ def start_train(
     folder = Path(dataset)
     if not (folder / "train.jsonl").is_file():
         raise VlmError(
-            f"{dataset!r} has no train.jsonl — run Collect Loraset first and pass its output folder"
+            f"{dataset!r} has no train.jsonl — run Collect Antelora first and pass its output folder"
         )
     if not model.strip():
         raise VlmError("enter a base model, e.g. " + DEFAULT_MODEL)
@@ -122,9 +122,9 @@ def start_train(
     if require_installed and not mlx_vlm_installed():
         raise VlmError(INSTALL_HINT)
 
-    loraset = folder.parent.parent.name  # …/loraset/<set>/_collected/<output>
+    antelora = folder.parent.parent.name  # …/antelora/<set>/_collected/<output>
     run_name = safe_name(name, "") or safe_name(f"{folder.name}-r{rank}-e{epochs}", "run")
-    adapter = lora_root() / safe_name(loraset, "loraset") / run_name / "adapters.safetensors"
+    adapter = lora_root() / safe_name(antelora, "antelora") / run_name / "adapters.safetensors"
     adapter.parent.mkdir(parents=True, exist_ok=True)
     if adapter.exists():
         adapter.unlink()  # a stale adapter must not read as this run's result

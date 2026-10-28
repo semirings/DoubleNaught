@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import '../backend_config.dart';
 
 /// Client for `/image-train/*`: train an image LoRA (Z-Image-Turbo, via mflux)
-/// on a collected loraset.
+/// on a collected antelora.
 class ImageTrainApi {
   final String baseUrl;
 

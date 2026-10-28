@@ -208,7 +208,7 @@ class CaptionTask extends LLMTask {
         if (val != null && val.isNotEmpty) put(e.key, col, val);
       }
       // Only rows that become training images carry their file name, page and
-      // pixels on — Save Loraset writes them; panels and the page never ship.
+      // pixels on — Save Antelora writes them; panels and the page never ship.
       if ((src['file_name'] ?? '').isNotEmpty) {
         for (final col in const ['file_name', 'page_name', 'image_b64']) {
           final val = src[col];

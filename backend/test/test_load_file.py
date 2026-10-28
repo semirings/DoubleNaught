@@ -455,9 +455,9 @@ def test_directory_load_says_which_directory_it_came_from(tmp_path):
     assert {r["source_dir"] for r in data["rows"]} == {str(root)}
 
 
-# ── Collect Loraset output directory ─────────────────────────────────────────
+# ── Collect Antelora output directory ─────────────────────────────────────────
 
-def _write_collected_loraset(root, rows):
+def _write_collected_antelora(root, rows):
     """`rows` is a list of (file_name, text); writes each image (a 1x1 PNG,
     good enough since nothing here decodes pixels) plus metadata.jsonl."""
     root.mkdir(parents=True, exist_ok=True)
@@ -473,12 +473,12 @@ def _write_collected_loraset(root, rows):
     (root / "metadata.jsonl").write_text("\n".join(lines) + "\n")
 
 
-def test_collected_loraset_dir_loads_as_the_one_row_summary_collect_emits(tmp_path):
-    """A folder with a top-level metadata.jsonl - what Collect Loraset writes -
-    comes back as the same one-row path/images/pages AA Collect Loraset's own
+def test_collected_antelora_dir_loads_as_the_one_row_summary_collect_emits(tmp_path):
+    """A folder with a top-level metadata.jsonl - what Collect Antelora writes -
+    comes back as the same one-row path/images/pages AA Collect Antelora's own
     `dataset` output emits, not one row per image/caption file."""
     root = tmp_path / "_collected" / "train"
-    _write_collected_loraset(root, [("a.png", "a cat"), ("b.png", "a dog")])
+    _write_collected_antelora(root, [("a.png", "a cat"), ("b.png", "a dog")])
 
     aa, data = load_file(str(root), "auto")
 
@@ -490,11 +490,11 @@ def test_collected_loraset_dir_loads_as_the_one_row_summary_collect_emits(tmp_pa
     assert data == {"path": str(root), "images": 2, "pages": ""}
 
 
-def test_collected_loraset_dir_only_counts_images_with_a_caption_and_a_file(tmp_path):
+def test_collected_antelora_dir_only_counts_images_with_a_caption_and_a_file(tmp_path):
     """Mirrors read_captions(): a row missing its caption, or whose image was
     never written, isn't trainable, so it isn't counted either."""
     root = tmp_path / "_collected" / "train"
-    _write_collected_loraset(root, [("a.png", "a cat"), ("b.png", "")])
+    _write_collected_antelora(root, [("a.png", "a cat"), ("b.png", "")])
     # A third row whose image file doesn't exist on disk.
     with (root / "metadata.jsonl").open("a") as f:
         f.write(json.dumps({"file_name": "missing.png", "text": "a bird"}) + "\n")

@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 import '../backend_config.dart';
 
 /// Client for `/vlm/*`: fine-tune a vision-language model (Qwen-VL) on a
-/// collected loraset, and caption images with it.
+/// collected antelora, and caption images with it.
 class VlmApi {
   final String baseUrl;
 
@@ -16,7 +16,7 @@ class VlmApi {
 
   static const defaultModel = 'mlx-community/Qwen2-VL-2B-Instruct-bf16';
 
-  /// The prompt Collect Loraset trains with. Caption with the same one.
+  /// The prompt Collect Antelora trains with. Caption with the same one.
   static const defaultPrompt = 'Describe this image.';
 
   Future<T> _with<T>(Future<T> Function(http.Client c) fn) async {

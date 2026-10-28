@@ -5,29 +5,29 @@ import 'package:http/http.dart' as http;
 import 'package:aa_preview_table/aa_preview_table.dart';
 import '../backend_config.dart';
 
-/// Client for `/loraset/save`: writes `storage/loraset/<set>/<page>/` —
+/// Client for `/antelora/save`: writes `storage/antelora/<set>/<page>/` —
 /// `metadata.jsonl` plus one PNG per segment — from the LLM caption AA.
-class LorasetApi {
+class AnteloraApi {
   final String baseUrl;
 
   /// Injected in tests. When null, each call uses (and closes) its own client.
   final http.Client? client;
 
-  const LorasetApi({this.baseUrl = BackendConfig.baseUrl, this.client});
+  const AnteloraApi({this.baseUrl = BackendConfig.baseUrl, this.client});
 
-  Future<LorasetSaveResult> save(AaPayload captions, {required String loraset}) async {
+  Future<AnteloraSaveResult> save(AaPayload captions, {required String antelora}) async {
     final own = client == null ? http.Client() : null;
     final transport = client ?? own!;
     try {
       final response = await transport.post(
-        Uri.parse('$baseUrl/loraset/save'),
+        Uri.parse('$baseUrl/antelora/save'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'captions': captions.toJson(), 'loraset': loraset}),
+        body: jsonEncode({'captions': captions.toJson(), 'antelora': antelora}),
       );
       if (response.statusCode != 200) {
         throw Exception('Save failed: ${response.statusCode} - ${response.body}');
       }
-      return LorasetSaveResult.fromJson(
+      return AnteloraSaveResult.fromJson(
         jsonDecode(response.body) as Map<String, dynamic>,
       );
     } finally {
@@ -36,14 +36,14 @@ class LorasetApi {
   }
 }
 
-extension LorasetCollectApi on LorasetApi {
-  /// Saved pages of [loraset]: name and image count, alphabetical.
-  Future<List<LorasetPageInfo>> listPages(String loraset) async {
+extension AnteloraCollectApi on AnteloraApi {
+  /// Saved pages of [antelora]: name and image count, alphabetical.
+  Future<List<AnteloraPageInfo>> listPages(String antelora) async {
     final own = client == null ? http.Client() : null;
     final transport = client ?? own!;
     try {
       final response = await transport.get(
-        Uri.parse('$baseUrl/loraset/pages').replace(queryParameters: {'loraset': loraset}),
+        Uri.parse('$baseUrl/antelora/pages').replace(queryParameters: {'antelora': antelora}),
       );
       if (response.statusCode != 200) {
         throw Exception('List failed: ${response.statusCode} - ${response.body}');
@@ -51,7 +51,7 @@ extension LorasetCollectApi on LorasetApi {
       final body = jsonDecode(response.body) as Map<String, dynamic>;
       return [
         for (final p in (body['pages'] as List? ?? const []))
-          LorasetPageInfo(
+          AnteloraPageInfo(
             '${(p as Map)['page']}',
             (p['images'] as num?)?.toInt() ?? 0,
           ),
@@ -62,8 +62,8 @@ extension LorasetCollectApi on LorasetApi {
   }
 
   /// Merge the saved pages (minus [exclude]) into one flat training folder.
-  Future<LorasetCollectResult> collect(
-    String loraset, {
+  Future<AnteloraCollectResult> collect(
+    String antelora, {
     List<String> exclude = const [],
     String output = 'train',
   }) async {
@@ -71,14 +71,14 @@ extension LorasetCollectApi on LorasetApi {
     final transport = client ?? own!;
     try {
       final response = await transport.post(
-        Uri.parse('$baseUrl/loraset/collect'),
+        Uri.parse('$baseUrl/antelora/collect'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'loraset': loraset, 'exclude': exclude, 'output': output}),
+        body: jsonEncode({'antelora': antelora, 'exclude': exclude, 'output': output}),
       );
       if (response.statusCode != 200) {
         throw Exception('Collect failed: ${response.statusCode} - ${response.body}');
       }
-      return LorasetCollectResult.fromJson(
+      return AnteloraCollectResult.fromJson(
         jsonDecode(response.body) as Map<String, dynamic>,
       );
     } finally {
@@ -87,13 +87,13 @@ extension LorasetCollectApi on LorasetApi {
   }
 }
 
-class LorasetPageInfo {
+class AnteloraPageInfo {
   final String name;
   final int images;
-  const LorasetPageInfo(this.name, this.images);
+  const AnteloraPageInfo(this.name, this.images);
 }
 
-class LorasetCollectResult {
+class AnteloraCollectResult {
   final String path;
   final List<String> pages;
   final List<String> excluded;
@@ -101,7 +101,7 @@ class LorasetCollectResult {
   final int skipped;
   final List<String> problems;
 
-  const LorasetCollectResult({
+  const AnteloraCollectResult({
     required this.path,
     required this.pages,
     required this.excluded,
@@ -110,10 +110,10 @@ class LorasetCollectResult {
     required this.problems,
   });
 
-  factory LorasetCollectResult.fromJson(Map<String, dynamic> json) {
+  factory AnteloraCollectResult.fromJson(Map<String, dynamic> json) {
     List<String> strings(Object? v) =>
         [for (final x in (v as List? ?? const [])) '$x'];
-    return LorasetCollectResult(
+    return AnteloraCollectResult(
       path: '${json['path'] ?? ''}',
       pages: strings(json['pages']),
       excluded: strings(json['excluded']),
@@ -124,24 +124,24 @@ class LorasetCollectResult {
   }
 }
 
-class LorasetSaveResult {
-  final String loraset;
+class AnteloraSaveResult {
+  final String antelora;
   final int images;
   final int skipped;
   final String path;
   final List<String> pages;
 
-  const LorasetSaveResult({
-    required this.loraset,
+  const AnteloraSaveResult({
+    required this.antelora,
     required this.images,
     required this.skipped,
     required this.path,
     required this.pages,
   });
 
-  factory LorasetSaveResult.fromJson(Map<String, dynamic> json) =>
-      LorasetSaveResult(
-        loraset: '${json['loraset'] ?? ''}',
+  factory AnteloraSaveResult.fromJson(Map<String, dynamic> json) =>
+      AnteloraSaveResult(
+        antelora: '${json['antelora'] ?? ''}',
         images: (json['images'] as num?)?.toInt() ?? 0,
         skipped: (json['skipped'] as num?)?.toInt() ?? 0,
         path: '${json['path'] ?? ''}',

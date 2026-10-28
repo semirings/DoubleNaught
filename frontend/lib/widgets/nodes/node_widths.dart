@@ -26,9 +26,9 @@ double getNodeWidth(String type) {
       return 320;
     case 'jsonlFormatterNode':
       return 320;
-    case 'saveLorasetNode':
+    case 'saveAnteloraNode':
       return 320;
-    case 'collectLorasetNode':
+    case 'collectAnteloraNode':
     case 'vlmTrainerNode':
     case 'imageGenNode':
     case 'imageTrainNode':

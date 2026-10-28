@@ -9,7 +9,7 @@ import 'package:double_vision/models/workflow.dart';
 import 'package:aa_preview_table/aa_preview_table.dart';
 import 'package:double_vision/services/infobus/input_port.dart';
 import 'package:double_vision/services/infobus/output_port.dart';
-import 'package:double_vision/services/loraset_api.dart';
+import 'package:double_vision/services/antelora_api.dart';
 import 'package:double_vision/widgets/nodes/nodes.dart';
 
 void main() {
@@ -19,10 +19,10 @@ void main() {
     calls = [];
     final client = MockClient((req) async {
       calls.add(req);
-      if (req.url.path == '/loraset/pages') {
+      if (req.url.path == '/antelora/pages') {
         return http.Response(
             jsonEncode({
-              'loraset': 'mccay',
+              'antelora': 'mccay',
               'pages': [
                 {'page': 'Page_006', 'images': 3, 'path': 'x'},
                 {'page': 'Page_007', 'images': 2, 'path': 'y'},
@@ -32,9 +32,9 @@ void main() {
       }
       return http.Response(
           jsonEncode({
-            'loraset': 'mccay',
+            'antelora': 'mccay',
             'output': 'train',
-            'path': 'storage/loraset/mccay/_collected/train',
+            'path': 'storage/antelora/mccay/_collected/train',
             'pages': ['Page_006'],
             'excluded': ['Page_007'],
             'images': 3,
@@ -46,12 +46,12 @@ void main() {
     return MaterialApp(
       home: Scaffold(
         body: SingleChildScrollView(
-          child: CollectLorasetNodeWidget(
-            node: const WorkflowNode(id: 1, type: 'collectLorasetNode'),
+          child: CollectAnteloraNodeWidget(
+            node: const WorkflowNode(id: 1, type: 'collectAnteloraNode'),
             initialParams: params,
             inputConnected: onInput != null,
             onInputPort: onInput,
-            api: LorasetApi(client: client),
+            api: AnteloraApi(client: client),
           ),
         ),
       ),
@@ -59,7 +59,7 @@ void main() {
   }
 
   testWidgets('lists pages, holds one out, collects without it', (t) async {
-    await t.pumpWidget(host({'loraset': 'mccay', 'exclude': 'Page_007'}));
+    await t.pumpWidget(host({'antelora': 'mccay', 'exclude': 'Page_007'}));
     await t.pumpAndSettle();
     expect(find.byKey(const ValueKey('collect-page-Page_006')), findsOneWidget);
     expect(find.text('2 images · held out'), findsOneWidget);
@@ -67,28 +67,28 @@ void main() {
     await t.tap(find.text('Execute'));
     await t.pumpAndSettle();
     final post = calls.last;
-    expect(post.url.path, '/loraset/collect');
+    expect(post.url.path, '/antelora/collect');
     final body = jsonDecode(post.body) as Map;
     expect(body['exclude'], ['Page_007']);
     expect(body['output'], 'train');
     expect(find.byKey(const ValueKey('collect-result')), findsOneWidget);
   });
 
-  testWidgets('starts empty: no loraset is assumed until a dir arrives',
+  testWidgets('starts empty: no antelora is assumed until a dir arrives',
       (t) async {
     await t.pumpWidget(host(null));
     await t.pumpAndSettle();
-    expect(calls.where((c) => c.url.path == '/loraset/pages'), isEmpty);
-    expect(find.text('Enter the loraset name'), findsWidgets);
+    expect(calls.where((c) => c.url.path == '/antelora/pages'), isEmpty);
+    expect(find.text('Enter the antelora name'), findsWidgets);
   });
 
   testWidgets('does not collect by itself', (t) async {
-    await t.pumpWidget(host({'loraset': 'mccay'}));
+    await t.pumpWidget(host({'antelora': 'mccay'}));
     await t.pumpAndSettle();
-    expect(calls.where((c) => c.url.path == '/loraset/collect'), isEmpty);
+    expect(calls.where((c) => c.url.path == '/antelora/collect'), isEmpty);
   });
 
-  testWidgets('a dir row names the loraset and the pages are re-listed',
+  testWidgets('a dir row names the antelora and the pages are re-listed',
       (t) async {
     InputPort? dir;
     await t.pumpWidget(host(null, onInput: (p) => dir = p));
@@ -96,29 +96,29 @@ void main() {
 
     dir!.connect(OutputPort('save')
       ..emit(AaPayload(
-        rows: const ['loraset', 'loraset'],
-        cols: const ['loraset', 'path'],
-        vals: const ['nemo', '/s/loraset/nemo'],
+        rows: const ['antelora', 'antelora'],
+        cols: const ['antelora', 'path'],
+        vals: const ['nemo', '/s/antelora/nemo'],
       )));
     await t.pumpAndSettle();
 
-    final listed = calls.where((c) => c.url.path == '/loraset/pages').last;
-    expect(listed.url.queryParameters['loraset'], 'nemo');
+    final listed = calls.where((c) => c.url.path == '/antelora/pages').last;
+    expect(listed.url.queryParameters['antelora'], 'nemo');
     expect(find.text('from the dir port'), findsOneWidget);
   });
 
-  testWidgets('with only a path, the last folder name is the loraset',
+  testWidgets('with only a path, the last folder name is the antelora',
       (t) async {
     InputPort? dir;
     await t.pumpWidget(host(null, onInput: (p) => dir = p));
     await t.pumpAndSettle();
     dir!.connect(OutputPort('x')
-      ..emit(AaPayload(rows: const ['d'], cols: const ['path'], vals: const ['/a/storage/loraset/mccay/'])));
+      ..emit(AaPayload(rows: const ['d'], cols: const ['path'], vals: const ['/a/storage/antelora/mccay/'])));
     await t.pumpAndSettle();
-    expect(calls.where((c) => c.url.path == '/loraset/pages').last.url.queryParameters['loraset'], 'mccay');
+    expect(calls.where((c) => c.url.path == '/antelora/pages').last.url.queryParameters['antelora'], 'mccay');
   });
 
-  testWidgets('Load File on a folder names the loraset by its source_dir',
+  testWidgets('Load File on a folder names the antelora by its source_dir',
       (t) async {
     InputPort? dir;
     await t.pumpWidget(host(null, onInput: (p) => dir = p));
@@ -128,13 +128,13 @@ void main() {
         rows: const ['file:00000', 'file:00000', 'file:00001', 'file:00001'],
         cols: const ['file_path', 'source_dir', 'file_path', 'source_dir'],
         vals: const [
-          'Page_002/metadata.jsonl', '/Users/g/storage/loraset/mccay',
-          'Page_003/metadata.jsonl', '/Users/g/storage/loraset/mccay',
+          'Page_002/metadata.jsonl', '/Users/g/storage/antelora/mccay',
+          'Page_003/metadata.jsonl', '/Users/g/storage/antelora/mccay',
         ],
       )));
     await t.pumpAndSettle();
     expect(
-        calls.where((c) => c.url.path == '/loraset/pages').last.url.queryParameters['loraset'],
+        calls.where((c) => c.url.path == '/antelora/pages').last.url.queryParameters['antelora'],
         'mccay');
   });
 
@@ -146,10 +146,10 @@ void main() {
       ..emit(AaPayload(
           rows: const ['a'],
           cols: const ['source_dir'],
-          vals: const ['/s/loraset/nemo/Page_002'])));
+          vals: const ['/s/antelora/nemo/Page_002'])));
     await t.pumpAndSettle();
     expect(
-        calls.where((c) => c.url.path == '/loraset/pages').last.url.queryParameters['loraset'],
+        calls.where((c) => c.url.path == '/antelora/pages').last.url.queryParameters['antelora'],
         'nemo');
   });
 }

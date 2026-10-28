@@ -72,11 +72,11 @@ from .models import (
     VlmTrainRequest,
     VlmTrainStarted,
     VlmTrainStatus,
-    LorasetCollectRequest,
-    LorasetCollectResponse,
-    LorasetPagesResponse,
-    LorasetSaveRequest,
-    LorasetSaveResponse,
+    AnteloraCollectRequest,
+    AnteloraCollectResponse,
+    AnteloraPagesResponse,
+    AnteloraSaveRequest,
+    AnteloraSaveResponse,
     D4mExecRequest,
     D4mExecResponse,
     D4mIngestRequest,
@@ -150,7 +150,7 @@ from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
 from . import d4m_handles
 from .save_file import delete_output, execute_save
 from . import cloud_train, image_gen, image_train, lora_files, vlm_jobs
-from .loraset import LorasetError, collect_loraset, list_pages, save_loraset
+from .antelora import AnteloraError, collect_antelora, list_pages, save_antelora
 from .load_file import load_file
 from .ast_extract import (
     AstExtractError,
@@ -1294,33 +1294,33 @@ async def jsonl_format_arrow(
     )
 
 
-@app.post("/loraset/save", response_model=LorasetSaveResponse)
-async def loraset_save(request: LorasetSaveRequest) -> LorasetSaveResponse:
-    """Write captioned segment crops + metadata.jsonl under storage/loraset/<set>/<page>/."""
+@app.post("/antelora/save", response_model=AnteloraSaveResponse)
+async def antelora_save(request: AnteloraSaveRequest) -> AnteloraSaveResponse:
+    """Write captioned segment crops + metadata.jsonl under storage/antelora/<set>/<page>/."""
     try:
-        return LorasetSaveResponse(**save_loraset(request.captions, request.loraset))
-    except LorasetError as exc:
+        return AnteloraSaveResponse(**save_antelora(request.captions, request.antelora))
+    except AnteloraError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
-@app.get("/loraset/pages", response_model=LorasetPagesResponse)
-async def loraset_pages(loraset: str = "mccay") -> LorasetPagesResponse:
-    """The saved pages of a loraset, for the Collect node's checklist."""
-    from .loraset import safe_name
+@app.get("/antelora/pages", response_model=AnteloraPagesResponse)
+async def antelora_pages(antelora: str = "mccay") -> AnteloraPagesResponse:
+    """The saved pages of a antelora, for the Collect node's checklist."""
+    from .antelora import safe_name
 
-    return LorasetPagesResponse(
-        loraset=safe_name(loraset, "mccay"), pages=list_pages(loraset)
+    return AnteloraPagesResponse(
+        antelora=safe_name(antelora, "mccay"), pages=list_pages(antelora)
     )
 
 
-@app.post("/loraset/collect", response_model=LorasetCollectResponse)
-async def loraset_collect(request: LorasetCollectRequest) -> LorasetCollectResponse:
+@app.post("/antelora/collect", response_model=AnteloraCollectResponse)
+async def antelora_collect(request: AnteloraCollectRequest) -> AnteloraCollectResponse:
     """Merge saved pages (minus held-out ones) into one flat, trainer-ready folder."""
     try:
-        return LorasetCollectResponse(
-            **collect_loraset(request.loraset, request.exclude, request.output)
+        return AnteloraCollectResponse(
+            **collect_antelora(request.antelora, request.exclude, request.output)
         )
-    except LorasetError as exc:
+    except AnteloraError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
@@ -1421,7 +1421,7 @@ async def vlm_train_cancel(run_id: str) -> VlmTrainStatus:
 
 @app.post("/image-train", response_model=ImageTrainStarted)
 async def image_train_start(request: ImageTrainRequest) -> ImageTrainStarted:
-    """Start training an image LoRA (Z-Image-Turbo) on a collected loraset; poll /image-train/{id}."""
+    """Start training an image LoRA (Z-Image-Turbo) on a collected antelora; poll /image-train/{id}."""
     try:
         return ImageTrainStarted(**image_train.start_train(**request.model_dump()))
     except image_train.TrainError as exc:

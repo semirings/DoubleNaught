@@ -988,7 +988,7 @@ class _SegForgeNodeWidgetState extends BaseNodeState<SegForgeNodeWidget>
       final export = Map<String, dynamic>.of(await _api.exportLlmPayload(sessionId));
       step('exportLlmPayload done');
       // The name in this node's session picker is the one the user chose, so it
-      // labels the loraset page; SF's own copy is only the fallback.
+      // labels the antelora page; SF's own copy is only the fallback.
       final picked = _sessionsList
           .firstWhere((s) => s['session_id'] == sessionId,
               orElse: () => <String, dynamic>{})['name'];

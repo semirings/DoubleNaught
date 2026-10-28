@@ -11,12 +11,12 @@ from double_touch.image_train import TrainError
 
 @pytest.fixture(autouse=True)
 def storage(tmp_path, monkeypatch):
-    monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path / "loraset"))
+    monkeypatch.setenv("DOUBLE_TOUCH_LORASET_DIR", str(tmp_path / "antelora"))
     image_train._jobs.clear()
 
 
-def _collected(tmp_path, rows=3, loraset="mccay", output="train"):
-    folder = tmp_path / "loraset" / loraset / "_collected" / output
+def _collected(tmp_path, rows=3, antelora="mccay", output="train"):
+    folder = tmp_path / "antelora" / antelora / "_collected" / output
     (folder / "images").mkdir(parents=True)
     lines = []
     for i in range(rows):
@@ -147,7 +147,7 @@ def test_bad_settings_are_refused(kw, msg, tmp_path):
 
 
 def test_missing_or_empty_collection_and_missing_command(tmp_path, monkeypatch):
-    with pytest.raises(TrainError, match="Collect Loraset"):
+    with pytest.raises(TrainError, match="Collect Antelora"):
         image_train.start_train("mccay", command="x")
     folder = _collected(tmp_path, rows=0)
     with pytest.raises(TrainError, match="no captioned images"):
@@ -168,7 +168,7 @@ def test_rows_with_missing_images_or_blank_captions_are_dropped(tmp_path):
 
 
 def test_dataset_path_from_the_collect_node_is_used_as_given(monkeypatch, tmp_path):
-    folder = _collected(tmp_path, loraset="other", output="v2")
+    folder = _collected(tmp_path, antelora="other", output="v2")
     _fake(monkeypatch)
     r = image_train.start_train(dataset=str(folder), epochs=2, rank=4, command="x")
     assert r["images"] == 3

@@ -1,4 +1,4 @@
-"""Train an image LoRA on Vertex AI (ai-toolkit, CUDA) from a collected loraset.
+"""Train an image LoRA on Vertex AI (ai-toolkit, CUDA) from a collected antelora.
 
 This is the cloud-backed sibling of `image_train.py`. Where that module shells
 out to `mflux-train` on Apple Silicon, this one:
@@ -16,7 +16,7 @@ out to `mflux-train` on Apple Silicon, this one:
      running a container with ai-toolkit baked in (see
      `docker/vertex_trainer/`), and polls its state.
   4. On success, downloads the resulting adapter back into
-     `storage/lora/<set>/<name>/<name>.safetensors` — the same run-directory
+     `storage/postlora/<set>/<name>/<name>.safetensors` — the same run-directory
      shape `image_train.py`'s `export()` produces, so nothing downstream
      (Generate, Load File) needs to know whether a LoRA was trained locally
      or in the cloud.
@@ -57,7 +57,7 @@ from typing import Any, Optional
 import yaml
 
 from .image_train import TrainError, collected_dir, lora_root, read_captions
-from .loraset import safe_name
+from .antelora import safe_name
 
 MODEL_ARCH = "zimage"
 MODEL_NAME_OR_PATH = "Tongyi-MAI/Z-Image-Turbo"
@@ -283,7 +283,7 @@ def _cancel_job(cfg: dict[str, str], resource_name: str) -> None:
 # ---- public API, mirrors image_train.py's start_train/train_status/cancel --
 
 def start_cloud_train(
-    loraset: str = "mccay",
+    antelora: str = "mccay",
     output: str = "train",
     name: str = "",
     epochs: int = 20,
@@ -311,11 +311,11 @@ def start_cloud_train(
         folder = Path(dataset.strip()).expanduser()
         set_name = folder.parent.parent.name if folder.parent.name == "_collected" else folder.name
     else:
-        folder, set_name = collected_dir(loraset, output, root), loraset
+        folder, set_name = collected_dir(antelora, output, root), antelora
     pairs = read_captions(folder)
 
     name = safe_name(name, default_name(epochs, rank))
-    run_dir = (root.parent / "lora" if root else lora_root()) / safe_name(set_name, "mccay") / name
+    run_dir = (root.parent / "postlora" if root else lora_root()) / safe_name(set_name, "mccay") / name
     if run_dir.exists():
         stamp = time.strftime("%Y%m%d_%H%M%S")
         name = f"{name}_{stamp}"

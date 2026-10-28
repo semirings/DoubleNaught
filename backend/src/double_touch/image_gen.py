@@ -44,7 +44,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Optional
 
-from .loraset import loraset_root
+from .antelora import antelora_root
 
 COMMAND = "mflux-generate-qwen-2.1"
 EDIT_COMMAND = "mflux-generate-qwen-2.1-edit"
@@ -77,8 +77,8 @@ class GenerateError(Exception):
 
 
 def output_root() -> Path:
-    """`storage/generated/` next to `storage/loraset/`."""
-    return loraset_root().parent / "generated"
+    """`storage/generated/` next to `storage/antelora/`."""
+    return antelora_root().parent / "generated"
 
 
 def find_command() -> Optional[str]:
