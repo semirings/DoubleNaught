@@ -1,0 +1,302 @@
+id: https://w3id.org/grej/dn-prompt-ontology
+name: dn_prompt_ontology
+description: >-
+  LinkML rendering of the DN Prompt Ontology AA triple store (storage/ontologies/DN_Prompt_Ontology).
+  The source is a (Row, Col, Val) triples sheet meant to be loaded into D4M/Assoc and queried as a
+  guard rail before acting on a prompt. This schema is the structured-authoring counterpart of that
+  sheet: `Core.*` is the general prompting ontology (what any prompt to Claude should supply, keyed
+  by Intent), and `DN.*` is DoubleNaught's own domain layer, which extends Core rather than replacing
+  it (see the `DN` subset description below). Natural-language `rule` values from the source sheet —
+  meant for an LLM reader, not formal logic — are carried over verbatim as `rule` annotations rather
+  than slot constraints, since they are guidance, not machine-checkable axioms.
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  dnp: https://example.org/dn-prompt-ontology#
+
+default_prefix: dnp
+
+imports:
+  - linkml:types
+
+subsets:
+  Core:
+    description: >-
+      General prompting ontology: what any prompt to Claude should supply, keyed by Intent
+      (Diagnose / Implement / Design / Research).
+  DN:
+    description: >-
+      DoubleNaught's own domain layer. Extends Core rather than replacing it -- the source triple
+      store states this explicitly as the single fact (DN, extends, Core).
+  Caption:
+    description: >-
+      The segment/panel caption-improvement task (frontend/lib/widgets/nodes/implementations/llm/
+      caption_task.dart). Extends Core the same way DN does: (Caption, extends, Core). Unlike DN,
+      this namespace was authored directly in LinkML rather than reverse-derived from an existing
+      AA sheet -- it has no (Row, Col, Val) precedent to be faithful to, only the Dart task's own
+      enforced behavior.
+
+classes:
+
+  Intent:
+    description: "Abstract base for the four kinds of prompt intent Core recognizes."
+    abstract: true
+    in_subset:
+      - Core
+    slots:
+      - subject
+    slot_usage:
+      subject:
+        required: true
+
+  Diagnose:
+    is_a: Intent
+    description: "A prompt asking Claude to diagnose a problem."
+    in_subset:
+      - Core
+    slots:
+      - evidence
+      - ruled_out
+    slot_usage:
+      evidence:
+        required: true
+      ruled_out:
+        required: false
+
+  Implement:
+    is_a: Intent
+    description: "A prompt asking Claude to implement something."
+    in_subset:
+      - Core
+    slots:
+      - deliverable
+      - constraints
+      - verification
+    slot_usage:
+      deliverable:
+        required: true
+      constraints:
+        required: true
+      verification:
+        required: false
+
+  Design:
+    is_a: Intent
+    description: "A prompt asking Claude to design something, among options."
+    in_subset:
+      - Core
+    slots:
+      - options
+      - leaning
+    slot_usage:
+      options:
+        required: true
+      leaning:
+        required: false
+
+  Research:
+    is_a: Intent
+    description: "A prompt asking Claude to research a topic."
+    in_subset:
+      - Core
+    slots:
+      - depth
+      - intended_use
+    slot_usage:
+      depth:
+        required: true
+      intended_use:
+        required: false
+
+  Node:
+    description: "A node in a DN node-graph pipeline."
+    in_subset:
+      - DN
+    annotations:
+      rule: "type and name vary independently; renaming the display name must never change type"
+    slots:
+      - node_type
+      - node_name
+
+  Port:
+    description: "An input or output port on a DN Node; carries one AaPayload."
+    in_subset:
+      - DN
+    slots:
+      - carries
+
+  AaPayload:
+    description: "DN's associative-array payload: parallel rows/cols/vals lists, one entry per (row, col) cell."
+    in_subset:
+      - DN
+    annotations:
+      rule: "rows/cols/vals are three parallel flat lists, one entry per (row,col) cell -- never nested"
+    slots:
+      - rows
+      - cols
+      - vals
+
+  Pipeline:
+    description: "A DN workflow: a graph composed of Nodes."
+    in_subset:
+      - DN
+    annotations:
+      rule: "edits must stay backward compatible with type keys already saved on a live canvas"
+    slots:
+      - composed_of
+
+  Environment:
+    description: "A filesystem Claude can act against while working on DN."
+    in_subset:
+      - DN
+    annotations:
+      rule: "these are two unrelated filesystems; a prompt must say which one an edit targets"
+    slots:
+      - environment_kind
+
+  CloudTrainerJob:
+    description: "A Vertex AI cloud LoRA training job."
+    in_subset:
+      - DN
+    annotations:
+      rule: "a Diagnose prompt about training must include the [cloud_train] debug print lines, not just 'it errored'"
+    slots:
+      - job_state
+
+  ImproveCaption:
+    is_a: Intent
+    description: >-
+      A prompt asking an LLM to rewrite one segment's or panel's existing caption into a better
+      one, via caption_task.dart's `fill()`.
+    in_subset:
+      - Caption
+    annotations:
+      rule: >-
+        never invent a caption where the user wrote none -- a row with an empty raw_caption is
+        skipped, not synthesized
+    slots:
+      - raw_caption
+      - prompt_template
+      - text_tag
+    slot_usage:
+      raw_caption:
+        required: true
+      prompt_template:
+        required: true
+      text_tag:
+        required: false
+
+slots:
+
+  # Core.Intent.* requires/optional slots
+  subject:
+    range: string
+  evidence:
+    range: string
+  ruled_out:
+    range: string
+  deliverable:
+    range: string
+  constraints:
+    range: string
+  verification:
+    range: string
+  options:
+    range: string
+  leaning:
+    range: string
+  depth:
+    range: string
+  intended_use:
+    range: string
+
+  # DN.Node
+  node_type:
+    name: node_type
+    slot_uri: dnp:type
+    range: string
+    required: true
+    description: "The node's type key (e.g. 'saveAnteloraNode') -- never changes when the display name does."
+  node_name:
+    name: node_name
+    slot_uri: dnp:name
+    range: string
+    required: true
+    description: "The node's display name, editable independently of its type key."
+
+  # DN.Port
+  carries:
+    range: AaPayload
+    description: "What flows through this port."
+
+  # DN.AaPayload
+  rows:
+    range: string
+    multivalued: true
+  cols:
+    range: string
+    multivalued: true
+  vals:
+    range: string
+    multivalued: true
+
+  # DN.Pipeline
+  composed_of:
+    range: Node
+    multivalued: true
+    description: "The nodes this pipeline is composed of."
+
+  # DN.Environment
+  environment_kind:
+    range: EnvironmentKind
+
+  # DN.CloudTrainerJob
+  job_state:
+    range: CloudTrainerJobState
+
+  # Caption.ImproveCaption
+  raw_caption:
+    range: string
+    description: "The user's (or VLM's) existing caption text to be improved. Never fabricated when absent."
+  prompt_template:
+    range: string
+    description: >-
+      The instructions supplied via a connected Prompt node. caption_task.dart raises an
+      LLMTaskError ('segment captions need instructions' / 'panel captions need instructions')
+      when this is missing -- it is required, there is no default template.
+  text_tag:
+    range: string
+    required: false
+    description: >-
+      Optional per-segment tag (e.g. a LoRA trigger token) interpolated into prompt_template
+      alongside raw_caption via `{{text_tag}}`; only observed wired for segment-kind rows, not
+      panel-kind rows, in the code I've read so far -- worth confirming before relying on that
+      split.
+
+enums:
+
+  Mode:
+    description: "Core.Mode: whether a prompt is being acted on with a person watching or not."
+    annotations:
+      rule: "Unattended + ambiguous = state the reading taken and proceed, except on irreversible decisions"
+    permissible_values:
+      Attended:
+        description: "A person is watching and can be asked."
+      Unattended:
+        description: "No one is watching to ask; see the rule annotation on this enum."
+
+  EnvironmentKind:
+    description: "DN.Environment's known instances."
+    permissible_values:
+      device_bash:
+        description: "A shell on the user's own computer, reached through the device bridge."
+      container_filesystem:
+        description: "The cloud container's own filesystem."
+
+  CloudTrainerJobState:
+    description: "DN.CloudTrainerJob's known states."
+    permissible_values:
+      submitted:
+      running:
+      failed:
+      done:

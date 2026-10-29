@@ -1,0 +1,399 @@
+@prefix dnp: <https://example.org/dn-prompt-ontology#> .
+@prefix linkml: <https://w3id.org/linkml/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+dnp:CloudTrainerJob a owl:Class ;
+    rdfs:label "CloudTrainerJob" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:job_state ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:job_state ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom dnp:CloudTrainerJobState ;
+            owl:onProperty dnp:job_state ] ;
+    skos:definition "A Vertex AI cloud LoRA training job." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> ;
+    dnp:rule "a Diagnose prompt about training must include the [cloud_train] debug print lines, not just 'it errored'" .
+
+dnp:Environment a owl:Class ;
+    rdfs:label "Environment" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:environment_kind ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom dnp:EnvironmentKind ;
+            owl:onProperty dnp:environment_kind ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:environment_kind ] ;
+    skos:definition "A filesystem Claude can act against while working on DN." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> ;
+    dnp:rule "these are two unrelated filesystems; a prompt must say which one an edit targets" .
+
+dnp:Pipeline a owl:Class ;
+    rdfs:label "Pipeline" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:composed_of ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom dnp:Node ;
+            owl:onProperty dnp:composed_of ] ;
+    skos:definition "A DN workflow: a graph composed of Nodes." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> ;
+    dnp:rule "edits must stay backward compatible with type keys already saved on a live canvas" .
+
+dnp:Port a owl:Class ;
+    rdfs:label "Port" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:allValuesFrom dnp:AaPayload ;
+            owl:onProperty dnp:carries ],
+        [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:carries ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:carries ] ;
+    skos:definition "An input or output port on a DN Node; carries one AaPayload." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+<https://w3id.org/grej/dn-prompt-ontology.owl.ttl> a owl:Ontology ;
+    rdfs:label "dn_prompt_ontology" ;
+    skos:definition "LinkML rendering of the DN Prompt Ontology AA triple store (storage/ontologies/DN_Prompt_Ontology). The source is a (Row, Col, Val) triples sheet meant to be loaded into D4M/Assoc and queried as a guard rail before acting on a prompt. This schema is the structured-authoring counterpart of that sheet: `Core.*` is the general prompting ontology (what any prompt to Claude should supply, keyed by Intent), and `DN.*` is DoubleNaught's own domain layer, which extends Core rather than replacing it (see the `DN` subset description below). Natural-language `rule` values from the source sheet — meant for an LLM reader, not formal logic — are carried over verbatim as `rule` annotations rather than slot constraints, since they are guidance, not machine-checkable axioms." .
+
+dnp:Design a owl:Class ;
+    rdfs:label "Design" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:options ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:options ],
+        [ a owl:Restriction ;
+            owl:minCardinality 1 ;
+            owl:onProperty dnp:options ],
+        [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:leaning ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:leaning ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:leaning ],
+        dnp:Intent ;
+    skos:definition "A prompt asking Claude to design something, among options." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:Diagnose a owl:Class ;
+    rdfs:label "Diagnose" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:ruled_out ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:ruled_out ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:ruled_out ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:evidence ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:evidence ],
+        [ a owl:Restriction ;
+            owl:minCardinality 1 ;
+            owl:onProperty dnp:evidence ],
+        dnp:Intent ;
+    skos:definition "A prompt asking Claude to diagnose a problem." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:Implement a owl:Class ;
+    rdfs:label "Implement" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:verification ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:verification ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:verification ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:constraints ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:constraints ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:deliverable ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:deliverable ],
+        [ a owl:Restriction ;
+            owl:minCardinality 1 ;
+            owl:onProperty dnp:constraints ],
+        [ a owl:Restriction ;
+            owl:minCardinality 1 ;
+            owl:onProperty dnp:deliverable ],
+        dnp:Intent ;
+    skos:definition "A prompt asking Claude to implement something." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:Research a owl:Class ;
+    rdfs:label "Research" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:depth ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:depth ],
+        [ a owl:Restriction ;
+            owl:minCardinality 1 ;
+            owl:onProperty dnp:depth ],
+        [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:intended_use ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:intended_use ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:intended_use ],
+        dnp:Intent ;
+    skos:definition "A prompt asking Claude to research a topic." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:AaPayload a owl:Class ;
+    rdfs:label "AaPayload" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:vals ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:vals ],
+        [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:rows ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:rows ],
+        [ a owl:Restriction ;
+            owl:minCardinality 0 ;
+            owl:onProperty dnp:cols ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:cols ] ;
+    skos:definition "DN's associative-array payload: parallel rows/cols/vals lists, one entry per (row, col) cell." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> ;
+    dnp:rule "rows/cols/vals are three parallel flat lists, one entry per (row,col) cell -- never nested" .
+
+<https://example.org/dn-prompt-ontology#CloudTrainerJobState#done> a owl:Class ;
+    rdfs:label "done" ;
+    rdfs:subClassOf dnp:CloudTrainerJobState .
+
+<https://example.org/dn-prompt-ontology#CloudTrainerJobState#failed> a owl:Class ;
+    rdfs:label "failed" ;
+    rdfs:subClassOf dnp:CloudTrainerJobState .
+
+<https://example.org/dn-prompt-ontology#CloudTrainerJobState#running> a owl:Class ;
+    rdfs:label "running" ;
+    rdfs:subClassOf dnp:CloudTrainerJobState .
+
+<https://example.org/dn-prompt-ontology#CloudTrainerJobState#submitted> a owl:Class ;
+    rdfs:label "submitted" ;
+    rdfs:subClassOf dnp:CloudTrainerJobState .
+
+<https://example.org/dn-prompt-ontology#EnvironmentKind#container_filesystem> a owl:Class ;
+    rdfs:label "container_filesystem" ;
+    rdfs:subClassOf dnp:EnvironmentKind ;
+    skos:definition "The cloud container's own filesystem." .
+
+<https://example.org/dn-prompt-ontology#EnvironmentKind#device_bash> a owl:Class ;
+    rdfs:label "device_bash" ;
+    rdfs:subClassOf dnp:EnvironmentKind ;
+    skos:definition "A shell on the user's own computer, reached through the device bridge." .
+
+dnp:Mode a owl:Class ;
+    rdfs:label "Mode" ;
+    owl:unionOf ( <https://example.org/dn-prompt-ontology#Mode#Attended> <https://example.org/dn-prompt-ontology#Mode#Unattended> ) ;
+    skos:definition "Core.Mode: whether a prompt is being acted on with a person watching or not." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> ;
+    dnp:rule "Unattended + ambiguous = state the reading taken and proceed, except on irreversible decisions" ;
+    linkml:permissible_values <https://example.org/dn-prompt-ontology#Mode#Attended>,
+        <https://example.org/dn-prompt-ontology#Mode#Unattended> .
+
+<https://example.org/dn-prompt-ontology#Mode#Attended> a owl:Class ;
+    rdfs:label "Attended" ;
+    rdfs:subClassOf dnp:Mode ;
+    skos:definition "A person is watching and can be asked." .
+
+<https://example.org/dn-prompt-ontology#Mode#Unattended> a owl:Class ;
+    rdfs:label "Unattended" ;
+    rdfs:subClassOf dnp:Mode ;
+    skos:definition "No one is watching to ask; see the rule annotation on this enum." .
+
+dnp:Node a owl:Class ;
+    rdfs:label "Node" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:node_type ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:node_type ],
+        [ a owl:Restriction ;
+            owl:minCardinality 1 ;
+            owl:onProperty dnp:node_type ],
+        [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:node_name ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:node_name ],
+        [ a owl:Restriction ;
+            owl:minCardinality 1 ;
+            owl:onProperty dnp:node_name ] ;
+    skos:definition "A node in a DN node-graph pipeline." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> ;
+    dnp:rule "type and name vary independently; renaming the display name must never change type" .
+
+dnp:cols a owl:DatatypeProperty ;
+    rdfs:label "cols" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:composed_of a owl:ObjectProperty ;
+    rdfs:label "composed_of" ;
+    rdfs:range dnp:Node ;
+    skos:definition "The nodes this pipeline is composed of." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:rows a owl:DatatypeProperty ;
+    rdfs:label "rows" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:vals a owl:DatatypeProperty ;
+    rdfs:label "vals" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:carries a owl:ObjectProperty ;
+    rdfs:label "carries" ;
+    rdfs:range dnp:AaPayload ;
+    skos:definition "What flows through this port." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:constraints a owl:DatatypeProperty ;
+    rdfs:label "constraints" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:deliverable a owl:DatatypeProperty ;
+    rdfs:label "deliverable" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:depth a owl:DatatypeProperty ;
+    rdfs:label "depth" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:environment_kind a owl:ObjectProperty ;
+    rdfs:label "environment_kind" ;
+    rdfs:range dnp:EnvironmentKind ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:evidence a owl:DatatypeProperty ;
+    rdfs:label "evidence" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:intended_use a owl:DatatypeProperty ;
+    rdfs:label "intended_use" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:job_state a owl:ObjectProperty ;
+    rdfs:label "job_state" ;
+    rdfs:range dnp:CloudTrainerJobState ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:leaning a owl:DatatypeProperty ;
+    rdfs:label "leaning" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:node_name a owl:DatatypeProperty ;
+    rdfs:label "node_name" ;
+    rdfs:range xsd:string ;
+    skos:definition "The node's display name, editable independently of its type key." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:node_type a owl:DatatypeProperty ;
+    rdfs:label "node_type" ;
+    rdfs:range xsd:string ;
+    skos:definition "The node's type key (e.g. 'saveAnteloraNode') -- never changes when the display name does." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:options a owl:DatatypeProperty ;
+    rdfs:label "options" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:ruled_out a owl:DatatypeProperty ;
+    rdfs:label "ruled_out" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:subject a owl:DatatypeProperty ;
+    rdfs:label "subject" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:verification a owl:DatatypeProperty ;
+    rdfs:label "verification" ;
+    rdfs:range xsd:string ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:EnvironmentKind a owl:Class ;
+    rdfs:label "EnvironmentKind" ;
+    owl:unionOf ( <https://example.org/dn-prompt-ontology#EnvironmentKind#device_bash> <https://example.org/dn-prompt-ontology#EnvironmentKind#container_filesystem> ) ;
+    skos:definition "DN.Environment's known instances." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> ;
+    linkml:permissible_values <https://example.org/dn-prompt-ontology#EnvironmentKind#container_filesystem>,
+        <https://example.org/dn-prompt-ontology#EnvironmentKind#device_bash> .
+
+dnp:Intent a owl:Class ;
+    rdfs:label "Intent" ;
+    rdfs:subClassOf [ a owl:Restriction ;
+            owl:allValuesFrom xsd:string ;
+            owl:onProperty dnp:subject ],
+        [ a owl:Restriction ;
+            owl:maxCardinality 1 ;
+            owl:onProperty dnp:subject ],
+        [ a owl:Restriction ;
+            owl:minCardinality 1 ;
+            owl:onProperty dnp:subject ],
+        [ owl:unionOf ( dnp:Design dnp:Diagnose dnp:Implement dnp:Research ) ] ;
+    skos:definition "Abstract base for the four kinds of prompt intent Core recognizes." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> .
+
+dnp:CloudTrainerJobState a owl:Class ;
+    rdfs:label "CloudTrainerJobState" ;
+    owl:unionOf ( <https://example.org/dn-prompt-ontology#CloudTrainerJobState#submitted> <https://example.org/dn-prompt-ontology#CloudTrainerJobState#running> <https://example.org/dn-prompt-ontology#CloudTrainerJobState#failed> <https://example.org/dn-prompt-ontology#CloudTrainerJobState#done> ) ;
+    skos:definition "DN.CloudTrainerJob's known states." ;
+    skos:inScheme <https://w3id.org/grej/dn-prompt-ontology> ;
+    linkml:permissible_values <https://example.org/dn-prompt-ontology#CloudTrainerJobState#done>,
+        <https://example.org/dn-prompt-ontology#CloudTrainerJobState#failed>,
+        <https://example.org/dn-prompt-ontology#CloudTrainerJobState#running>,
+        <https://example.org/dn-prompt-ontology#CloudTrainerJobState#submitted> .
+
+

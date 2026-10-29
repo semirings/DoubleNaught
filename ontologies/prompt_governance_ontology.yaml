@@ -1,0 +1,136 @@
+id: https://w3id.org/grej/prompt-governance-ontology
+name: prompt_governance_ontology
+description: "LinkML schema governing narrative semantics, visual composition, and LoRA image generation constraints."
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ex: https://example.org/prompt-guard#
+
+default_prefix: ex
+
+imports:
+  - linkml:types
+
+classes:
+  PromptSpecification:
+    description: "The top-level structured prompt payload validated by the matrix layer before generation."
+    slots:
+      - prompt_id
+      - narrative_elements
+      - visual_composition
+      - visual_attributes
+      - lora_activator
+
+  NarrativeEntity:
+    description: "Base class for all persistent story world elements."
+    children_are_mutually_disjoint: true
+    slots:
+      - entity_name
+      - description
+
+  Character:
+    is_a: NarrativeEntity
+    description: "An actor or person within the narrative universe."
+    slots:
+      - canonical_outfit
+      - current_state
+      - current_location
+
+  Setting:
+    is_a: NarrativeEntity
+    description: "A location or environmental backdrop."
+    slots:
+      - time_of_day
+      - environmental_conditions
+
+  Prop:
+    is_a: NarrativeEntity
+    description: "Key physical objects or items handled or present in the scene."
+    slots:
+      - carried_by
+
+  VisualComposition:
+    description: "Governs camera framing, perspective, and spatial layout."
+    slots:
+      - shot_type
+      - camera_angle
+      - focal_subject
+
+  VisualAttribute:
+    description: "Governs aesthetic texture, lighting, and style tokens."
+    slots:
+      - lighting_style
+      - color_palette
+      - target_lora_tag
+
+slots:
+  prompt_id:
+    name: prompt_id
+    range: string
+    identifier: true
+  narrative_elements:
+    name: narrative_elements
+    range: NarrativeEntity
+    multivalued: true
+  visual_composition:
+    name: visual_composition
+    range: VisualComposition
+  visual_attributes:
+    name: visual_attributes
+    range: VisualAttribute
+  lora_activator:
+    name: lora_activator
+    range: string
+
+  entity_name:
+    name: entity_name
+    range: string
+    required: true
+  description:
+    name: description
+    range: string
+
+  canonical_outfit:
+    name: canonical_outfit
+    range: string
+  current_state:
+    name: current_state
+    range: string
+  current_location:
+    name: current_location
+    range: Setting
+
+  time_of_day:
+    name: time_of_day
+    range: string
+  environmental_conditions:
+    name: environmental_conditions
+    range: string
+
+  carried_by:
+    name: carried_by
+    range: Character
+
+  shot_type:
+    name: shot_type
+    range: string
+    description: "E.g., CloseUp, MediumShot, WideShot"
+  camera_angle:
+    name: camera_angle
+    range: string
+    description: "E.g., EyeLevel, LowAngle, BirdEye"
+  focal_subject:
+    name: focal_subject
+    range: NarrativeEntity
+
+  lighting_style:
+    name: lighting_style
+    range: string
+    description: "E.g., CinematicStudio, Chiaroscuro, NaturalDaylight"
+  color_palette:
+    name: color_palette
+    range: string
+  target_lora_tag:
+    name: target_lora_tag
+    range: string
+    description: "The exact trigger string that activates your trained Qwen LoRA."
