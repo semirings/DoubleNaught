@@ -1,0 +1,499 @@
+id: https://w3id.org/grej/blender-ontology
+name: blender_ontology
+description: >-
+  LinkML rendering of the Blender ontology for programmatic control via `bpy`,
+  headless batch rendering, and D4M associative array serialization. Four
+  sub-graphs (Topology, Material, Stage, Pipeline) that reference each other
+  ONLY through explicit link slots, never through shared slots.
+
+  Revision 1 of blender_domain_ontology.yaml. Enum values and property names
+  were checked against a live Blender 5.2.3 LTS (engine ids, view-layer pass
+  properties, light types, sensor fit, EXR formats, wm.* importers). Blender's
+  API drifts between versions (engine ids, compositor), so RenderPassConfig
+  carries `blender_version`; re-verify these enums when upgrading.
+
+  Each guardrail is stated twice on purpose. `rule` is prose for an LLM reader.
+  The other annotations (requires_*, forbids_*, engine_*) are single-fact,
+  machine-readable keys that compile to (Row, Col, Val) triples such as
+  (MeshEntity, guard|requires_mode, OBJECT). They use the guard| prefix, NOT
+  requires|, because OntologyAnvil reads requires|X as "slot X must be filled".
+  Nothing enforces guard| rows until a checker reads them: OntologyAnvil today
+  checks only disjointWith| and requires| and does not yet check enum
+  membership or ranges.
+
+  Compile: python scripts/compile_linkml_to_aa.py
+  ontologies/blender_domain_ontology1.yaml
+  storage/ontologies/blender_domain_ontology.parquet
+  --tsv storage/ontologies/blender_domain_ontology.tsv --extras
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  bo: https://example.org/blender-ontology#
+
+default_prefix: bo
+
+imports:
+  - linkml:types
+
+subsets:
+  Topology:
+    description: "Mesh geometries, primitive shapes, modifier stacks, and geometry-nodes inputs."
+  Material:
+    description: "Surface shaders, non-photorealistic (NPR) toon bands, line art, and material-slot bindings."
+  Stage:
+    description: "Object transforms, camera rigs, and lights. (Armatures and World are not modeled yet.)"
+  Pipeline:
+    description: "Headless execution flags, engine, render passes, and output/export settings."
+
+classes:
+
+  BlenderEntity:
+    description: "Abstract base for all programmatic Blender assets."
+    abstract: true
+    slots:
+      - entity_name
+      - is_procedural
+
+  # ------------------------------------------------------------- Topology
+  MeshEntity:
+    is_a: BlenderEntity
+    description: "A 3D mesh object within the Blender scene graph."
+    in_subset: [Topology]
+    annotations:
+      rule: >-
+        Make the object active and selected (view_layer.objects.active = obj;
+        obj.select_set(True)) and ensure OBJECT mode before any bpy.ops that
+        changes it. Prefer the data API (bpy.data, obj.data) over bpy.ops, which
+        needs a valid context. modifier_apply and transform_apply fail on
+        multi-user mesh data; make the data single-user first.
+      requires_active_object: "true"
+      requires_mode: OBJECT
+      forbids_on_multi_user_data: "modifier_apply,transform_apply"
+    slots:
+      - mesh_source
+      - primitive_kind
+      - import_operator
+      - source_path
+      - topology_pattern
+      - applied_modifiers
+      - is_multi_user_data
+
+  GeometryNodesInput:
+    description: "One input socket value on a Geometry Nodes modifier."
+    in_subset: [Topology]
+    annotations:
+      rule: >-
+        Set inputs by socket identifier (modifier["Socket_2"]), not by display
+        name, and use the value type the socket declares. Identifiers are
+        generated per node group, so read them from the group's interface.
+      requires_socket_identifier: "true"
+    slots:
+      - target_object
+      - modifier_name
+      - socket_identifier
+      - value_type
+      - socket_value
+
+  # ------------------------------------------------------------- Material
+  ToonMaterial:
+    is_a: BlenderEntity
+    description: "Non-photorealistic (NPR) material configuration for consistent stylized rendering."
+    in_subset: [Material]
+    annotations:
+      rule: >-
+        The Shader to RGB node used for toon bands works only in EEVEE, so this
+        material requires BLENDER_EEVEE. Set use_backface_culling explicitly: it
+        is an EEVEE/viewport setting that Cycles ignores, and inverted-hull
+        outlines depend on it being True.
+      engine_required: BLENDER_EEVEE
+      requires_backface_culling_explicit: "true"
+    slots:
+      - toon_method
+      - quantization_steps
+      - backface_culling
+
+  LineArtConfig:
+    is_a: BlenderEntity
+    description: "Outline settings. Freestyle itself is switched on in the Pipeline subset."
+    in_subset: [Material]
+    annotations:
+      rule: >-
+        Thickness is in pixels for Freestyle. Line Art is a Grease Pencil
+        modifier with its own thickness. Do not set both for one outline.
+      forbids_both_line_methods: "true"
+    slots:
+      - line_method
+      - line_thickness
+
+  MaterialBinding:
+    description: "Assigns a material to one slot of one mesh."
+    in_subset: [Material]
+    annotations:
+      rule: >-
+        Append the material to obj.data.materials or assign slot_index; a mesh
+        with no material in a slot renders with the default material. Every
+        mesh that is rendered needs at least one binding.
+      requires_target_object: "true"
+      requires_slot_index: "true"
+      requires_material: "true"
+    slots:
+      - target_object
+      - slot_index
+      - material
+
+  # ---------------------------------------------------------------- Stage
+  ObjectTransform:
+    description: "Location, rotation and scale of one object, and its parent."
+    in_subset: [Stage]
+    annotations:
+      rule: >-
+        Rotation is Euler XYZ in radians. Apply transforms only in OBJECT mode
+        and never on multi-user data. Do not change scene unit scale; set sizes
+        on the object.
+      requires_mode: OBJECT
+    slots:
+      - target_object
+      - location_x
+      - location_y
+      - location_z
+      - rotation_euler_x
+      - rotation_euler_y
+      - rotation_euler_z
+      - scale_x
+      - scale_y
+      - scale_z
+      - parent
+
+  CameraRig:
+    is_a: BlenderEntity
+    description: "Camera placement, framing, and optical configuration."
+    in_subset: [Stage]
+    annotations:
+      rule: >-
+        Do not alter global scene scale (scene.unit_settings.scale_length)
+        from 1.0; adjust focal length instead. focal_length is in millimetres.
+        How sensor_fit_mode behaves depends on the render resolution set in
+        the Pipeline subset, so log both with each frame.
+      forbids_scene_scale_change: "true"
+    slots:
+      - focal_length
+      - sensor_width
+      - sensor_fit_mode
+      - clip_start
+      - clip_end
+
+  LightRig:
+    is_a: BlenderEntity
+    description: "A light and its strength."
+    in_subset: [Stage]
+    annotations:
+      rule: >-
+        energy is watts for POINT, SPOT and AREA, and strength (W/m2) for SUN.
+        Keep units consistent across a dataset.
+    slots:
+      - light_type
+      - energy
+
+  # ------------------------------------------------------------- Pipeline
+  RenderPassConfig:
+    is_a: BlenderEntity
+    description: "Engine, passes and sampling for multi-pass extraction to support NCM training inputs."
+    in_subset: [Pipeline]
+    annotations:
+      rule: >-
+        Enable passes through the view layer properties (use_pass_z,
+        use_pass_normal, ...). The vector pass requires motion blur off and
+        is not available in every engine; Workbench offers far fewer passes
+        than Cycles or EEVEE. Set a fixed seed and consider denoise off for
+        data passes (depth, normal, IDs). sample_count maps to
+        scene.cycles.samples for Cycles and scene.eevee.taa_render_samples for
+        EEVEE. EEVEE and Workbench need a GPU context, so a headless machine
+        may not run them.
+      requires_blender_version: "true"
+      requires_seed: "true"
+      engine_pass_support_checked: "true"
+    slots:
+      - blender_version
+      - engine_type
+      - required_passes
+      - sample_count
+      - seed
+      - denoise
+      - filter_size
+      - use_freestyle
+      - camera
+
+  RenderOutputConfig:
+    description: "Where and how one render is written."
+    in_subset: [Pipeline]
+    annotations:
+      rule: >-
+        Use OPEN_EXR_MULTILAYER with 32-bit float to preserve depth, vector and
+        normal precision (half float loses it). Use the Standard view transform
+        for training data. Create the output directory first and use absolute
+        paths. On 5.x the compositor tree is scene.compositing_node_group; on
+        older versions it is scene.node_tree with use_nodes.
+      requires_file_format: OPEN_EXR_MULTILAYER
+      requires_color_depth: "32"
+    slots:
+      - pass_config
+      - file_format
+      - color_depth
+      - resolution_x
+      - resolution_y
+      - view_transform
+      - film_transparent
+      - output_path
+
+slots:
+
+  entity_name:
+    range: string
+    required: true
+    identifier: true
+  is_procedural:
+    range: boolean
+
+  # Topology
+  mesh_source:
+    range: MeshSource
+  primitive_kind:
+    range: PrimitiveKind
+    description: "Used when mesh_source is PRIMITIVE."
+  import_operator:
+    range: ImportOperator
+    description: "Used when mesh_source is IMPORTED. All live under bpy.ops.wm.* in 5.x."
+  source_path:
+    range: string
+    description: "File path for an imported mesh."
+  topology_pattern:
+    range: TopologyPattern
+  applied_modifiers:
+    range: ModifierKind
+    multivalued: true
+    description: "Active modifiers on the stack, by bpy modifier type."
+  is_multi_user_data:
+    range: boolean
+    description: "True when the mesh data block is shared by more than one object."
+  target_object:
+    range: BlenderEntity
+    required: true
+    description: "The object this record applies to."
+  modifier_name:
+    range: string
+  socket_identifier:
+    range: string
+    description: "Socket identifier such as Socket_2, not the display name."
+  value_type:
+    range: SocketValueType
+  socket_value:
+    range: string
+    description: "Value serialized as text; parsed by value_type."
+
+  # Material
+  toon_method:
+    range: ToonMethod
+  quantization_steps:
+    range: integer
+    minimum_value: 2
+    description: "Number of color bands for toon shading."
+  backface_culling:
+    range: boolean
+    required: true
+    description: "Material.use_backface_culling; set explicitly."
+  line_method:
+    range: LineMethod
+  line_thickness:
+    range: float
+    minimum_value: 0
+    description: "Outline thickness in pixels."
+  slot_index:
+    range: integer
+    minimum_value: 0
+    required: true
+  material:
+    range: ToonMaterial
+    required: true
+
+  # Stage
+  location_x: {range: float}
+  location_y: {range: float}
+  location_z: {range: float}
+  rotation_euler_x: {range: float, description: "Radians."}
+  rotation_euler_y: {range: float, description: "Radians."}
+  rotation_euler_z: {range: float, description: "Radians."}
+  scale_x: {range: float}
+  scale_y: {range: float}
+  scale_z: {range: float}
+  parent:
+    range: BlenderEntity
+  focal_length:
+    range: float
+    minimum_value: 1
+    description: "Camera focal length in millimeters."
+  sensor_width:
+    range: float
+    minimum_value: 1
+    description: "Sensor width in millimeters."
+  sensor_fit_mode:
+    range: SensorFit
+  clip_start:
+    range: float
+    minimum_value: 0
+  clip_end:
+    range: float
+    minimum_value: 0
+  light_type:
+    range: LightType
+  energy:
+    range: float
+    minimum_value: 0
+
+  # Pipeline
+  blender_version:
+    range: string
+    required: true
+    description: "Blender version the generated code targets, e.g. 5.2.3."
+  engine_type:
+    range: BlenderEngine
+    required: true
+  required_passes:
+    range: RenderPassKind
+    multivalued: true
+  sample_count:
+    range: integer
+    minimum_value: 1
+  seed:
+    range: integer
+    required: true
+    description: "Fixed seed so a render is reproducible."
+  denoise:
+    range: boolean
+  filter_size:
+    range: float
+    minimum_value: 0
+    description: "Pixel filter width; keep small for ID passes."
+  use_freestyle:
+    range: boolean
+    description: "render.use_freestyle and view_layer.use_freestyle."
+  camera:
+    range: CameraRig
+  pass_config:
+    range: RenderPassConfig
+  file_format:
+    range: OutputFormat
+  color_depth:
+    range: ColorDepth
+  resolution_x:
+    range: integer
+    minimum_value: 1
+  resolution_y:
+    range: integer
+    minimum_value: 1
+  view_transform:
+    range: string
+    description: "scene.view_settings.view_transform; use Standard for data outputs."
+  film_transparent:
+    range: boolean
+  output_path:
+    range: string
+
+enums:
+
+  MeshSource:
+    permissible_values: {PRIMITIVE: {}, IMPORTED: {}}
+
+  PrimitiveKind:
+    description: "bpy.ops.mesh.primitive_*_add kinds."
+    permissible_values:
+      CUBE: {}
+      UV_SPHERE: {}
+      ICO_SPHERE: {}
+      CYLINDER: {}
+      CONE: {}
+      PLANE: {}
+      TORUS: {}
+      GRID: {}
+      MONKEY: {}
+
+  ImportOperator:
+    description: "Importers under bpy.ops.wm in Blender 5.2.3."
+    permissible_values:
+      wm.obj_import: {}
+      wm.stl_import: {}
+      wm.ply_import: {}
+      wm.fbx_import: {}
+      wm.usd_import: {}
+      wm.alembic_import: {}
+
+  TopologyPattern:
+    description: "Target structural layout of mesh topologies."
+    permissible_values:
+      quad_dominant: {}
+      triangulated: {}
+      grid_parametric: {}
+
+  ModifierKind:
+    description: "bpy modifier type identifiers."
+    permissible_values:
+      SUBSURF: {}
+      MIRROR: {}
+      BEVEL: {}
+      TRIANGULATE: {}
+      WEIGHTED_NORMAL: {}
+      DECIMATE: {}
+      REMESH: {}
+      SOLIDIFY: {}
+      ARRAY: {}
+      EDGE_SPLIT: {}
+      SHRINKWRAP: {}
+      NODES: {}
+
+  SocketValueType:
+    permissible_values: {INT: {}, FLOAT: {}, BOOL: {}, STRING: {}, OBJECT: {}, MATERIAL: {}, COLLECTION: {}}
+
+  ToonMethod:
+    description: "How toon bands are produced. SHADER_TO_RGB is EEVEE-only."
+    permissible_values: {SHADER_TO_RGB: {}}
+
+  LineMethod:
+    permissible_values: {FREESTYLE: {}, LINE_ART_MODIFIER: {}}
+
+  SensorFit:
+    description: "Camera.sensor_fit identifiers (upper case in bpy)."
+    permissible_values: {AUTO: {}, HORIZONTAL: {}, VERTICAL: {}}
+
+  LightType:
+    description: "Light.type identifiers."
+    permissible_values: {POINT: {}, SUN: {}, SPOT: {}, AREA: {}}
+
+  BlenderEngine:
+    description: "scene.render.engine identifiers in Blender 5.x. EEVEE_NEXT and WORKBENCH are not valid."
+    permissible_values:
+      CYCLES: {}
+      BLENDER_EEVEE: {}
+      BLENDER_WORKBENCH: {}
+
+  RenderPassKind:
+    description: >-
+      Pass names are the suffix of the matching view-layer property
+      (use_pass_<name>). Freestyle is not a pass; see use_freestyle.
+    permissible_values:
+      combined: {}
+      z: {description: "Depth (use_pass_z)."}
+      mist: {description: "Normalized by world mist settings; not metric depth."}
+      normal: {}
+      vector: {}
+      position: {}
+      uv: {}
+      object_index: {}
+      material_index: {}
+      cryptomatte_object: {}
+      cryptomatte_material: {}
+
+  OutputFormat:
+    permissible_values: {OPEN_EXR: {}, OPEN_EXR_MULTILAYER: {}}
+
+  ColorDepth:
+    description: "Bits per channel for EXR output, as bpy strings."
+    permissible_values: {"16": {}, "32": {}}

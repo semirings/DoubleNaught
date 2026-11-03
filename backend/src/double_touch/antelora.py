@@ -11,7 +11,9 @@ convention, which also discovers a ``metadata.jsonl`` in every subfolder). Savin
 page replaces its whole folder, so edited captions never leave stale entries.
 
 Input is the LLM caption AA: segment rows carrying ``file_name``, a caption
-(``improved_caption`` preferred), ``page_name`` and ``image_b64``.
+(``best_caption`` preferred, falling back through ``better_caption`` and the
+pre-guardrail ``improved_caption`` to the user's own ``caption``),
+``page_name`` and ``image_b64``.
 """
 
 from __future__ import annotations
@@ -95,7 +97,12 @@ def save_antelora(
 
     for _row, rec in aa_rows(aa):
         file_name = _text(rec.get("file_name"))
-        caption = _text(rec.get("improved_caption")) or _text(rec.get("caption"))
+        caption = (
+            _text(rec.get("best_caption"))
+            or _text(rec.get("better_caption"))
+            or _text(rec.get("improved_caption"))
+            or _text(rec.get("caption"))
+        )
         encoded = _text(rec.get("image_b64"))
         if not file_name or not caption or not encoded:
             skipped += 1
@@ -120,8 +127,9 @@ def save_antelora(
     if not pages:
         have = sorted(set(aa.cols))
         need = [c for c in ("file_name", "image_b64") if c not in have]
-        if "improved_caption" not in have and "caption" not in have:
-            need.append("improved_caption")
+        caption_cols = ("best_caption", "better_caption", "improved_caption", "caption")
+        if not any(c in have for c in caption_cols):
+            need.append("best_caption")
         raise AnteloraError(
             "nothing to save: rows need file_name, a caption and image_b64. "
             + (f"Missing columns: {', '.join(need)}. " if need else "")

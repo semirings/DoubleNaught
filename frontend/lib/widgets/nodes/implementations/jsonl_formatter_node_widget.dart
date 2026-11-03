@@ -95,11 +95,16 @@ class _JsonlFormatterNodeWidgetState extends BaseNodeState<JsonlFormatterNodeWid
   @override
   bool get isReady => _incoming != null;
 
-  /// LLM caption output (`file_name` + `improved_caption`) has exactly one
-  /// sensible format, so the data decides and the dropdown steps aside.
+  /// LLM caption output (`file_name` plus one of `best_caption`/
+  /// `better_caption`/`improved_caption`) has exactly one sensible format, so
+  /// the data decides and the dropdown steps aside. `improved_caption` is the
+  /// pre-guardrail column name, kept for data saved before the rename.
   bool get _isCaptionData {
     final cols = _incoming?.cols.toSet() ?? const <String>{};
-    return cols.contains('file_name') && cols.contains('improved_caption');
+    if (!cols.contains('file_name')) return false;
+    return cols.contains('best_caption') ||
+        cols.contains('better_caption') ||
+        cols.contains('improved_caption');
   }
 
   String get _effectiveWire =>

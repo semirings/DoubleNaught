@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 
 import 'package:aa_preview_table/aa_preview_table.dart';
@@ -28,6 +31,30 @@ class AaDataFrame extends StatefulWidget {
 class _AaDataFrameState extends State<AaDataFrame> {
   final ScrollController _vController = ScrollController();
   final ScrollController _hController = ScrollController();
+
+  /// Columns whose cells hold a base64 picture, drawn as a thumbnail instead of
+  /// the raw string. Same names the Preview node and Generate use.
+  static const _imageCols = {'image_b64', 'bytes'};
+
+  /// Decoded thumbnails by cell, so a rebuild (scrolling, resizing) does not
+  /// re-decode a page-sized base64 string. Null = tried and not a picture.
+  final Map<String, Uint8List?> _thumbs = {};
+
+  @override
+  void didUpdateWidget(covariant AaDataFrame old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.aa, widget.aa)) _thumbs.clear();
+  }
+
+  Uint8List? _thumbBytes(String key, String value) =>
+      _thumbs.putIfAbsent(key, () {
+        try {
+          final bytes = base64Decode(value);
+          return bytes.isEmpty ? null : bytes;
+        } catch (_) {
+          return null; // not base64: the caller falls back to the text cell
+        }
+      });
 
   @override
   void dispose() {
@@ -107,6 +134,28 @@ class _AaDataFrameState extends State<AaDataFrame> {
           ),
         ),
       ],
+    );
+  }
+
+  /// One data cell: a thumbnail for a picture column, otherwise the value as text.
+  Widget _valueCell(ThemeData theme, String col, String value, String key) {
+    final text = Text(
+      value,
+      maxLines: 6,
+      overflow: TextOverflow.ellipsis,
+      style: theme.textTheme.bodySmall?.copyWith(color: kAaValueColor),
+    );
+    if (!_imageCols.contains(col) || value.isEmpty) return text;
+    final bytes = _thumbBytes(key, value);
+    if (bytes == null) return text;
+    return Image.memory(
+      bytes,
+      height: 96,
+      fit: BoxFit.contain,
+      alignment: Alignment.centerLeft,
+      cacheHeight: 192,
+      gaplessPlayback: true,
+      errorBuilder: (_, __, ___) => text,
     );
   }
 
@@ -225,13 +274,8 @@ class _AaDataFrameState extends State<AaDataFrame> {
                               ConstrainedBox(
                                 constraints:
                                     const BoxConstraints(maxWidth: 360),
-                                child: Text(
-                                  cellOf['$r$sep$c'] ?? '',
-                                  maxLines: 6,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.bodySmall
-                                      ?.copyWith(color: kAaValueColor),
-                                ),
+                                child: _valueCell(
+                                    theme, c, cellOf['$r$sep$c'] ?? '', '$r$sep$c'),
                               ),
                             ),
                         ],

@@ -85,6 +85,8 @@ from .models import (
     D4mPreviewResponse,
     D4mRequest,
     D4mResponse,
+    OntologyValidateRequest,
+    OntologyValidateResponse,
     REVIEW_STATUSES,
     URL_AUTHORS,
     Aa2JsonlRequest,
@@ -147,6 +149,7 @@ from .models import (
 from .review import ReviewStore
 from .sessions import PromptRecord, Session, SessionStore
 from .d4m_ops import eval_expression, eval_script, warm as _warm_julia
+from .ontology_guardrail_node import validate_aa as _validate_ontology_aa
 from . import d4m_handles
 from .save_file import delete_output, execute_save
 from . import cloud_train, image_gen, image_train, lora_files, vlm_jobs
@@ -1029,6 +1032,33 @@ async def d4m_eval(request: D4mRequest) -> D4mResponse:
     try:
         result_aa = eval_expression(request.inputs, request.expression)
         return D4mResponse(aa=result_aa)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Ontology Guardrail node
+# ---------------------------------------------------------------------------
+
+@app.post("/ontology/validate", response_model=OntologyValidateResponse)
+async def ontology_validate(request: OntologyValidateRequest) -> OntologyValidateResponse:
+    """Validate each entity row in ``request.aa`` against the compiled
+    prompt-governance ontology (OntologyAnvil.jl over
+    storage/ontologies/prompt_governance_ontology.parquet) and return the
+    per-entity pass/fail + violation messages as an AA.
+
+    See ontology_guardrail_node.py's module docstring for the request/response
+    column contract.
+
+    Deliberately NOT run_in_threadpool -- same reasoning as /d4m/eval just
+    above: juliacall's Julia is only safe to call from the thread that first
+    initialised it, and that includes rendering a raised JuliaError's message,
+    not just the call that raised it. validate_aa -> ontology_ops.validate_entity
+    already catches and stringifies on this same thread, before returning.
+    """
+    try:
+        result_aa = _validate_ontology_aa(request.aa)
+        return OntologyValidateResponse(aa=result_aa)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 

@@ -111,9 +111,12 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode>
 
     // Same convention Generate's own `_init` getter reads for a start image:
     // an `image_b64` (or `bytes`) column means this AA *is* a picture, not a
-    // table to browse — show it as one instead of dumping the base64 string
-    // as a cell's raw text.
-    final imageB64 = aa.value('image_b64') ?? aa.value('bytes');
+    // table to browse — but ONLY when it is a single picture ([_isSinglePicture]).
+    // `AaPayload.value` returns the FIRST match, so applying this to a
+    // multi-row AA (Seg Forge's llmPayload, the LLM Documenter's output) showed
+    // one image — the page — and hid every other row. Those are tables.
+    final imageB64 =
+        _isSinglePicture(aa) ? (aa.value('image_b64') ?? aa.value('bytes')) : null;
     if (imageB64 != null && imageB64.isNotEmpty) {
       try {
         return FocusContent.image(
@@ -130,6 +133,19 @@ class _PreviewNodeState extends BaseNodeState<PreviewNode>
     final cols = _distinctColCount(aa);
     return FocusContent.aa(aa, subtitle: '$rows rows × $cols cols');
   }
+
+  /// Columns that may sit beside the picture in an AA that is just one image:
+  /// Generate's `path`, Load File's `file_path`/`format`/`file_size`/`width`/
+  /// `height`, and the mime hints. Any other column (a caption, `kind`, a
+  /// `panel_id`) means the AA is data about pictures, not a picture.
+  static const _pictureMetaCols = {
+    'image_b64', 'bytes', 'path', 'file_path', 'format', 'file_size',
+    'width', 'height', 'image_mime', 'mime',
+  };
+
+  /// One row, and nothing in it but an image and its file metadata.
+  bool _isSinglePicture(AaPayload aa) =>
+      aa.distinctRows().length == 1 && aa.cols.every(_pictureMetaCols.contains);
 
   int _distinctColCount(AaPayload aa) {
     final seen = <String>{};

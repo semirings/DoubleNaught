@@ -968,6 +968,21 @@ class JsonlFormatResponse(CamelModel):
     skipped_incomplete: int = 0
 
 
+class OntologyValidateRequest(CamelModel):
+    """One AA, one row per candidate entity. Column convention:
+    `class|<Name>` (one per class the extraction step asserted for that
+    entity) and `slot|<name>` (one per slot it filled in, only presence
+    checked). See ontology_guardrail_node.py's module docstring for the full
+    contract."""
+    aa: AssocArray
+
+
+class OntologyValidateResponse(CamelModel):
+    """Same row keys as the request. Columns: `valid` ("true"/"false") and
+    `violations` (messages joined by " | "; empty when valid)."""
+    aa: AssocArray
+
+
 # --- Workflow CRUD (workflows_router) ----------------------------------------
 # Saved workflow definitions under storage/workflows/. `workflowId` is the file
 # stem — the same value the Flutter WorkflowStore calls a `slug`.

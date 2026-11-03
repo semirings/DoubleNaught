@@ -1,9 +1,13 @@
+import 'dart:convert';
+
 import 'package:aa_preview_table/aa_preview_table.dart';
 
 import '../../../../services/remote/remote_request.dart';
 import 'llm_task.dart';
 
-/// Improves the user's own captions on a Seg Forge export.
+/// Improves the user's own captions on a Seg Forge export, then checks the
+/// result against the prompt-governance ontology (Ontology Guardrail) and
+/// corrects anything it flags.
 ///
 /// The user writes a caption per segment in SF; this task sends that caption
 /// back to a vision model together with the pictures it describes, and asks
@@ -23,31 +27,38 @@ import 'llm_task.dart';
 ///
 /// The original page is never part of the payload.
 ///
+/// ## Three rounds, three output columns
+///
+/// 1. **Improve** — the vision model rewrites the user's caption.
+/// 2. **Extract** — a text-only pass reads the improved caption back and
+///    reports which ontology class it belongs to (`Character`/`Creature`/
+///    `Prop`/`Setting`) and whether it names its subject. This is the model
+///    self-reporting the structure of its own output, which is never perfect
+///    — a caption whose extraction doesn't parse just skips the guardrail
+///    rather than getting a guessed verdict.
+/// 3. **Validate + correct** — recognized rows go to the backend's
+///    `/ontology/validate` (OntologyAnvil.jl) in one batched call; rows it
+///    flags get one more model call with the violation text, asking for a
+///    fix. Rows that pass (or weren't checkable) carry their better caption
+///    straight through.
+///
 /// ## Output
 ///
 /// One row per improved caption, images dropped (they are large and the
-/// consumer already has them): `improved_caption`, plus `caption` (the user's
-/// original, so the two can be compared), `kind`, `panel_id`, `pass`.
+/// consumer already has them): `good_caption` (the user's original),
+/// `better_caption` (the model's rewrite), `best_caption` (guardrail-checked
+/// and, if needed, corrected), plus `kind`, `panel_id`, `pass`.
 class CaptionTask extends LLMTask {
-  /// Floor for the reply cap. The node's Max Tokens defaults to 256, which a
-  /// reasoning model (e.g. gemini-pro) can spend entirely on thinking, leaving
-  /// captions cut off mid-phrase ("…plumed helmet,").
   static const int _minReplyTokens = 2048;
-
   const CaptionTask();
-
   static const schemaId = 'sf.llm_payload/v1';
 
   @override
   String get id => 'caption';
-
   @override
   String get label => 'caption improvement';
-
   @override
   String get doneNoun => 'captions improved';
-
-  /// Captioning needs a vision model; the backend's local text model cannot.
   @override
   bool get supportsLocal => false;
 
@@ -59,7 +70,6 @@ class CaptionTask extends LLMTask {
     return false;
   }
 
-  /// Sparse triples → `row → {col → value}`, in first-seen row order.
   static Map<String, Map<String, String>> rowsOf(AaPayload aa) {
     final out = <String, Map<String, String>>{};
     for (var i = 0; i < aa.rows.length && i < aa.cols.length && i < aa.vals.length; i++) {
@@ -77,8 +87,6 @@ class CaptionTask extends LLMTask {
     );
   }
 
-  /// Fills `{{caption}}` and `{{text_tag}}`; when the template has no
-  /// `{{caption}}`, the caption is appended so it is never silently dropped.
   static String fill(String template, {required String caption, String? textTag}) {
     var out = template.replaceAll('{{text_tag}}', textTag ?? '');
     if (out.contains('{{caption}}')) {
@@ -91,12 +99,6 @@ class CaptionTask extends LLMTask {
       '\n\nReply with only the improved caption text — no preamble, no '
       'quotes, no markdown.';
 
-  /// Builds one job per captioned segment (using [segmentPrompt]) and per
-  /// captioned panel (using [panelPrompt]). Rows with an empty caption are
-  /// skipped: there is nothing of the user's to improve.
-  ///
-  /// Throws [LLMTaskError] when a prompt is needed but missing — never falls
-  /// back to a guess.
   static List<LLMJob> buildJobs(
     AaPayload aa, {
     String? segmentPrompt,
@@ -158,6 +160,108 @@ class CaptionTask extends LLMTask {
     return jobs;
   }
 
+  /// Text-only: ask the model what ontology class its own (just-written)
+  /// caption describes, and whether it names its subject. Self-reported, so
+  /// a row whose reply doesn't parse as the expected JSON just skips the
+  /// guardrail rather than getting a verdict based on a guess.
+  static String _extractPrompt(String betterCaption) => '''
+Read this image caption and answer with JSON only, nothing else — no preamble, no markdown fences.
+
+Caption:
+"""$betterCaption"""
+
+Respond with exactly this shape:
+{"class": "Character" | "Creature" | "Prop" | "Setting" | null, "has_entity_name": true | false}
+
+- "class": the single category the caption's main subject belongs to. Use null if it doesn't clearly fit one of the four.
+- "has_entity_name": true only if the caption gives that subject a specific name or other distinguishing identifier — not just "a man" or "the creature".
+''';
+
+  static String _correctPrompt(String betterCaption, List<String> violations) => '''
+This image caption failed an ontology check:
+
+Caption:
+"""$betterCaption"""
+
+Problems found:
+${violations.map((v) => '- $v').join('\n')}
+
+Rewrite the caption to fix these problems while keeping everything else about it the same. Reply with only the corrected caption text — no preamble, no quotes, no markdown.
+''';
+
+  static Map<String, dynamic>? _parseJson(String text) {
+    var t = text.trim();
+    if (t.startsWith('```')) {
+      final nl = t.indexOf('\n');
+      if (nl != -1) t = t.substring(nl + 1);
+      if (t.endsWith('```')) t = t.substring(0, t.length - 3);
+      t = t.trim();
+    }
+    try {
+      final decoded = jsonDecode(t);
+      return decoded is Map<String, dynamic> ? decoded : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static const _validClasses = {'Character', 'Creature', 'Prop', 'Setting'};
+
+  static ({String? klass, bool hasEntityName})? _factsFrom(String reply) {
+    final j = _parseJson(reply);
+    if (j == null) return null;
+    final klass = j['class'];
+    final hasName = j['has_entity_name'] == true;
+    if (klass is String && _validClasses.contains(klass)) {
+      return (klass: klass, hasEntityName: hasName);
+    }
+    return (klass: null, hasEntityName: hasName);
+  }
+
+  static Map<String, dynamic> _validateBody(
+    Map<String, ({String klass, bool hasEntityName})> checkable,
+  ) {
+    final r = <String>[];
+    final c = <String>[];
+    final v = <Object>[];
+    for (final e in checkable.entries) {
+      r.add(e.key);
+      c.add('class|${e.value.klass}');
+      v.add(true);
+      if (e.value.hasEntityName) {
+        r.add(e.key);
+        c.add('slot|entity_name');
+        v.add(true);
+      }
+    }
+    return {
+      'aa': {'rows': r, 'cols': c, 'vals': v},
+    };
+  }
+
+  static Map<String, ({bool valid, List<String> violations})> _parseVerdicts(
+    Map<String, dynamic> reply,
+  ) {
+    final out = <String, ({bool valid, List<String> violations})>{};
+    final aa = reply['aa'];
+    if (aa is! Map) return out;
+    final rows = List<String>.from(aa['rows'] ?? const []);
+    final cols = List<String>.from(aa['cols'] ?? const []);
+    final vals = List.from(aa['vals'] ?? const []);
+    final byRow = <String, Map<String, String>>{};
+    for (var i = 0; i < rows.length && i < cols.length && i < vals.length; i++) {
+      (byRow[rows[i]] ??= <String, String>{})[cols[i]] = '${vals[i]}';
+    }
+    for (final e in byRow.entries) {
+      final violations = (e.value['violations'] ?? '')
+          .split(' | ')
+          .where((s) => s.isNotEmpty)
+          .toList();
+      out[e.key] = (valid: e.value['valid'] == 'true', violations: violations);
+    }
+    return out;
+  }
+
   @override
   Future<LLMResult?> runLocal(LLMRunContext ctx, AaPayload aa) =>
       throw const LLMTaskError(
@@ -177,19 +281,72 @@ class CaptionTask extends LLMTask {
     final key = await ctx.apiKey();
     if (ctx.isCancelled()) return null;
 
-    final run = await ctx.runJobs(jobs, key, minTokens: _minReplyTokens);
-    if (run == null) return null;
-    if (run.replies.isEmpty) {
-      throw LLMTaskError(allCallsFailed(run.failed, run.firstError));
+    // Round 1: improve.
+    final improveRun = await ctx.runJobs(jobs, key, minTokens: _minReplyTokens);
+    if (improveRun == null) return null;
+    if (improveRun.replies.isEmpty) {
+      throw LLMTaskError(allCallsFailed(improveRun.failed, improveRun.firstError));
     }
+    final betterCaptions = improveRun.replies;
+
+    // Round 2: extract class + entity_name presence from each better caption.
+    final extractJobs = [
+      for (final e in betterCaptions.entries)
+        LLMJob(key: e.key, prompt: _extractPrompt(e.value)),
+    ];
+    final extractRun = await ctx.runJobs(extractJobs, key, minTokens: 128);
+    if (extractRun == null) return null;
+
+    final facts = <String, ({String? klass, bool hasEntityName})>{};
+    for (final e in extractRun.replies.entries) {
+      final parsed = _factsFrom(e.value);
+      if (parsed != null) facts[e.key] = parsed;
+    }
+
+    // Round 3: validate every row whose extraction yielded a recognized class.
+    final checkable = <String, ({String klass, bool hasEntityName})>{
+      for (final e in facts.entries)
+        if (e.value.klass != null) e.key: (klass: e.value.klass!, hasEntityName: e.value.hasEntityName),
+    };
+    var verdicts = <String, ({bool valid, List<String> violations})>{};
+    if (checkable.isNotEmpty) {
+      final reply = await ctx.postJson('/ontology/validate', _validateBody(checkable));
+      if (ctx.isCancelled()) return null;
+      if (reply != null) verdicts = _parseVerdicts(reply);
+    }
+
+    // Round 4: correct only the rows the guardrail actually flagged.
+    final toCorrect = verdicts.entries.where((e) => !e.value.valid).toList();
+    final correctJobs = [
+      for (final e in toCorrect)
+        LLMJob(
+          key: e.key,
+          prompt: _correctPrompt(betterCaptions[e.key] ?? '', e.value.violations),
+        ),
+    ];
+    var corrected = <String, String>{};
+    if (correctJobs.isNotEmpty) {
+      final correctRun = await ctx.runJobs(correctJobs, key, minTokens: _minReplyTokens);
+      if (correctRun == null) return null;
+      corrected = correctRun.replies;
+    }
+
+    final bestCaptions = <String, String>{
+      for (final k in betterCaptions.keys) k: corrected[k] ?? betterCaptions[k]!,
+    };
+
     return LLMResult(
-      aa: _output(aa, run.replies),
-      rowsProcessed: run.replies.length,
-      failed: run.failed,
+      aa: _output(aa, betterCaptions, bestCaptions),
+      rowsProcessed: betterCaptions.length,
+      failed: improveRun.failed,
     );
   }
 
-  static AaPayload _output(AaPayload aa, Map<String, String> replies) {
+  static AaPayload _output(
+    AaPayload aa,
+    Map<String, String> betterCaptions,
+    Map<String, String> bestCaptions,
+  ) {
     final rows = rowsOf(aa);
     final r = <String>[];
     final c = <String>[];
@@ -200,15 +357,18 @@ class CaptionTask extends LLMTask {
       v.add(val);
     }
 
-    for (final e in replies.entries) {
+    for (final e in betterCaptions.entries) {
       final src = rows[e.key] ?? const <String, String>{};
-      put(e.key, 'improved_caption', e.value.trim());
-      for (final col in const ['caption', 'kind', 'panel_id', 'pass']) {
+      put(e.key, 'better_caption', e.value.trim());
+      put(e.key, 'best_caption', (bestCaptions[e.key] ?? e.value).trim());
+      final original = src['caption'];
+      if (original != null && original.isNotEmpty) {
+        put(e.key, 'good_caption', original);
+      }
+      for (final col in const ['kind', 'panel_id', 'pass']) {
         final val = src[col];
         if (val != null && val.isNotEmpty) put(e.key, col, val);
       }
-      // Only rows that become training images carry their file name, page and
-      // pixels on — Save Antelora writes them; panels and the page never ship.
       if ((src['file_name'] ?? '').isNotEmpty) {
         for (final col in const ['file_name', 'page_name', 'image_b64']) {
           final val = src[col];

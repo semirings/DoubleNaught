@@ -309,11 +309,17 @@ class JsonlFormatterNode:
     def _image_caption_object(self, record: dict[str, Any]) -> tuple[Optional[Any], str]:
         """One `{"file_name", "text"}` line per image (the HF imagefolder convention).
 
-        `text` is the improved caption, falling back to the user's own caption.
-        Rows without a `file_name` (page, panels) are skipped, never guessed.
+        `text` prefers the guardrail-corrected caption, then the model's
+        uncorrected rewrite, then the user's own original (`improved_caption`
+        is the pre-guardrail column name, kept for data saved before the
+        rename). Rows without a `file_name` (page, panels) are skipped, never
+        guessed.
         """
         name = _pick(record, ("file_name", "filename"))
-        text = _pick(record, ("improved_caption", "caption", "text"))
+        text = _pick(
+            record,
+            ("best_caption", "better_caption", "improved_caption", "caption", "text"),
+        )
         if not name.strip():
             return None, "incomplete"
         if not text.strip():

@@ -45,9 +45,26 @@ classes:
 
   Prop:
     is_a: NarrativeEntity
-    description: "Key physical objects or items handled or present in the scene."
+    description: >-
+      Key physical objects or items. carried_by is optional, not required -- a Prop may be
+      carried by a Character, or stand alone as the scene's own focal subject (a lamp, a cigar,
+      a sign) with no carrier at all. Absence of carried_by does not mean an object fails to
+      fit this class.
     slots:
       - carried_by
+
+  Creature:
+    is_a: NarrativeEntity
+    description: >-
+      A non-human living, acting subject -- an animal or personified creature. Added after
+      auditing 88 real captions from storage/antelora/mccay: ~10% (a horse, a bird, a fish, a
+      crab, two monkeys, a turkey, a reindeer) named a living subject that was neither a
+      Character ("an actor or person") nor a Prop nor a Setting. Disjoint from Character/
+      Setting/Prop via NarrativeEntity's children_are_mutually_disjoint.
+    slots:
+      - species
+      - current_state
+      - current_location
 
   VisualComposition:
     description: "Governs camera framing, perspective, and spatial layout."
@@ -93,6 +110,10 @@ slots:
   canonical_outfit:
     name: canonical_outfit
     range: string
+  species:
+    name: species
+    range: string
+    description: "What kind of creature this is (e.g. 'horse', 'bird', 'reindeer')."
   current_state:
     name: current_state
     range: string
@@ -109,7 +130,13 @@ slots:
 
   carried_by:
     name: carried_by
-    range: Character
+    description: >-
+      Who or what this Prop is attached to -- a Character carrying it, or a Creature wearing/
+      bearing it (e.g. a horse's saddle). Optional; see Prop's own description for standalone
+      objects with no carrier at all.
+    any_of:
+      - range: Character
+      - range: Creature
 
   shot_type:
     name: shot_type

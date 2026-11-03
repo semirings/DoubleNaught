@@ -35,6 +35,9 @@
 		},
 		{
 			"path": "../storage"
+		},
+		{
+			"path": "../OntologyAnvil.jl"
 		}
 	],
 	"settings": {
