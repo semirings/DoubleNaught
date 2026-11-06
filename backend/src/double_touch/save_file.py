@@ -58,7 +58,7 @@ def _merge_aa_append(incoming: AssocArray, base: str, format: str) -> AssocArray
     with bridge.LOCK:
         # Load existing AA from file based on format
         if format_lower == "csv":
-            existing = jl.ReadCSV(str(out_path))
+            existing = jl.readcsv(str(out_path))
         elif format_lower in ("parquet", "jsonl", "json"):
             existing = jl.loadParquet(str(out_path))  # jsonl/json stored as parquet
         else:

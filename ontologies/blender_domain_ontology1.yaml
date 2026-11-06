@@ -1,6 +1,7 @@
 id: https://w3id.org/grej/blender-ontology
 name: blender_ontology
 description: >-
+  Blender-code prompts for getting Blender to show things.
   LinkML rendering of the Blender ontology for programmatic control via `bpy`,
   headless batch rendering, and D4M associative array serialization. Four
   sub-graphs (Topology, Material, Stage, Pipeline) that reference each other

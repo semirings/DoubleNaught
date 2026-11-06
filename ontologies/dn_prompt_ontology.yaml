@@ -1,14 +1,24 @@
 id: https://w3id.org/grej/dn-prompt-ontology
 name: dn_prompt_ontology
 description: >-
-  LinkML rendering of the DN Prompt Ontology AA triple store (storage/ontologies/DN_Prompt_Ontology).
-  The source is a (Row, Col, Val) triples sheet meant to be loaded into D4M/Assoc and queried as a
-  guard rail before acting on a prompt. This schema is the structured-authoring counterpart of that
-  sheet: `Core.*` is the general prompting ontology (what any prompt to Claude should supply, keyed
-  by Intent), and `DN.*` is DoubleNaught's own domain layer, which extends Core rather than replacing
-  it (see the `DN` subset description below). Natural-language `rule` values from the source sheet —
-  meant for an LLM reader, not formal logic — are carried over verbatim as `rule` annotations rather
-  than slot constraints, since they are guidance, not machine-checkable axioms.
+  DoubleNaught's layer over prompt_structure_ontology.yaml. Coding prompts for
+  implementing things in DN. It extends Core: every Core intent, slot and rule
+  is available here unchanged. This file adds DN's own domain classes (Node,
+  Port, AaPayload, Pipeline, Environment, CloudTrainerJob), the Caption task
+  (ImproveCaption), and two intents that make DN's environment rule a
+  requirement: DNImplement and DNDiagnose must name the environment they act on.
+
+  `rule` values are prose for the reader, not machine-checkable. The editor can
+  insert a class's rule into a prompt's constraints when the prompt names that
+  class; nothing here enforces it.
+
+  The compile follows the import, so the parquet is the whole closure (Core +
+  DN) and a DN prompt loads one file.
+
+  Compile: python scripts/compile_linkml_to_aa.py
+  ontologies/dn_prompt_ontology.yaml
+  storage/ontologies/dn_prompt_ontology.parquet
+  --tsv storage/ontologies/dn_prompt_ontology.tsv --extras
 
 prefixes:
   linkml: https://w3id.org/linkml/
@@ -18,95 +28,42 @@ default_prefix: dnp
 
 imports:
   - linkml:types
+  - prompt_structure_ontology
 
 subsets:
-  Core:
-    description: >-
-      General prompting ontology: what any prompt to Claude should supply, keyed by Intent
-      (Diagnose / Implement / Design / Research).
   DN:
-    description: >-
-      DoubleNaught's own domain layer. Extends Core rather than replacing it -- the source triple
-      store states this explicitly as the single fact (DN, extends, Core).
+    description: "DoubleNaught's own domain layer. Extends Core."
   Caption:
     description: >-
       The segment/panel caption-improvement task (frontend/lib/widgets/nodes/implementations/llm/
-      caption_task.dart). Extends Core the same way DN does: (Caption, extends, Core). Unlike DN,
-      this namespace was authored directly in LinkML rather than reverse-derived from an existing
-      AA sheet -- it has no (Row, Col, Val) precedent to be faithful to, only the Dart task's own
+      caption_task.dart). Extends Core. Authored directly in LinkML, from the Dart task's own
       enforced behavior.
 
 classes:
 
-  Intent:
-    description: "Abstract base for the four kinds of prompt intent Core recognizes."
-    abstract: true
+  DNImplement:
+    is_a: Implement
+    description: "An Implement prompt for work in DN. Must say which filesystem the edit targets."
     in_subset:
-      - Core
+      - DN
+    annotations:
+      rule: "these are two unrelated filesystems; a prompt must say which one an edit targets"
     slots:
-      - subject
+      - environment_kind
     slot_usage:
-      subject:
+      environment_kind:
         required: true
 
-  Diagnose:
-    is_a: Intent
-    description: "A prompt asking Claude to diagnose a problem."
+  DNDiagnose:
+    is_a: Diagnose
+    description: "A Diagnose prompt for a problem in DN. Must say which filesystem it concerns."
     in_subset:
-      - Core
+      - DN
     slots:
-      - evidence
-      - ruled_out
+      - environment_kind
     slot_usage:
-      evidence:
+      environment_kind:
         required: true
-      ruled_out:
-        required: false
-
-  Implement:
-    is_a: Intent
-    description: "A prompt asking Claude to implement something."
-    in_subset:
-      - Core
-    slots:
-      - deliverable
-      - constraints
-      - verification
-    slot_usage:
-      deliverable:
-        required: true
-      constraints:
-        required: true
-      verification:
-        required: false
-
-  Design:
-    is_a: Intent
-    description: "A prompt asking Claude to design something, among options."
-    in_subset:
-      - Core
-    slots:
-      - options
-      - leaning
-    slot_usage:
-      options:
-        required: true
-      leaning:
-        required: false
-
-  Research:
-    is_a: Intent
-    description: "A prompt asking Claude to research a topic."
-    in_subset:
-      - Core
-    slots:
-      - depth
-      - intended_use
-    slot_usage:
-      depth:
-        required: true
-      intended_use:
-        required: false
 
   Node:
     description: "A node in a DN node-graph pipeline."
@@ -188,28 +145,6 @@ classes:
 
 slots:
 
-  # Core.Intent.* requires/optional slots
-  subject:
-    range: string
-  evidence:
-    range: string
-  ruled_out:
-    range: string
-  deliverable:
-    range: string
-  constraints:
-    range: string
-  verification:
-    range: string
-  options:
-    range: string
-  leaning:
-    range: string
-  depth:
-    range: string
-  intended_use:
-    range: string
-
   # DN.Node
   node_type:
     name: node_type
@@ -268,22 +203,9 @@ slots:
     range: string
     required: false
     description: >-
-      Optional per-segment tag (e.g. a LoRA trigger token) interpolated into prompt_template
-      alongside raw_caption via `{{text_tag}}`; only observed wired for segment-kind rows, not
-      panel-kind rows, in the code I've read so far -- worth confirming before relying on that
-      split.
-
+      Optional per-segment tag (e.g. a LoRA trigger token), interpolated into prompt_template
+      with `{{text_tag}}`. caption_task.dart passes it for segment rows.
 enums:
-
-  Mode:
-    description: "Core.Mode: whether a prompt is being acted on with a person watching or not."
-    annotations:
-      rule: "Unattended + ambiguous = state the reading taken and proceed, except on irreversible decisions"
-    permissible_values:
-      Attended:
-        description: "A person is watching and can be asked."
-      Unattended:
-        description: "No one is watching to ask; see the rule annotation on this enum."
 
   EnvironmentKind:
     description: "DN.Environment's known instances."

@@ -75,3 +75,12 @@ only. Creature added after auditing 88 `mccay` captions (~10% were animals).
 - `panelPromptInput` unconnected; no `panel.md` exists.
 - Add `valid` / `violations` output columns.
 - Lower temperature (~0.2) and pin the Gemini model id.
+
+## 2026-11-04 Prompt ontologies: three, with fixed roles; Core split from DN
+- Three ontologies, three jobs: `prompt_governance_ontology` governs caption/image prompts (existing pipeline); `dn_prompt_ontology` governs prompts used to build things in DN, including the prompt editor; `blender_ontology` governs prompts sent to an SLM to write Blender code.
+- `dn_prompt_ontology` was split. `prompt_structure_ontology.yaml` is Core (intents and their required slots; general, not DN-specific). `dn_prompt_ontology.yaml` imports it and adds DN's domain classes, the Caption task, and DNImplement/DNDiagnose (environment_kind required). Its parquet is the whole closure, so a DN prompt loads one file. Old `DN_Prompt_Ontology.parquet` is untouched; no `requires|` row from it was lost.
+- Changes in Core: Intent children are mutually disjoint; `mode` (Attended/Unattended) required on every intent; Implement requires `current_state` and `verification`.
+- A prompt is one entity: class = `intent:` front matter; filled slots = markdown headings (lower_snake); a slot counts as filled only if its section is non-empty (editor rule, not engine).
+- Compiler now resolves local `imports` and emits enum `rule` annotations under `--extras`.
+- Prose `rule`s are not enforced. Conditional rules (e.g. training Diagnose must include `[cloud_train]` lines) need a `guard|` checker in OntologyAnvil; not built.
+- Prompt editor: separate Flutter app in the DN repo, using the DN backend for validation; not started.

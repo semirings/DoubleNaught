@@ -38,6 +38,12 @@
 		},
 		{
 			"path": "../OntologyAnvil.jl"
+		},
+		{
+			"path": "../Speakeasy"
+		},
+		{
+			"path": "../Whetstone"
 		}
 	],
 	"settings": {

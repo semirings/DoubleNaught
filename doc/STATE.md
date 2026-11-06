@@ -68,3 +68,9 @@ with no caption and are skipped (panel captions are not improved today).
 
 - No node uses the ontology to constrain image generation (Hi3D inputs).
 - Qwen prompt change and `segment.md` name rule are untested end to end.
+
+## Prompt ontologies (2026-11-04)
+- `ontologies/prompt_structure_ontology.yaml` -> `storage/ontologies/prompt_structure_ontology.parquet` (49 triples): Core intents.
+- `ontologies/dn_prompt_ontology.yaml` -> `storage/ontologies/dn_prompt_ontology.parquet` (117 triples): Core + DN layer. Prior YAML kept as `dn_prompt_ontology.pre-split.yaml`. Old `DN_Prompt_Ontology.parquet` left in place, unused by the new files.
+- Checked in Python only (a port of validate_entity's logic), NOT with OntologyAnvil/Julia: run the engine on the Mac before relying on these.
+- Nothing yet maps a prompt's headings to slots; the prompt editor is not started. See DECISIONS.md.

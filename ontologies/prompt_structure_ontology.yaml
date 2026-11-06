@@ -1,0 +1,152 @@
+id: https://w3id.org/grej/prompt-structure-ontology
+name: prompt_structure_ontology
+description: >-
+  What a prompt of each intent must contain. Coding prompts for implementing,
+  diagnosing, designing and researching things. General: nothing here is
+  specific to DoubleNaught; DN's own rules live in dn_prompt_ontology.yaml,
+  which extends this file.
+
+  A prompt is one entity. Its class is its intent (front matter `intent:
+  Implement`). Its filled slots are its markdown headings, lower-cased with
+  spaces turned to underscores (`## Current state` fills `current_state`). A
+  slot counts as filled only if its section has non-empty text; that rule is
+  applied by the prompt editor, not by OntologyAnvil, which sees slot names only.
+
+  Enforced by OntologyAnvil today: requires| (every required slot filled) and
+  disjointWith| (a prompt has exactly one intent). Not enforced: enum
+  membership (Mode), and the `rule` annotations, which are prose.
+
+  Compile: python scripts/compile_linkml_to_aa.py
+  ontologies/prompt_structure_ontology.yaml
+  storage/ontologies/prompt_structure_ontology.parquet
+  --tsv storage/ontologies/prompt_structure_ontology.tsv --extras
+
+prefixes:
+  linkml: https://w3id.org/linkml/
+  ps: https://example.org/prompt-structure#
+
+default_prefix: ps
+
+imports:
+  - linkml:types
+
+subsets:
+  Core:
+    description: "General prompting ontology: what any prompt to a coding model should supply, keyed by intent."
+
+classes:
+
+  Intent:
+    description: "Abstract base for the four kinds of prompt intent. Exactly one applies to a prompt."
+    abstract: true
+    in_subset: [Core]
+    children_are_mutually_disjoint: true
+    slots:
+      - subject
+      - mode
+    slot_usage:
+      subject:
+        required: true
+      mode:
+        required: true
+
+  Diagnose:
+    is_a: Intent
+    description: "A prompt asking for a diagnosis of a problem."
+    in_subset: [Core]
+    slots:
+      - evidence
+      - ruled_out
+    slot_usage:
+      evidence:
+        required: true
+      ruled_out:
+        required: false
+
+  Implement:
+    is_a: Intent
+    description: "A prompt asking for something to be implemented."
+    in_subset: [Core]
+    slots:
+      - current_state
+      - deliverable
+      - constraints
+      - verification
+    slot_usage:
+      current_state:
+        required: true
+      deliverable:
+        required: true
+      constraints:
+        required: true
+      verification:
+        required: true
+
+  Design:
+    is_a: Intent
+    description: "A prompt asking for a design, chosen among options."
+    in_subset: [Core]
+    slots:
+      - options
+      - leaning
+    slot_usage:
+      options:
+        required: true
+      leaning:
+        required: false
+
+  Research:
+    is_a: Intent
+    description: "A prompt asking for research on a topic."
+    in_subset: [Core]
+    slots:
+      - depth
+      - intended_use
+    slot_usage:
+      depth:
+        required: true
+      intended_use:
+        required: false
+
+slots:
+
+  subject:
+    range: string
+    description: "What the prompt is about."
+  mode:
+    range: Mode
+    description: "Whether a person is watching while the prompt is acted on."
+  evidence:
+    range: string
+  ruled_out:
+    range: string
+  current_state:
+    range: string
+    description: "What exists today: files, behavior, what was already tried."
+  deliverable:
+    range: string
+  constraints:
+    range: string
+  verification:
+    range: string
+    description: "How the finished work is checked."
+  options:
+    range: string
+  leaning:
+    range: string
+  depth:
+    range: string
+  intended_use:
+    range: string
+
+enums:
+
+  Mode:
+    description: "Whether a prompt is being acted on with a person watching or not."
+    annotations:
+      rule: "Unattended + ambiguous = state the reading taken and proceed, except on irreversible decisions"
+    permissible_values:
+      Attended:
+        description: "A person is watching and can be asked."
+      Unattended:
+        description: "No one is watching to ask; see the rule annotation on this enum."

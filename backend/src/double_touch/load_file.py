@@ -538,7 +538,7 @@ def _load_json(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Opti
 def _load_csv(path: Path, schema_mode: str) -> tuple[Optional[AssocArray], Optional[dict]]:
     """Load a CSV file, reconstructing an AA unless "raw_table" is requested.
 
-    Two layouts are recognised, matching D4M.jl's ``ReadCSV``:
+    Two layouts are recognised, matching D4M.jl's ``readcsv``:
 
     * **triple form** — headers include ``rowKey,colKey,val`` (what the Save File
       node writes for Parquet/JSON): each line is one ``(row, col, val)`` triple.

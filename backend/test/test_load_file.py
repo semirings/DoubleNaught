@@ -4,7 +4,7 @@ Run with: ``pip install -e '.[dev]' && pytest`` from ``backend/``.
 
 Coverage:
   * CSV → AA reconstruction in table form (first column = row keys) and triple
-    form (``rowKey,colKey,val``), matching D4M.jl's ``ReadCSV``
+    form (``rowKey,colKey,val``), matching D4M.jl's ``readcsv``
   * schema_mode handling, including the camelCase spellings the Flutter node
     sends on the wire
   * ``/load`` HTTP contract for a CSV

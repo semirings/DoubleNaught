@@ -1,6 +1,8 @@
 id: https://w3id.org/grej/prompt-governance-ontology
 name: prompt_governance_ontology
-description: "LinkML schema governing narrative semantics, visual composition, and LoRA image generation constraints."
+description: >-
+  Caption prompts for DN/SF captions of images
+  LinkML schema governing narrative semantics, visual composition, and LoRA image generation constraints.
 
 prefixes:
   linkml: https://w3id.org/linkml/

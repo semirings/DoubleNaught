@@ -26,6 +26,9 @@ disjointWith| and requires|):
     (Class, identifier|<slot>, <slot>)
     (Class, minimum_value|<slot>, <n>)  /  maximum_value|<slot>
 
+Local imports (`imports: [other_file]`, resolved to other_file.yaml beside the
+input) are merged, so a layered ontology compiles to one self-contained parquet.
+
 Anything this compiler does not understand (attributes, mixins, rules, other
 slot keys) is an ERROR, so the parquet can never silently drop part of the YAML.
 """
@@ -144,6 +147,9 @@ def compile_triples(schema: dict, extras: bool = False) -> list[tuple[str, str, 
     for en, ed in enums.items():
         for v in ((ed or {}).get("permissible_values") or {}):
             triples.append((en, f"hasValue|{v}", str(v)))
+        if extras:
+            for k, v in ((ed or {}).get("annotations") or {}).items():
+                triples.append((en, "rule" if k == "rule" else f"guard|{k}", _one_line(v)))
 
     seen: dict[tuple[str, str], str] = {}
     for r, c, v in triples:
@@ -151,6 +157,31 @@ def compile_triples(schema: dict, extras: bool = False) -> list[tuple[str, str, 
             raise SystemExit(f"conflicting values for ({r}, {c}): {seen[(r, c)]!r} vs {v!r}")
         seen[(r, c)] = v
     return [(r, c, v) for (r, c), v in seen.items()]
+
+
+def load_schema(path: str, _seen: tuple[str, ...] = ()) -> dict:
+    """Load a LinkML YAML and merge any LOCAL imports (a bare name resolves to
+    <name>.yaml beside this file; `linkml:` imports are ignored). The result is
+    the full closure, so a layered ontology compiles to one self-contained
+    parquet. A class, slot or enum defined in two files is an error."""
+    import os
+    path = os.path.abspath(path)
+    if path in _seen:
+        raise SystemExit(f"import cycle at {path}")
+    with open(path, encoding="utf-8") as fh:
+        schema = yaml.safe_load(fh)
+    for imp in schema.get("imports") or []:
+        if imp.startswith("linkml:"):
+            continue
+        base = load_schema(os.path.join(os.path.dirname(path), imp + ".yaml"), _seen + (path,))
+        for section in ("classes", "slots", "enums", "subsets"):
+            mine = schema.setdefault(section, {}) or {}
+            schema[section] = mine
+            for name, body in (base.get(section) or {}).items():
+                if name in mine:
+                    raise SystemExit(f"{section[:-1]} {name} is defined in {path} and in its import {imp}")
+                mine[name] = body
+    return schema
 
 
 def main() -> None:
@@ -161,8 +192,7 @@ def main() -> None:
     ap.add_argument("--extras", action="store_true")
     a = ap.parse_args()
 
-    with open(a.yaml_in, encoding="utf-8") as fh:
-        schema = yaml.safe_load(fh)
+    schema = load_schema(a.yaml_in)
     triples = compile_triples(schema, extras=a.extras)
 
     import pyarrow as pa
